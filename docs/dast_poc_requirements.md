@@ -60,26 +60,81 @@ The browser (Playwright) is configured to send all its traffic through the ZAP p
 
 ## 5. Architecture overview
 
+Read the diagram by color, not just by arrows. Every box falls into one of four categories, and the category tells you what kind of work it is. The key thing to internalize before you start: **you are not building a scanner or a browser engine.** The heavy lifting — crawling, attacking, session handling — is done by two mature open-source tools (ZAP and Playwright). Your custom code is orchestration glue and configuration generation around them.
+
 ```mermaid
 flowchart LR
-  App["Pilot app (local)"]
-  Rec["record CLI"]
-  Gen["generate CLI (LLM)"]
-  Val["validate CLI"]
-  Art["Artifacts: flow.py, scope.json, auth.json, zap-policy, manifest, lock"]
-  Run["Scan runner"]
-  ZAP["ZAP proxy + active scan"]
-  Norm["Normalizer + fingerprint"]
-  SARIF["SARIF file"]
-  GH["GitHub Security tab"]
-  State["Local lifecycle state file"]
-  Ev["Evidence: HAR + screenshots"]
+  subgraph BUILD["🟩 Build (custom code you write)"]
+    Rec["record CLI"]
+    Gen["generate CLI"]
+    Val["validate CLI"]
+    Run["Scan runner (orchestration)"]
+    Norm["Normalizer + fingerprint"]
+    Exp["SARIF exporter"]
+    Diff["Lifecycle diff"]
+  end
 
-  App --> Rec --> Gen --> Art --> Val
-  Art --> Run --> ZAP --> Norm --> SARIF --> GH
-  Norm --> State
+  subgraph OSS["🟦 Reuse (open source — do not build)"]
+    PW["Playwright + Chromium"]
+    ZAP["OWASP ZAP (proxy + active scan)"]
+  end
+
+  subgraph EXT["⬜ External systems / services (integrate only)"]
+    LLM["LLM API (e.g. Claude)"]
+    GH["GitHub Security tab"]
+    App["Pilot app (Juice Shop)"]
+  end
+
+  subgraph DATA["🟨 Generated data (outputs, not components)"]
+    Art["Artifacts: flow.py, scope.json, auth.json, zap-policy, manifest, lock"]
+    SAR["SARIF file"]
+    Ev["Evidence: HAR + screenshots"]
+    State["Lifecycle state file"]
+  end
+
+  Rec -->|drives| PW
+  Rec --> App
+  Gen -->|calls| LLM
+  Gen --> Art
+  Val --> Art
+  Run -->|drives| PW
+  Run -->|drives| ZAP
+  ZAP --> App
+  Run --> Norm --> Exp --> SAR --> GH
+  Norm --> Diff --> State
   Run --> Ev
+
+  classDef build fill:#d4f4d4,stroke:#2e7d32;
+  classDef oss fill:#d6e4ff,stroke:#1565c0;
+  classDef ext fill:#eeeeee,stroke:#616161;
+  classDef data fill:#fff4cc,stroke:#f9a825;
+  class Rec,Gen,Val,Run,Norm,Exp,Diff build;
+  class PW,ZAP oss;
+  class LLM,GH,App ext;
+  class Art,SAR,Ev,State data;
 ```
+
+### 5.1 What to build vs. reuse vs. integrate
+
+Of the boxes above, only seven are custom code (and several are thin), two are reused open-source engines where the real work happens, three are external systems you connect to, and the rest are generated outputs — not components at all.
+
+| Element | Category | Effort / what it means for you |
+|---------|----------|-------------------------------|
+| `record` CLI | 🟩 Build (thin) | A small CLI that drives Playwright's crawl and dumps `trace.json` / `index.json`. |
+| `generate` CLI | 🟩 Build | Custom CLI, but its "intelligence" is an external LLM call plus prompt/scaffolding design. |
+| `validate` CLI | 🟩 Build (thin) | Replays the generated flow and checks it against scope. |
+| Scan runner | 🟩 Build (core) | The main integration work: launch ZAP, wire Playwright through the proxy, replay, active scan, enforce scope. |
+| Normalizer + fingerprint | 🟩 Build | Transform ZAP JSON into normalized records and compute the stable hash. |
+| SARIF exporter | 🟩 Build (thin) | Map normalized records to SARIF 2.1.0 (a SARIF helper library is fine). |
+| Lifecycle diff | 🟩 Build (thin) | Compare two fingerprint sets; label open / new / resolved. |
+| Playwright + Chromium | 🟦 Reuse (OSS) | Browser automation. You install and drive it — you do not build it. |
+| OWASP ZAP | 🟦 Reuse (OSS) | The actual scanning engine. You drive it via its API/daemon — you do not build it. |
+| LLM API | ⬜ External service | Hosted model called at authoring time; you supply a key and a prompt. |
+| GitHub Security tab | ⬜ External system | SaaS; you upload SARIF to it via the code-scanning API. |
+| Pilot app (Juice Shop / DVWA) | ⬜ External target (also OSS) | The thing under test. Run its container; it is not part of your tool. |
+| Artifacts, SARIF, evidence, state | 🟨 Generated data | Produced at runtime by the components above; nothing to "build". |
+
+The practical takeaway for estimation: budget your time against the seven green boxes, expect the **scan runner** to be the single largest item, and treat ZAP and Playwright as capabilities to learn and configure rather than software to write.
 
 ## 6. Functional requirements
 
@@ -213,6 +268,9 @@ Build the scan core first with artifacts you write by hand, so the trickiest int
 | Solo-engineer capacity | Cut any optional metrics work and protect the four demo acceptance steps. |
 
 ## 12. Deliverables
+
+Note on scope: only the 🟩 green components in section 5.1 are deliverables you build. ZAP and Playwright are installed dependencies; the LLM API, GitHub, and the pilot app are external systems you connect to — none of them are things you deliver as code.
+
 * A Git repository containing the three CLIs, the runner, and the normalizer/exporter.
 * A README with setup and a single run command.
 * Sample artifacts (`flow.py`, `scope.json`, `manifest.json`, lock file) for the pilot app.

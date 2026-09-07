@@ -71,6 +71,45 @@ Sequencing rationale: Week 1 hand-authors the artifacts on purpose so the scan p
 * Solo: cut optional metrics and any Databricks landing; focus strictly on the four proof points.
 * Two to three engineers: parallelize the authoring CLIs against the runner in Weeks 1–2, and add a basic Databricks Delta landing table in Week 3 as an early nod to the real ingestion boundary.
 
+## Team split & integration checkpoints (1 junior + 1 senior)
+
+The most important move for a two-person team is to **agree the data contracts on day 1, then let each engineer build against those contracts in isolation**, integrating only at defined checkpoints. This lets the junior work productively without deep DAST knowledge (their world is "JSON in, JSON out") and keeps the project moving even if the senior's high-risk work slips.
+
+### Split principle
+
+Assign by **risk and knowledge dependency, not by volume**:
+
+* **Engineer 2 (senior)** takes components that need DAST/proxy/browser judgment and where the interfaces are still fuzzy — the scan runner, the ZAP + Playwright + auth-replay wiring, and scope enforcement. This is the critical path and the thing most likely to blow the timeline.
+* **Engineer 1 (junior)** takes components with a **clear input → output contract testable against a saved fixture** — the normalizer, fingerprint, SARIF exporter, and lifecycle diff. None require a running scanner: they operate on a sample ZAP JSON file, so the junior is never blocked waiting on the runner.
+
+### Component ownership
+
+| Component | Owner | Why |
+|-----------|-------|-----|
+| Scan runner (orchestration) | Eng 2 | Hardest integration; needs ZAP/Playwright/auth judgment |
+| ZAP + Playwright proxy + auth replay | Eng 2 | The core technical risk of the whole POC |
+| Scope enforcement (allow/deny + env check) | Eng 2 | Safety-critical; sits inside the runner |
+| `generate` CLI (LLM prompt + parsing) | Eng 2, pairing with Eng 1 | Prompt design + brittle output parsing; high teaching value |
+| Normalizer + fingerprint | Eng 1 | Pure function on ZAP JSON → clear contract, easy to unit-test |
+| SARIF exporter | Eng 1 | Well-specified format; testable against a schema |
+| Lifecycle diff | Eng 1 | Simple set comparison of two fingerprint files |
+| `record` CLI (thin) | Eng 1 | Small; drives the Playwright crawl, good ramp-up |
+| `validate` CLI (thin) | Eng 1 | Small; replays flow + checks scope |
+
+### When to build separately vs. integrate
+
+* **Day 1 — integrate first (together).** Jointly nail down the three contracts the design leans on: `scope.json` shape, the **normalized detection record**, and the **exact fingerprint formula** (`rule_id + endpoint + parameter + payload_family`). Hand-run ZAP against the pilot app once and check in a real `sample_zap_output.json` — this single fixture unblocks all of the junior's work.
+* **Week 1 — build separately.** Eng 2 runs the risky spike: ZAP + Playwright + auth replay against *hand-authored* artifacts (no LLM yet), producing raw ZAP output. Eng 1 builds normalizer → fingerprint → SARIF exporter → lifecycle diff against the fixture, and uploads a hand-made SARIF to the GitHub Security tab to prove that path independently. **Checkpoint (end of Week 1):** connect the real runner output into the normalizer — a wiring exercise, not a rewrite, because both coded to the same contract.
+* **Week 2 — build separately, then integrate.** Eng 2 (pairing with Eng 1) builds the `generate` CLI — LLM call, prompt, output parsing — replacing the hand-authored artifacts. Eng 1 finishes the thin `record` and `validate` CLIs and hardens modules with tests. **Checkpoint (end of Week 2):** run the full chain `record → generate → validate → runner → normalizer → SARIF → GitHub` end-to-end for the first time.
+* **Week 3 — integrate continuously (mostly together).** Join the pieces, run two consecutive scans to exercise the lifecycle diff (open → resolved → closed), fix the seams, and build the demo. Parallel work shrinks and shared debugging dominates — that is expected and correct.
+
+### Two rules that make this work
+
+1. **Contracts before code.** Every interface between the two engineers is a written schema plus a sample file. As long as both code to the schema, integration is assembly, not negotiation.
+2. **Mock the neighbor, never wait for it.** The junior always builds against the checked-in `sample_zap_output.json`; the senior builds against a hand-written `scope.json` and flow. Neither blocks on the other between the three scheduled handshakes (end of Day 1, Week 1, Week 2), plus continuous integration in Week 3.
+
+**Critical-path risk:** the senior's runner/auth-replay spike is the critical path. If it slips, the junior still has fully-testable work against fixtures so the *project* keeps moving, but the **end-to-end demo** cannot complete until the runner lands. Protect it by timeboxing the spike in Week 1 and escalating early if auth replay against the pilot app proves stubborn.
+
 ## What this POC intentionally does not answer
 
 * Production safety (that is the entire point of Step 2 and should not be rushed into a POC).
