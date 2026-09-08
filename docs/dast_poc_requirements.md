@@ -32,6 +32,45 @@ The browser (Playwright) is configured to send all its traffic through the ZAP p
 | Non-prod | A test environment. This POC never targets production. |
 | Lifecycle diff | Comparing this scan's detections to the previous scan's to mark each as open, new, or resolved. |
 
+### 2.5 Knowledge prerequisites
+
+Most of the DAST-specific knowledge here is learnable *during* the POC, because you are integrating mature tools rather than inventing security techniques. The list below separates what you must have before you start from what you can pick up on the job.
+
+**Core prerequisites — both engineers**
+* Python proficiency: subprocess orchestration, JSON handling, and writing small, testable pure functions. This is the most-used skill on the POC.
+* JSON and data-contract thinking: comfort reading a schema and coding to it (`scope.json`, the normalized detection record, SARIF, ZAP output).
+* HTTP fundamentals: requests/responses, headers, cookies, status codes, query strings vs. POST bodies.
+* Git and pull-request workflow.
+* Basic command-line / shell use for installing and running the tools.
+
+**Senior engineer (owns the integration core) — higher bar**
+* Web proxies: how intercepting traffic works, proxy configuration, and TLS/certificate handling (ZAP sits as a man-in-the-middle proxy). This is the crux of the hardest task.
+* Browser automation with Playwright: selectors, navigation, waits, and session/cookie handling.
+* Authentication flows: form login, session tokens, cookies, and why reliable auth replay is hard — the component most likely to consume time.
+* LLM API usage and prompt design: calling a model and robustly parsing imperfect output (for the `generate` CLI).
+* General security literacy: enough vocabulary (SQL injection, XSS, CWE, "active scan") to configure ZAP sensibly and sanity-check its output. Deep pentest expertise is **not** required.
+
+**Junior engineer (owns contract-bounded modules) — genuinely enough**
+* Solid Python and JSON (as above).
+* Willingness to learn SARIF (a JSON format — read the spec, map fields) and the fingerprint concept (a hash of a few fields).
+* Basic set operations for the lifecycle diff (comparing two fingerprint sets).
+* Can be productive on day one against a saved `sample_zap_output.json` **without** understanding ZAP internals or proxies yet — that grows through the Week 2 pairing sessions.
+
+**Learn-as-you-go (not prerequisites)**
+* OWASP ZAP: how to run it in daemon/API mode and read its JSON output.
+* Playwright: codegen/record mode and the script API.
+* SARIF: the results format GitHub consumes.
+* HAR: the HTTP-archive evidence format (read-only understanding is enough).
+* GitHub code scanning / Security tab: how SARIF is uploaded and displayed.
+
+**Explicitly not required**
+* Professional penetration-testing skills or the ability to write exploit payloads (ZAP supplies those).
+* Security certifications.
+* Databricks, Power BI, or data-engineering knowledge (out of scope for the POC).
+* Production, infrastructure, or Harness CD expertise.
+
+Bottom line: a strong generalist Python engineer can own the junior scope immediately. The senior seat needs one person comfortable with **proxies, browser automation, and auth flows** — that combination is the real prerequisite and the critical-path risk. If neither engineer has ZAP/Playwright experience, treat the Week 1 spike as a ramp-up, not a research project.
+
 ## 3. Scope
 
 ### 3.1 In scope
