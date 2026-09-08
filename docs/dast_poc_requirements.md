@@ -39,7 +39,7 @@ Most of the DAST-specific knowledge here is learnable *during* the POC, because 
 **Core prerequisites — both engineers**
 * Python proficiency: subprocess orchestration, JSON handling, and writing small, testable pure functions. This is the most-used skill on the POC.
 * JSON and data-contract thinking: comfort reading a schema and coding to it (`scope.json`, the normalized detection record, SARIF, ZAP output).
-* HTTP fundamentals: requests/responses, headers, cookies, status codes, query strings vs. POST bodies.
+* HTTP fundamentals:requests/responses, headers, cookies, status codes, query strings vs. POST bodies.
 * Git and pull-request workflow.
 * Basic command-line / shell use for installing and running the tools.
 
@@ -316,3 +316,64 @@ Note on scope: only the 🟩 green components in section 5.1 are deliverables yo
 * A SARIF file visible as alerts in the pilot repository Security tab.
 * A short demo recording or script covering the four acceptance steps.
 * A brief written summary of what worked, what was cut, and recommended next steps.
+
+## 13. Build methodology (Speckit vs. spike)
+
+This POC pairs a spec-driven-development tool (GitHub Spec Kit, "Speckit") with hands-on exploratory spikes. The rule of thumb: if an acceptance criterion is checkable against a fixture, it is a Speckit spec; if the acceptance criterion is "the two real tools cooperate," it is a spike. Speckit is used selectively for the deterministic, contract-bounded modules and is deliberately kept off the critical-path integration until that integration is empirically proven.
+
+### 13.1 Speckit-first (deterministic, fixture-testable)
+
+These have crisp input/output contracts and clear pass/fail criteria — the sweet spot for spec-driven generation. Primary owner: Engineer 1.
+
+| FR | Module | Why Speckit-suitable |
+|----|--------|----------------------|
+| FR-G2 | scope.json emission | Deterministic transform (hosts to allow-list); validates against the section 7 schema |
+| FR-G3 | zap-policy / manifest / lock | Pure file emission with a parse-correctly check |
+| FR-G4 | generate idempotency | Testable property: same trace yields an equivalent flow |
+| FR-V2 | allow-list coverage check | Deterministic set-membership check |
+| FR-V3 | validation report + exit code | Structured output plus non-zero exit contract |
+| FR-N1 | normalizer | sample_zap_output.json to normalized record; fully fixture-driven |
+| FR-N2 | fingerprint | Deterministic formula; twice-scan stability is a unit test |
+| FR-X1 | SARIF export | Emit valid SARIF 2.1.0; passes a validator |
+| FR-L1 | state persistence | Write fingerprint set keyed by application id |
+| FR-L2 | lifecycle diff | Deterministic open/new/resolved labeling |
+| FR-R3 | forms/API capture | Parsing and serialization into trace.json |
+
+### 13.2 Spike-first (empirical; the critical-path risk)
+
+Here the hard part is making it work against real tools, not writing clean code from a spec. Explore hands-on, then back-fill a spec only once behavior is proven. Primary owner: Engineer 2.
+
+| FR | Module | Why Speckit is the wrong tool up front |
+|----|--------|----------------------------------------|
+| FR-S1 | ZAP proxy + Playwright replay | Core integration unknown: proxy/TLS handshake, traffic interception, session persistence |
+| FR-S2 | ZAP active scan via API | ZAP API wiring is discovered by experiment, not specified |
+| FR-R2 | authenticated-flow recording | Entangled with auth replay; the spec emerges from the spike |
+| FR-S5 | 15-minute time budget | Emergent performance property — measured, not built |
+| NFR-5 | containerized single-command run | Packaging ZAP + browser + runner is fiddly integration work |
+
+### 13.3 Hybrid / pair (spec the logic, spike the mechanism)
+
+Split each of these: the policy/logic half is Speckit-able; the enforcement/integration half needs the spike.
+
+| FR | Speckit half | Spike half |
+|----|--------------|------------|
+| FR-G1 | flow-script schema and structure | LLM prompt/output quality — does flow.py actually run? |
+| FR-V1 | validation-report shape | Auth replay actually succeeding (depends on FR-S1) |
+| FR-S3 | refuse-if-prod / invalid-scope guard logic | Mostly Speckit — critical safety, spec and test heavily |
+| FR-S4 | out-of-scope block policy | The proxy-level interception mechanism to enforce it |
+| FR-X2 | SARIF upload payload | GitHub code-scanning API auth/integration |
+| FR-E1 | SARIF evidence references | HAR/screenshot capture wired into the runner |
+| FR-R1 | trace.json/index.json output contract | Reliable headless crawl behavior |
+
+Cross-cutting NFRs (NFR-2 safety, NFR-3 secrets/config, NFR-4 structured logging) belong in the Speckit constitution — house rules applied to every generated module — rather than as standalone specs. NFR-1 (lock file) rides along with FR-G3.
+
+### 13.4 Sequencing and handoff boundaries
+
+* Day 1 (both): agree the shared contracts — scope.json schema, normalized detection record, fingerprint formula — and hand-capture a real sample_zap_output.json. This one fixture unblocks all of section 13.1 before the scan runner exists.
+* Week 1: Engineer 2 runs the section 13.2 spike (ZAP + Playwright + auth replay) with zero Speckit ceremony. In parallel, Engineer 1 uses Speckit on section 13.1 against the fixture and schemas, with no dependency on the runner.
+* Week 2: the spike has proven what works, so back-fill FR-S1/S2 specs if useful and pair on section 13.3 where the two halves meet. Engineer 1 finishes exporter and diff.
+* Week 3: integrate end-to-end. The three handshake checkpoints (Day 1 contracts, Week 1 spike result, Week 2 integration) are the gates.
+
+### 13.5 Adoption caveat
+
+Adopt the full Speckit toolkit only if at least one engineer already knows it, or the Week 1 ramp-up is accepted as part of the budget. If both engineers are new to Speckit, default to plain AI-assisted coding against this requirements document — the numbered FRs already function as specs, capturing most of the value without piloting a methodology on the critical path.
