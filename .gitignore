@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+
+# Scan outputs / evidence (do NOT commit secrets or raw evidence)
+*.har
+evidence/
+*.zap
+zap-report.*
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
