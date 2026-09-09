@@ -54,32 +54,45 @@ Collapse anything that varies per-request so the fingerprint tracks the *endpoin
 * `misc` — anything unmapped
 * `none` — empty-case sentinel (no meaningful family)
 
-The exact ZAP-rule -> family mapping table MUST be pinned from the real fixture once `capture_zap_fixture.sh` runs. Do not guess it from memory.
+The exact ZAP-rule -> family mapping table is **pinned from the real fixture** (`sample_zap_output.json`, captured by `runner/capture_zap_fixture.sh` against Juice Shop). Every `pluginId` present in the fixture is mapped; anything not listed falls through to `misc`.
+
+| pluginId | ZAP rule | payload_family |
+|----------|----------|----------------|
+| 40018 | SQL Injection | `sqli` |
+| 10038 | Content Security Policy (CSP) Header Not Set | `headers` |
+| 10055 | CSP: Failure to Define Directive with No Fallback | `headers` |
+| 10098 | Cross-Domain Misconfiguration | `headers` |
+| 10096 | Timestamp Disclosure - Unix | `headers` |
+| 90022 | Application Error Disclosure | `headers` |
+| 10104 | User Agent Fuzzer | `misc` |
+| 10109 | Modern Web Application | `misc` |
+
+Mapping rationale (matches the vocabulary above): security-header **and** info-leak passive alerts both bucket to `headers` (so CSP/cross-domain header rules sit alongside timestamp / application-error disclosure); purely informational fingerprinting rules (User Agent Fuzzer, Modern Web Application) bucket to `misc`. The `headers` = "security-header / info-leak passive" grouping is a deliberate contract decision — a reviewer wanting timestamp/error disclosure under `misc` should raise it in the PR, since changing the bucket changes those findings' fingerprints.
 
 ### Worked examples
 
-> PLACEHOLDER VALUES — replace each row with real values pulled from `sample_zap_output.json` after the capture script runs. Recompute the hash from the actual inputs; do not hand-copy these digests.
+> Real values pulled from the committed `sample_zap_output.json`. Digests recomputed with the reference implementation below — verify by re-running it, do not hand-copy.
 
-**Example 1 — SQL injection on login**
+**Example 1 — SQL injection on product search** (the fixture's one High finding, pluginId 40018)
 
 ```
 rule_id          = "40018"
-endpoint_pattern = "/rest/user/login"
-parameter        = "email"
+endpoint_pattern = "/rest/products/search"   # url path only; query string (?q=...) dropped
+parameter        = "q"
 payload_family   = "sqli"
-preimage         = "40018|/rest/user/login|email|sqli"
-fingerprint      = sha256(preimage)   # -> <64-hex, fill from real fixture>
+preimage         = "40018|/rest/products/search|q|sqli"
+fingerprint      = ece130214d0131cf2c0d71334a6719a0442d794cc6dfe9faababed15c7fcf3db
 ```
 
-**Example 2 — passive header alert, no parameter**
+**Example 2 — passive CSP header alert, no parameter** (pluginId 10038 at `/`)
 
 ```
 rule_id          = "10038"
 endpoint_pattern = "/"
 parameter        = ""            # empty-case sentinel
 payload_family   = "headers"
-preimage         = "10038|/|(empty)|headers"   # note: the empty string is literal, shown as (empty) for readability only
-fingerprint      = sha256("10038|/||headers")  # actual preimage has two adjacent pipes
+preimage         = "10038|/||headers"          # empty parameter -> two adjacent pipes
+fingerprint      = 6c668292549821d6f3742016bf4371a07524016924cae5a57735ba0ca71cf35f
 ```
 
 The Example 2 detail — an empty `parameter` produces two adjacent pipes (`||`) in the preimage — is the kind of thing that MUST be identical in the code and here, or fingerprints won't match across runs.
