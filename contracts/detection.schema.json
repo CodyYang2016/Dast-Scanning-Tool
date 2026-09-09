@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nationwide.com/dast/contracts/detection.schema.json",
+  "title": "Normalized Detection Record",
+  "description": "The single, tool-agnostic shape every detection source (ZAP today, sslyze/testssl.sh later) normalizes into. Produced by the normalizer (FR-N1); consumed by the SARIF exporter (FR-X1) and lifecycle diff (FR-L2).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "app_id",
+    "scan_id",
+    "fingerprint",
+    "rule_id",
+    "title",
+    "severity",
+    "endpoint",
+    "status"
+  ],
+  "properties": {
+    "app_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Ties the detection back to its scope.json. MUST match scope.app_id."
+    },
+    "scan_id": {
+      "type": "string",
+      "pattern": "^[0-9]{8}T[0-9]{6}Z$",
+      "description": "UTC timestamp id of the scan run (e.g. 20260909T114855Z). Also names the evidence directory (FR-E1), so the format is frozen."
+    },
+    "fingerprint": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "sha256 of rule_id|endpoint_pattern|parameter|payload_family. Stable identity used by the lifecycle diff (FR-L2)."
+    },
+    "rule_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Source rule identifier. From ZAP pluginId."
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable detection name. From ZAP alert name."
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["critical", "high", "medium", "low", "info"],
+      "description": "Normalized severity. Mapped from ZAP risk. Ordered high->low so the SARIF exporter maps deterministically."
+    },
+    "cwe_id": {
+      "type": ["string", "null"],
+      "description": "CWE identifier where available (FR-N1). NULL when the source omits it - do not drop the field."
+    },
+    "endpoint": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The affected URL/endpoint. From ZAP url."
+    },
+    "parameter": {
+      "type": ["string", "null"],
+      "description": "Affected parameter. NULL when not parameter-scoped (e.g. header/transport findings). Empty-case is a fixed sentinel so fingerprints stay stable (FR-N2)."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["open", "new", "resolved"],
+      "description": "Lifecycle state assigned by the diff against the previous scan's fingerprint set."
+    },
+    "evidence_path": {
+      "type": ["string", "null"],
+      "description": "Relative path to the evidence artifact (HAR/screenshot) under the scan_id evidence dir. NULL if none captured."
+    }
+  }
+}
