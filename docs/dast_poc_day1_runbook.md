@@ -18,7 +18,7 @@ If all six are true, Day 1 succeeded and neither engineer is blocked on the othe
 
 Do this ahead of time so Day 1 is not spent fighting installs:
 
-* Both engineers have a working container runtime (Podman is the Nationwide default; Docker only where licensed), Python 3.11+, and access to the enterprise GitHub org.
+* Both engineers have a working container runtime (Podman is the Nationwide default; Docker only where licensed), Python 3.11+, and access to the enterprise GitHub org. Note: macOS ships with an older system Python (e.g. 3.9), which is below the 3.11+ requirement — install a current version first, e.g. `brew install python@3.12`, and confirm with `python3.12 --version`.
 * Both can pull images from the Nationwide Trusted Registry (`ntr.nwie.net`) — see Appendix A for the container setup and the Windows/WSL proxy fix. Do this the day before; the proxy fix alone can eat hours if hit cold.
 * One machine has OWASP ZAP available (desktop app or the `ntr.nwie.net/docker.io/zaproxy/zap-stable` image) and can launch it.
 * The pilot app runs locally on `http://localhost:3000` (Juice Shop) — see Appendix A for the exact Podman/Docker command.
@@ -219,8 +219,13 @@ podman pull ntr.nwie.net/docker.io/bkimminich/juice-shop
 podman network create dast
 podman run -d --name juice --network dast -p 3000:3000 ntr.nwie.net/docker.io/bkimminich/juice-shop
 podman run --rm --network dast -p 8080:8080 ntr.nwie.net/docker.io/zaproxy/zap-stable \
-  zap.sh -daemon -host 0.0.0.0 -port 8080 -config api.disablekey=true
+  zap.sh -daemon -host 0.0.0.0 -port 8080 \
+  -config api.disablekey=true \
+  -config 'api.addrs.addr.name=.*' -config api.addrs.addr.regex=true
 # From inside the ZAP container, target the pilot app as http://juice:3000
+# The api.addrs flags are required in a container: without them ZAP rejects API
+# calls from the container gateway IP with "Request to API URL ... not permitted".
+# Quote 'api.addrs.addr.name=.*' so the shell does not glob-expand the .* .
 ```
 
 **A5. Verify:**
@@ -253,8 +258,13 @@ docker pull ntr.nwie.net/docker.io/bkimminich/juice-shop
 docker network create dast
 docker run -d --name juice --network dast -p 3000:3000 ntr.nwie.net/docker.io/bkimminich/juice-shop
 docker run --rm --network dast -p 8080:8080 ntr.nwie.net/docker.io/zaproxy/zap-stable \
-  zap.sh -daemon -host 0.0.0.0 -port 8080 -config api.disablekey=true
+  zap.sh -daemon -host 0.0.0.0 -port 8080 \
+  -config api.disablekey=true \
+  -config 'api.addrs.addr.name=.*' -config api.addrs.addr.regex=true
 # From inside the ZAP container, target the pilot app as http://juice:3000
+# The api.addrs flags are required in a container: without them ZAP rejects API
+# calls from the container gateway IP with "Request to API URL ... not permitted".
+# Quote 'api.addrs.addr.name=.*' so the shell does not glob-expand the .* .
 ```
 
 **B5. Verify:**
