@@ -1,0 +1,8 @@
+{
+  "app_id": "juice-shop",
+  "environment_class": "dev",
+  "target_fqdn": "localhost",
+  "fqdn_allow_list": ["localhost"],
+  "fqdn_deny_list": ["*.google-analytics.com"],
+  "avoid_action_list": ["logout", "delete-account"]
+}

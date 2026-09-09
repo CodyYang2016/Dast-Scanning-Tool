@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nationwide.com/ssd-dast-poc/contracts/scope.schema.json",
+  "title": "DAST scan scope",
+  "description": "Bounds a single DAST scan: which app, which environment tier, which hosts may/must-never be contacted, and which actions must never be triggered.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "app_id",
+    "environment_class",
+    "target_fqdn",
+    "fqdn_allow_list",
+    "fqdn_deny_list",
+    "avoid_action_list"
+  ],
+  "properties": {
+    "app_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Application identifier; must match app_id in detection records."
+    },
+    "environment_class": {
+      "type": "string",
+      "enum": ["dev", "test", "staging"],
+      "description": "Target tier. 'prod' is intentionally excluded so the runner can never scan production (FR-S3 / NFR-2)."
+    },
+    "target_fqdn": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Primary host of the app under test. Should also appear in fqdn_allow_list (enforced by the validate CLI)."
+    },
+    "fqdn_allow_list": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 1,
+      "uniqueItems": true,
+      "description": "Exact hosts the scanner may contact. Any in-flight request to a host not listed here is blocked (FR-S4)."
+    },
+    "fqdn_deny_list": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true,
+      "description": "Hosts that must never be contacted; hard-blocks even if otherwise allowed."
+    },
+    "avoid_action_list": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true,
+      "description": "Actions the crawler/scanner must never trigger, matched per the documented rule (e.g. URL substring)."
+    }
+  }
+}
