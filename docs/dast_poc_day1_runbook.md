@@ -206,7 +206,12 @@ systemctl restart podman.socket
 systemctl show-environment | grep -i proxy   # should show no 8888
 exit
 ```
-Notes: `systemctl` runs only inside the VM (never Git Bash); a runtime `systemctl unset-environment` will NOT stick because the proxy is static config. Full details in the standalone runbook "Fixing Podman Image Pulls Behind the Nationwide Proxy (Windows / WSL)".
+On the workstation this was verified on, `$FILE` resolved to `/etc/systemd/system.conf.d/default-env.conf`, which pinned the proxy via `DefaultEnvironment=` lines. Notes confirmed the hard way:
+* `systemctl` runs only inside the VM (after `podman machine ssh`), never in Git Bash.
+* A runtime `systemctl unset-environment ...` will **NOT** stick — the proxy is static `DefaultEnvironment=` config, so it must be edited in the file and reloaded with `daemon-reexec` (not `daemon-reload`).
+* The pull may succeed on the manifest but then fail on a `...amazonaws.com` layer URL: NTR/Harbor stores blobs in AWS S3 and redirects layer downloads there, so a pull touches both internal and external hosts. Removing the dead proxy entirely (as above) fixes both; a `NO_PROXY`-only workaround must also include `.amazonaws.com` or the layer download still fails.
+
+Full details in the standalone runbook "Fixing Podman Image Pulls Behind the Nationwide Proxy (Windows / WSL)".
 
 **A3. Pull the images:**
 ```bash
@@ -218,16 +223,61 @@ podman pull ntr.nwie.net/docker.io/bkimminich/juice-shop
 ```bash
 podman network create dast
 podman run -d --name juice --network dast -p 3000:3000 ntr.nwie.net/docker.io/bkimminich/juice-shop
-podman run --rm --network dast -p 8080:8080 ntr.nwie.net/docker.io/zaproxy/zap-stable \
-  zap.sh -daemon -host 0.0.0.0 -port 8080 -config api.disablekey=true
+podman run -d --name zap --network dast -p 8080:8080 ntr.nwie.net/docker.io/zaproxy/zap-stable \
+  zap.sh -daemon -host 0.0.0.0 -port 8080 -silent \
+  -config api.disablekey=true \
+  -config 'api.addrs.addr.name=.*' \
+  -config api.addrs.addr.regex=true
 # From inside the ZAP container, target the pilot app as http://juice:3000
 ```
+The two `api.addrs.addr.*` flags are **required**, not optional. Without them, ZAP 2.17 only accepts API calls from loopback *inside* the container and rejects requests arriving through the Podman port-forward — you get `curl: (52) Empty reply from server` on the host and `Request to API URL ... from 10.88.0.1 not permitted` in `podman logs`. The allow-list makes ZAP accept the forwarded call. **Quote** `'api.addrs.addr.name=.*'` so Git Bash / MINGW64 does not glob or mangle the `.*`.
 
-**A5. Verify:**
+Use **`-silent`** to stop ZAP from checking for add-on updates and sending telemetry on the locked-down Nationwide network. It is the correct built-in flag and replaces both `-config telemetry.enabled=false` and the **invalid** `-addonupdate=false`. Do **not** pass `-addonupdate=false`: it is not a recognized ZAP option, so the daemon bootstrap aborts with `ERROR ... DaemonBootstrap - Unsupported option '-addonupdate=false'`, leaving the container `Up` with port 8080 mapped but the API/proxy never fully started — after which *every* request (API and proxy alike) returns `curl: (52) Empty reply from server`. This exact failure cost hours during the POC. A clean start instead logs `Shh! No check-for-update - silent mode enabled` and `ZAP is now listening on 0.0.0.0:8080`.
+
+**A5. Verify the setup (verified working sequence).** Check in layers, from "the image runs" up to "ZAP can proxy the target." Give the daemon 30-60s on first run before curling.
 ```bash
-curl "http://localhost:8080/JSON/core/view/version/"   # ZAP API up
-podman run --rm ntr.nwie.net/docker.io/zaproxy/zap-stable zap.sh -version
+# 1. Image + ZAP itself
+podman run --rm ntr.nwie.net/docker.io/zaproxy/zap-stable zap.sh -version   # prints e.g. 2.17.0
+
+# 2. Daemon up
+podman ps                     # zap should be "Up", port 0.0.0.0:8080->8080/tcp
+podman logs zap | tail -30    # look for "ZAP is now listening on 0.0.0.0:8080"
+
+# 3. API reachable (the definitive up-check)
+curl "http://localhost:8080/JSON/core/view/version/"     # -> {"version":"2.17.0"}
+
+# 4. Scan subsystems loaded
+curl "http://localhost:8080/JSON/core/view/sites/"          # -> {"sites":[]}  (empty is fine)
+curl "http://localhost:8080/JSON/ascan/view/scanners/" | head   # long JSON list of active-scan rules
+
+# 5. Target reachable from inside the ZAP container (must print 200)
+podman exec zap curl -sS -m 10 -o /dev/null -w "%{http_code}\n" http://juice:3000/
+
+# 6. Proxy actually intercepts (crux of FR-S1) — drive it via the API, NOT a host proxy
+curl "http://localhost:8080/JSON/core/action/accessUrl/?url=http://juice:3000/&followRedirects=true"
+#   -> {"accessUrl":[{ ... "responseHeader":"HTTP/1.1 200 OK ...", "requestHeader":"GET http://juice:3000/ ..." }]}
+curl "http://localhost:8080/JSON/core/view/sites/"          # 'juice:3000' now backed by a real fetch
 ```
+What "correct" looks like and two benign results that are **not** errors:
+* `{"sites":[]}` before any traffic is expected — it fills in after step 5.
+* `spider/view/status/` returning `{"code":"does_not_exist","message":"Does Not Exist"}` is **normal** — that endpoint needs a `scanId` from a spider run, and none exists yet. The plugin is loaded fine.
+* With `-silent` set (A4), ZAP does **not** phone home, so you should not see the `ExtensionCallHome` / update-check stack traces at all — the log instead shows `Shh! ... silent mode enabled` and `Shh! Silent mode or telemetry turned off`. If those traces *do* appear, `-silent` didn't take effect — most often because the invalid `-addonupdate=false` flag aborted startup first (see A4).
+* **The Sites tree is not proof of a successful fetch.** ZAP records a target in `/JSON/core/view/sites/` the moment a request is *attempted* through the proxy, even if it times out — so `{"sites":["http://juice:3000"]}` can appear alongside a `Failed to read ... within 20 seconds` error. Use the `accessUrl` response's `responseHeader:"HTTP/1.1 200 OK"` (step 6) as the real proof, not mere presence in the Sites list.
+* **Don't rely on `curl -x http://localhost:8080 ...` from the host.** Routing the host's own traffic out through ZAP's proxy port over the Podman port-forward is flaky and returns `curl: (52) Empty reply` / `(56) Connection aborted` even when ZAP is healthy. It is not the path the scanner uses — the runner drives ZAP through the API (`accessUrl`, spider, ascan), which is what step 6 verifies.
+
+**If steps 5-6 fail with a connect timeout / `000` (containers can't talk):** you have likely accumulated stale container IPs from recreating `juice` (or `zap`) several times — the DNS name resolves to an old IP. Do a clean full reset in order rather than reconnecting a live container:
+```bash
+podman rm -f zap juice
+podman network rm dast 2>/dev/null; podman network create dast
+podman run -d --name juice --network dast -p 3000:3000 ntr.nwie.net/docker.io/bkimminich/juice-shop
+podman run -d --name zap --network dast -p 8080:8080 ntr.nwie.net/docker.io/zaproxy/zap-stable \
+  zap.sh -daemon -host 0.0.0.0 -port 8080 -silent \
+  -config api.disablekey=true -config 'api.addrs.addr.name=.*' -config api.addrs.addr.regex=true
+# then confirm BOTH are attached before testing:
+podman network inspect dast --format '{{range .Containers}}{{.Name}} {{end}}'   # must list: zap juice
+```
+
+Cleanup when done: `podman rm -f zap juice`.
 
 ### Track B — Docker (only where Docker is licensed)
 
@@ -252,20 +302,99 @@ docker pull ntr.nwie.net/docker.io/bkimminich/juice-shop
 ```bash
 docker network create dast
 docker run -d --name juice --network dast -p 3000:3000 ntr.nwie.net/docker.io/bkimminich/juice-shop
-docker run --rm --network dast -p 8080:8080 ntr.nwie.net/docker.io/zaproxy/zap-stable \
-  zap.sh -daemon -host 0.0.0.0 -port 8080 -config api.disablekey=true
+docker run -d --name zap --network dast -p 8080:8080 ntr.nwie.net/docker.io/zaproxy/zap-stable \
+  zap.sh -daemon -host 0.0.0.0 -port 8080 -silent \
+  -config api.disablekey=true \
+  -config 'api.addrs.addr.name=.*' \
+  -config api.addrs.addr.regex=true
 # From inside the ZAP container, target the pilot app as http://juice:3000
 ```
+The `api.addrs.addr.*` flags are required for the same reason as Track A — without them the API rejects calls forwarded through the container port and `curl` returns an empty reply. Use `-silent` (not the invalid `-addonupdate=false`, which aborts ZAP's daemon bootstrap) to suppress update checks and telemetry, and quote `'api.addrs.addr.name=.*'` in bash — same reasoning as Track A's A4.
 
-**B5. Verify:**
+**B5. Verify:** same layered checks as Track A's A5 (swap `podman`->`docker`):
 ```bash
-curl "http://localhost:8080/JSON/core/view/version/"
 docker run --rm ntr.nwie.net/docker.io/zaproxy/zap-stable zap.sh -version
+docker ps
+docker logs zap | tail -30
+curl "http://localhost:8080/JSON/core/view/version/"     # -> {"version":"2.17.0"}
+curl "http://localhost:8080/JSON/core/view/sites/"        # {"sites":[]} until traffic is proxied
 ```
+The same two benign results apply: an empty `sites` list before traffic, and the `ExtensionCallHome` telemetry stack trace in the logs.
 
 ### Shared notes (both tracks)
 
 * For the Day 1 manual fixture capture (Block 4), the **ZAP desktop app** is often easier for clicking through login/search than the daemon; switch to the containerized daemon when Engineer 2 wires the runner in Week 1.
-* Pin a specific ZAP tag (e.g. `...zaproxy/zap-stable:2.15.0`) when you freeze the lock file (NFR-1) so scans are reproducible regardless of runtime.
+* Pin a specific ZAP tag (e.g. `...zaproxy/zap-stable:2.17.0`, the version verified for this POC) when you freeze the lock file (NFR-1) so scans are reproducible regardless of runtime.
+* **Security caveat (POC-only):** `api.addrs.addr.name=.*` combined with `api.disablekey=true` means anyone who can reach port 8080 can drive ZAP unauthenticated. That is acceptable for a local, throwaway container on a workstation, but when Engineer 2 wires the runner for real, tighten it: keep an API key (`-config api.key=<from-env>`, per NFR-3) instead of `disablekey`, and scope `api.addrs` to the runner's actual subnet rather than `.*`.
 * Never commit HAR/evidence produced by a scan — it can contain auth tokens and session cookies (NFR-3).
 * If a pull reaches NTR but fails on a `...amazonaws.com` layer URL, the dead proxy is still bypassing only internal hosts — remove it entirely per A2 so the external S3 layer download also goes direct.
+
+## Appendix B — Capturing the Day-1 fixture (spider -> active scan -> export)
+
+This is the scripted version of Block 4: it drives ZAP entirely through its REST API to produce `contracts/sample_zap_output.json`, the real ZAP alerts export the normalizer (FR-N1) is built against. **No `record` CLI / Playwright is involved** — this uses ZAP's own spider to seed traffic, which is the fast path to real findings on Day 1. The output shape (ZAP alerts JSON) is identical to what an authenticated, Playwright-seeded scan produces later, so building the normalizer against it is valid.
+
+**How it works (three async phases + export):**
+1. **Spider** discovers URLs by following links and populates ZAP's Sites tree. Fast (seconds-minutes).
+2. **Passive-scan drain** — wait for ZAP to finish analysing what the spider queued.
+3. **Active scan** replays and mutates those requests with attack payloads. This is the slow phase (~5-40 min on Juice Shop depending on breadth) and is where the actual findings come from.
+4. **Export** pulls the alerts via `/JSON/core/view/alerts` and writes the fixture.
+
+Each `action/scan` call returns *immediately* with a numeric scan ID; the work runs in the background, so the script **polls** `view/status` (0-100) until each phase reaches 100 before moving on. Exporting early yields partial/empty results.
+
+The script uses only `curl` + `grep`/`sed`, so it runs in Git Bash with no `jq` or Python dependency.
+
+```bash
+#!/usr/bin/env bash
+# A capture the Day-1 ZAP fixture: spider -> active scan -> export alerts JSON
+ZAP="http://localhost:8080"
+TARGET="http://juice:3000"
+OUT="contracts/sample_zap_output.json"
+mkdir -p "$(dirname "$OUT")"
+
+num() { grep -o '[0-9][0-9]*' | head -1; }   # first integer in a ZAP JSON reply
+
+echo ">> 0. ZAP up?"
+curl -sS "$ZAP/JSON/core/view/version/"; echo
+
+echo ">> Seed the target so the spider has a root"
+curl -sS "$ZAP/JSON/core/action/accessUrl/?url=$TARGET/&followRedirects=true" >/dev/null
+
+echo ">> 1. Spider (discovery)"
+SID=$(curl -sS "$ZAP/JSON/spider/action/scan/?url=$TARGET/&recurse=true" | num); SID=${SID:-0}
+echo "   spider scanId=$SID"
+while :; do
+  P=$(curl -sS "$ZAP/JSON/spider/view/status/?scanId=$SID" | num); P=${P:-0}
+  echo "   spider: ${P}%"; [ "$P" -ge 100 ] && break; sleep 3
+done
+
+echo ">> 2. Let passive scanning drain"
+while :; do
+  Q=$(curl -sS "$ZAP/JSON/pscan/view/recordsToScan/" | num); Q=${Q:-0}
+  echo "   pscan queue: $Q"; [ "$Q" -le 0 ] && break; sleep 2
+done
+
+echo ">> 3. Active scan (attack - slow phase)"
+AID=$(curl -sS "$ZAP/JSON/ascan/action/scan/?url=$TARGET/&recurse=true&inScopeOnly=false" | num); AID=${AID:-0}
+echo "   ascan scanId=$AID"
+while :; do
+  P=$(curl -sS "$ZAP/JSON/ascan/view/status/?scanId=$AID" | num); P=${P:-0}
+  echo "   ascan: ${P}%"; [ "$P" -ge 100 ] && break; sleep 5
+done
+
+echo ">> 4. Export alerts -> $OUT"
+curl -sS "$ZAP/JSON/core/view/alerts/?baseurl=$TARGET&start=0&count=9999" -o "$OUT"
+
+echo ">> 5. Sanity check (fixture must have >=1 High and >=2 rule types)"
+echo "   total alerts:      $(grep -o '"alert":' "$OUT" | wc -l | tr -d ' ')"
+echo "   High findings:     $(grep -o '"risk":"High"' "$OUT" | wc -l | tr -d ' ')"
+echo "   distinct rule IDs: $(grep -o '"pluginId":"[0-9]*"' "$OUT" | sort -u | wc -l | tr -d ' ')"
+echo "Done -> $OUT. Walk a few alerts and map fields to the Block 3 detection record."
+```
+
+**Tuning breadth vs. time:**
+* **Faster** (targeted, ~5 min): skip the spider and scan only a couple of known-vulnerable endpoints, e.g. replace phase 3 with `ascan/action/scan/?url=http://juice:3000/rest/products/search?q=` and add the login POST. Enough to get varied findings for the fixture.
+* **Fuller** (default above, ~20-40 min): spider then active-scan the whole tree; more findings, higher chance of multiple High-severity rules.
+
+**Success criteria (from the Day-1 checklist):** the export contains at least one **High** finding and at least **two distinct rule types** (`pluginId`s). Juice Shop's search/login reliably surface SQL injection and XSS, so the default run satisfies both. If a field you froze in Block 3 (e.g. `payload_family`, `cweid`) is missing or empty on some alerts, that is the discovery moment — feed it back into the contract and re-freeze.
+
+**Do not commit evidence:** the alerts JSON is the fixture and is committed; any HAR/evidence with tokens or cookies must stay out of source control (NFR-3).
