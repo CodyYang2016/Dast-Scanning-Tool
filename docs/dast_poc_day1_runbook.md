@@ -18,7 +18,7 @@ If all six are true, Day 1 succeeded and neither engineer is blocked on the othe
 
 Do this ahead of time so Day 1 is not spent fighting installs:
 
-* Both engineers have a working container runtime (Podman is the Nationwide default; Docker only where licensed), Python 3.11+, and access to the enterprise GitHub org.
+* Both engineers have a working container runtime (Podman is the Nationwide default; Docker only where licensed), Python 3.11+, and access to the enterprise GitHub org. Note: macOS ships with an older system Python (e.g. 3.9), which is below the 3.11+ requirement — install a current version first, e.g. `brew install python@3.12`, and confirm with `python3.12 --version`.
 * Both can pull images from the Nationwide Trusted Registry (`ntr.nwie.net`) — see Appendix A for the container setup and the Windows/WSL proxy fix. Do this the day before; the proxy fix alone can eat hours if hit cold.
 * One machine has OWASP ZAP available (desktop app or the `ntr.nwie.net/docker.io/zaproxy/zap-stable` image) and can launch it.
 * The pilot app runs locally on `http://localhost:3000` (Juice Shop) — see Appendix A for the exact Podman/Docker command.
