@@ -11,11 +11,11 @@
 ## What the POC must prove
 
 1. LLM-assisted authoring can turn a recording into working Playwright flow scripts and a scope file (the platform's core differentiator and highest technical risk).
-2. Authenticated replay + ZAP active scan runs against a live non-prod target, bounded by an FQDN allow/deny list.
+2. Authenticated replay + ZAP active scan runs against a live non-prod target, bounded by an FQDN allow/deny list, producing at least one high/medium-severity alert on an authenticated endpoint. Pin the target weakness/endpoint/ZAP-fixture in advance, but do not make the pass/fail condition one specific alert — ZAP output varies with policy, timing, and app version.
 3. Detections normalize into SARIF and render in the GitHub Security tab with evidence.
-4. Fingerprint-based lifecycle diff correctly tracks open / new / resolved across two scans.
+4. Fingerprint-based lifecycle diff correctly tracks open / new / resolved across two scans, at the **local state-file level**. GitHub's own alert-resolution behavior after a second SARIF upload is a separate observation, not a pass/fail condition, unless independently verified.
 
-If those four work on one app, the concept is validated.
+If those four work on one app, the concept is validated. Treat each as a **risk gate**: Week 1 closes the runner/auth/safety risk, Week 2 closes the deterministic-results and LLM-authoring risk, Week 3 closes the lifecycle risk. See `dast_poc_demo_plan.md` for the phase-by-phase gate criteria.
 
 ## Components to build (MVP set)
 
@@ -23,11 +23,11 @@ If those four work on one app, the concept is validated.
 * DAST runner — orchestrates fetch artifacts, Playwright replay through the ZAP proxy, ZAP active scan, and export. This is the heart of the POC.
 * Scope enforcement (minimal) — FQDN allow/deny via the ZAP proxy filter plus a Playwright request interceptor, and a single `environment_class` check. Skip the remaining defense-in-depth controls.
 * Detection normalizer + fingerprint — convert raw ZAP JSON into normalized detections with a stable fingerprint hash (`rule_id + endpoint + parameter + payload_family`).
-* Evidence capture — write HAR, a few screenshots, and raw ZAP output to local disk or an S3 bucket.
+* Evidence capture — write HAR, a few screenshots, and raw ZAP output to local disk or an S3 bucket. Redact auth cookies, bearer tokens, passwords, and sensitive request bodies before evidence is published anywhere. A local file path does not become a clickable GitHub Security-tab link on its own — link evidence via a GitHub Actions artifact (preferred), a controlled repo location, or an approved stable URL.
 
 ### Authoring CLIs (the differentiator)
 * `record` — a thin Playwright crawler that captures `trace.json` / `index.json` for the pilot app.
-* `generate` — the LLM step: trace to Playwright flow script(s) + `scope.json` + `auth.json` + a `zap-policy.yaml` (start from a single medium template). Timebox prompt iteration; keep a semi-manual fallback.
+* `generate` — the LLM step: trace to Playwright flow script(s) + `scope.json` + `auth.json` + a `zap-policy.yaml` (start from a single medium template). Timebox prompt iteration; keep a semi-manual fallback. **Safety boundary:** `validate`'s auth/allow-list checks do not make generated Python safe to execute. Prefer having the LLM emit a constrained JSON journey plan that deterministic code renders into `flow.py`; if generating Python directly, enforce AST/syntax validation, a restricted import/API allow-list (no `subprocess`, filesystem writes, sockets, `eval`/`exec`), container-only execution, mandatory proxy use, timeouts, and redaction of credentials/cookies/tokens before any trace is sent to the LLM.
 * `validate` — a smoke run that replays the generated flow, confirms auth succeeds, and checks the scope guardrails.
 
 ### Results surface
@@ -46,7 +46,7 @@ If those four work on one app, the concept is validated.
 | Week | Focus | Key tasks | Exit milestone |
 |------|-------|-----------|----------------|
 | Prep (day 0) | Setup | Pick pilot app; stand up ZAP daemon; get Claude API access; create POC repo and container skeleton | Toolchain installed and reachable |
-| Week 1 | Scan core | Containerize runner; Playwright auth + flow replay routed through the ZAP proxy; capture HAR; ZAP active scan bounded by a hand-written `scope.json`; get raw detections out | End-to-end scan produces real ZAP detections on a live target, scope-bounded (artifacts hand-written, no LLM yet) |
+| Week 1 | Scan core | Containerize runner; Playwright auth + flow replay routed through the ZAP proxy; capture HAR; ZAP active scan bounded by a hand-written `scope.json`; get raw detections out. In parallel, build the normalizer/fingerprint/SARIF exporter/lifecycle diff against `sample_zap_output.json` and prove a hand-made SARIF upload to the GitHub Security tab. | **Minimum-viable-scanner gate:** authenticated request visible in ZAP, ≥1 high/medium alert on an authenticated endpoint, zero target traffic on unsafe scope (missing/no-env/prod), and a deliberately out-of-scope request is blocked+logged+fails the scan. HAR/screenshot capture, containerization, and the 15-minute budget are secondary checks, not gate conditions. |
 | Week 2 | Authoring + results pipeline | Build `record` (trace capture); build `generate` (LLM to flow + scope + policy) and iterate prompts until the generated flow replays; build `validate` smoke run; normalizer producing fingerprinted detections + SARIF | LLM-generated artifacts drive a real scan and emit SARIF |
 | Week 3 | Results UX, lifecycle, demo | SARIF into the GitHub Security tab with evidence links; lifecycle diff across two scans using a local state store; optional minimal metrics; harden, add buffer, prepare demo and a written gaps/next-steps summary | Full loop demo on one app, including fingerprint lifecycle across two scans |
 
@@ -55,14 +55,16 @@ Sequencing rationale: Week 1 hand-authors the artifacts on purpose so the scan p
 ## Success criteria / demo script
 
 1. Onboard the pilot app with `record` then `generate` then `validate`, showing LLM-generated artifacts.
-2. Run a scan; show scope enforcement blocking a request to a host outside the allow-list (proves the guardrail).
-3. Show detections in the GitHub Security tab as SARIF, with severity, CWE, and evidence.
-4. "Fix" one issue in the pilot app and re-scan; show that detection flip to resolved via the fingerprint diff, with the others staying open.
+2. Run a scan; show scope enforcement blocking a request to a host outside the allow-list (proves the guardrail) — enforced at the proxy/request-interception boundary, not just ZAP's own scope config, with a deterministic block-log-fail policy.
+3. Show detections in the GitHub Security tab as SARIF, with severity, CWE, and a redacted evidence link (GitHub Actions artifact).
+4. "Fix" one issue in the pilot app and re-scan; show that detection flip to resolved via the **local fingerprint diff**, with the others staying open. Separately note (not as a pass/fail condition) whether GitHub's Security tab also reflects the second SARIF upload.
 
 ## Top risks and mitigations
 
 * LLM flow generation is flaky. Mitigation: start from Playwright codegen output as LLM input; keep a hand-authored flow template as a fallback so the concept can still be demoed.
 * ZAP-plus-Playwright session/auth handling is finicky. Mitigation: begin with the simplest login on the pilot app and timebox; this is why it is Week 1 work.
+* LLM-generated `flow.py` is executable code and validate's checks alone don't make it safe. Mitigation: prefer a constrained JSON journey plan over direct Python generation; otherwise enforce AST validation, import restrictions, and container-only execution (see `generate` CLI above).
+* Scope enforcement may not block every path (redirects, alternate ports, IP literals, IPv6, host aliases). Mitigation: for the POC, enforce a single deterministic rule — proxy every request, block/log/fail on any non-allow-listed host — and document the remaining edge cases as known gaps rather than building full coverage.
 * Scope creep toward Step 2, dashboards, or Harness. Mitigation: treat the deferred list above as a hard boundary for the three weeks.
 * Single-engineer capacity. Mitigation: if solo, drop Week 3 metrics entirely and protect the core loop, SARIF, and lifecycle diff.
 
@@ -115,3 +117,15 @@ Assign by **risk and knowledge dependency, not by volume**:
 * Production safety (that is the entire point of Step 2 and should not be rushed into a POC).
 * Scale behavior: fleet-wide scheduling, warehouse ingestion under load, and the state-store design are validated later.
 * Governance: PR review standards, policy templates, and drift SLAs are Phase 1 hardening, not POC.
+* Full scope-enforcement edge cases (IPv6 forms, host aliases, alternate ports, redirect chains, IP literals) — the POC uses one deterministic block/log/fail rule instead.
+* Full fingerprint canonicalization across arbitrary ZAP output variants — only the stability cases needed for the single pinned pilot app/ZAP version are tested.
+* Durable/governed evidence hosting beyond a GitHub Actions artifact link.
+* Whether GitHub's own SARIF-driven alert resolution matches the local lifecycle diff — observed, not asserted.
+
+## Contract-freeze checklist (resolve on Day 1, alongside `scope.json` / detection-record / fingerprint contracts)
+
+* FR-S4 policy: does an out-of-scope request abort the scan or block-and-continue? (Default: block, log, fail.)
+* Is `auth.json` a required `generate` output? (This plan already assumes yes — reconcile with the formal requirements doc.)
+* Where does evidence live so SARIF links resolve? (Default: GitHub Actions artifact.)
+* Is GitHub alert auto-resolution required, or is local lifecycle diff sufficient? (Default: local only.)
+* Which weakness + endpoint + ZAP fixture constitutes the Week 1 detection gate?
