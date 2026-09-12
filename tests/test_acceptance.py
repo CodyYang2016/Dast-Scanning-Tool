@@ -51,7 +51,7 @@ def report():
 
 @pytest.fixture(scope="module")
 def records(report):
-    return normalize(report, APP_ID, SCAN_ID)
+    return list(normalize(report["alerts"], APP_ID, SCAN_ID))
 
 
 def _external_sha256(preimage: str) -> str:
@@ -163,7 +163,9 @@ def test_all_records_validate_against_schema(records):
 # ---- E. Invariants ----------------------------------------------------------------------
 
 def test_normalization_is_deterministic(report):
-    assert normalize(report, APP_ID, SCAN_ID) == normalize(report, APP_ID, SCAN_ID)
+    a = list(normalize(report["alerts"], APP_ID, SCAN_ID))
+    b = list(normalize(report["alerts"], APP_ID, SCAN_ID))
+    assert a == b
 
 
 def test_endpoint_pattern_is_idempotent(records):
