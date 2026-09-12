@@ -61,6 +61,59 @@ Record the exact **Juice Shop image tag** and **ZAP version** in the lock file (
 
 **Requirements covered:** FR-S1–S5, FR-R2, FR-E1, NFR-2, NFR-5
 
+### Current build status (as of latest `main`)
+
+Recent commits delivered the **Phase 2 deterministic results pipeline** (Engineer 1's track) —
+`detections/` normalizer, fingerprint, SARIF export, GitHub upload, and lifecycle diff, all
+fixture-tested. **Phase 1 (the `runner/`) is almost entirely unbuilt.** Against the Phase 1
+component table, only the fixture and the proven ZAP API sequence exist:
+
+| Phase 1 component | Status | Remaining |
+|-------------------|--------|-----------|
+| Hand-authored `flow.py` | ❌ missing | Playwright login + one authenticated journey |
+| ZAP proxy integration | ⚠️ partial | ZAP **API** sequence proven in `capture_zap_fixture.sh`; nothing routes Playwright **through the ZAP proxy** |
+| Authentication & request replay | ❌ missing | Critical-path spike — no Playwright driver / auth replay |
+| Active scan | ⚠️ partial | Spider + bounded ascan proven in capture script; not yet a runner component |
+| Expected high/medium detection | ⚠️ data path only | Fixture→normalizer proven; not yet produced by a **live** scan |
+| Unsafe-configuration preflight | ❌ missing | `scope.json` / no-env / prod abort before traffic |
+| Block, log, fail on out-of-scope | ❌ missing | Proxy/interceptor allow/deny enforcement + structured log |
+| Pinned Juice Shop/ZAP versions | ❌ missing | No lock file in repo |
+| `sample_zap_output.json` fixture | ✅ done | 38 alerts, 1 High SQLi — committed |
+| HAR & screenshots | ❌ missing | Evidence capture per scan |
+| Containerized single-command run | ❌ missing | No Containerfile |
+| 15-minute performance target | ❌ not measurable | Depends on the runner existing |
+
+**Reusable head start:** `runner/capture_zap_fixture.sh` already proves the exact ZAP API
+choreography the runner needs (`accessUrl` → spider → bounded `ascan` → alerts export, bounded to
+the pilot host). Port it into Python and wrap it with Playwright + safety.
+
+### Completion plan for Phase 1
+
+Steps 1 and 3 are pure-Python and testable without a live scan — do them first to lock the safety
+contract. Step 2 (auth replay) is the schedule risk; if it slips, Steps 1/3/4 still demonstrate the
+guardrail and the ZAP data path independently.
+
+1. **`runner/preflight.py`** — load + schema-validate `scope.json`; abort with a clear message and
+   non-zero exit on missing / no `environment_class` / `environment_class == prod`, before any
+   traffic (FR-S3, NFR-2). Gates everything.
+2. **Hand-authored `flow.py` + auth replay** — `security/dast/juice-shop/flow.py` logs into Juice
+   Shop and hits one authenticated endpoint; `runner/replay.py` launches Chromium with its proxy
+   set to the ZAP daemon so ZAP observes authenticated traffic (FR-S1, FR-R2). Time-box this.
+3. **Request-boundary scope enforcement** — a Playwright `page.route` interceptor that blocks any
+   host not in `fqdn_allow_list` (or in the deny-list), logs each decision (NFR-4), and fails the
+   scan (deterministic block/log/fail). Include the injected out-of-scope request as a test (FR-S4).
+4. **Active-scan orchestration** — `runner/scan.py` ports the capture script's spider + bounded
+   active-scan calls, bounded to allow-listed hosts, emitting raw ZAP JSON into the existing
+   normalizer (FR-S1/S2). Closes the live ZAP→Norm path.
+5. **Evidence capture** — HAR + ≥1 screenshot per scan under
+   `security/dast/juice-shop/evidence/<scan-id>/`, referenced by the record's `evidence_path`
+   (FR-E1).
+6. **Packaging + version pins** — Containerfile bundling ZAP + Chromium + runner with one
+   documented command (NFR-5); a lock file pinning the Juice Shop image tag + ZAP + Playwright
+   versions (NFR-1). Then measure end-to-end < 15 min (FR-S5).
+7. **Wire the gate** — `runner/main.py` chaining preflight → replay → scope-enforced scan →
+   normalizer, then verify the minimum-viable-scanner gate criteria above.
+
 ### Checkpoint — end of Week 1
 Per the 3-week plan's team-split checkpoints: wire the real runner output into Engineer 1's
 already-built normalizer. This is a wiring exercise, not a rewrite, because both engineers coded to

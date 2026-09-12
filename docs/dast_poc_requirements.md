@@ -39,7 +39,7 @@ Most of the DAST-specific knowledge here is learnable *during* the POC, because 
 **Core prerequisites — both engineers**
 * Python proficiency: subprocess orchestration, JSON handling, and writing small, testable pure functions. This is the most-used skill on the POC.
 * JSON and data-contract thinking: comfort reading a schema and coding to it (`scope.json`, the normalized detection record, SARIF, ZAP output).
-* HTTP fundamentals:requests/responses, headers, cookies, status codes, query strings vs. POST bodies.
+* HTTP fundamentals:requests/responses, h eaders, cookies, status codes, query strings vs. POST bodies.
 * Git and pull-request workflow.
 * Basic command-line / shell use for installing and running the tools.
 
@@ -104,53 +104,72 @@ Read the diagram by color, not just by arrows. Every box falls into one of four 
 ```mermaid
 flowchart LR
   subgraph BUILD["🟩 Build (custom code you write)"]
-    Rec["record CLI"]
-    Gen["generate CLI"]
-    Val["validate CLI"]
-    Run["Scan runner (orchestration)"]
-    Norm["Normalizer + fingerprint"]
-    Exp["SARIF exporter"]
-    Diff["Lifecycle diff"]
+    Rec["record CLI<br/><br/>IN: app_url, credentials<br/>OUT: trace.json, index.json"]
+    Gen["generate CLI<br/><br/>IN: trace.json, index.json<br/>OUT: flow.py, scope.json<br/>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;auth.json, zap-policy<br/>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;manifest, lock"]
+    Val["validate CLI<br/><br/>IN: flow.py, scope.json<br/>&nbsp;&nbsp;&nbsp;&nbsp;scope.schema.json<br/>OUT: validation-report.json"]
+    Run["Scan runner<br/><br/>IN: flow.py, scope.json<br/>&nbsp;&nbsp;&nbsp;&nbsp;auth.json, zap-policy<br/>OUT: raw ZAP detections<br/>&nbsp;&nbsp;&nbsp;&nbsp;evidence (HAR, screenshots)"]
+    Norm["Normalizer + fingerprint<br/><br/>IN: raw ZAP JSON<br/>&nbsp;&nbsp;&nbsp;&nbsp;detection.schema.json<br/>OUT: normalized detection records<br/>&nbsp;&nbsp;&nbsp;&nbsp;(with stable fingerprints)"]
+    Exp["SARIF exporter<br/><br/>IN: normalized records<br/>OUT: SARIF 2.1.0 JSON"]
+    Diff["Lifecycle diff<br/><br/>IN: current fingerprints<br/>&nbsp;&nbsp;&nbsp;&nbsp;previous state file<br/>OUT: open/new/resolved labels"]
   end
 
   subgraph OSS["🟦 Reuse (open source — do not build)"]
-    PW["Playwright + Chromium"]
-    ZAP["OWASP ZAP (proxy + active scan)"]
+    PW["Playwright + Chromium<br/><br/>Driven by: record, validate, run<br/>Proxied through: ZAP"]
+    ZAP["OWASP ZAP (proxy + active scan)<br/><br/>Receives: authenticated requests<br/>from Playwright<br/>Outputs: detections.json"]
   end
 
   subgraph EXT["⬜ External systems / services (integrate only)"]
-    LLM["LLM API (e.g. Claude)"]
-    GH["GitHub Security tab"]
-    App["Pilot app (Juice Shop)"]
+    LLM["LLM API (e.g. Claude)<br/><br/>Input: trace + prompt<br/>Output: flow.py + scope.json"]
+    GH["GitHub Security tab<br/><br/>Input: SARIF file<br/>Displays: detections, severity,<br/>evidence links"]
+    App["Pilot app (Juice Shop)<br/><br/>Target of: record, validate, run"]
   end
 
-  subgraph DATA["🟨 Generated data (outputs, not components)"]
-    Art["Artifacts: flow.py, scope.json, auth.json, zap-policy, manifest, lock"]
-    SAR["SARIF file"]
-    Ev["Evidence: HAR + screenshots"]
-    State["Lifecycle state file"]
+  subgraph DATA["🟨 Generated data / Contracts (outputs, not components)"]
+    Art["Artifacts:<br/>• flow.py (Playwright script)<br/>• scope.json (targets + allow/deny)<br/>• scope.schema.json (validator)<br/>• auth.json (credentials)<br/>• zap-policy (scan config)<br/>• manifest.json (metadata)<br/>• lock (pinned versions)"]
+    SAR["SARIF file<br/>(GitHub-native format)"]
+    Ev["Evidence:<br/>• HAR (HTTP archive)<br/>• Screenshots"]
+    State["State file<br/>(fingerprints from last scan)"]
+    Schema["Schema Files:<br/>• scope.schema.json<br/>• detection.schema.json<br/>• sample_zap_output.json<br/>(example fixture)"]
   end
 
-  Rec -->|drives| PW
-  Rec --> App
-  Gen -->|calls| LLM
-  Gen --> Art
-  Val --> Art
-  Run -->|drives| PW
-  Run -->|drives| ZAP
-  ZAP --> App
-  Run --> Norm --> Exp --> SAR --> GH
-  Norm --> Diff --> State
-  Run --> Ev
+  Rec -->|orchestrates| PW
+  Rec -->|crawls| App
+  Rec -->|produces| Art
+  
+  Gen -->|reads trace<br/>from| Art
+  Gen -->|calls with<br/>trace + prompt| LLM
+  Gen -->|writes<br/>scope.json<br/>flow.py<br/>+ others| Art
+  
+  Val -->|loads| Art
+  Val -->|validates scope<br/>against schema| Schema
+  Val -->|orchestrates| PW
+  
+  Run -->|loads flow.py,<br/>scope.json| Art
+  Run -->|validates scope<br/>not prod| Schema
+  Run -->|routes through| ZAP
+  Run -->|orchestrates| PW
+  ZAP -->|scans| App
+  Run -->|produces raw<br/>detections| Norm
+  Run -->|captures| Ev
+  
+  Norm -->|loads sample/<br/>validates against| Schema
+  Norm -->|fingerprints +<br/>normalizes| Exp
+  
+  Exp -->|maps to| SAR
+  SAR -->|uploads| GH
+  
+  Norm -->|fingerprints| Diff
+  Diff -->|compares to| State
+  Diff -->|writes| State
 
-  classDef build fill:#d4f4d4,stroke:#2e7d32;
-  classDef oss fill:#d6e4ff,stroke:#1565c0;
-  classDef ext fill:#eeeeee,stroke:#616161;
-  classDef data fill:#fff4cc,stroke:#f9a825;
+  classDef build fill:#d4f4d4,stroke:#2e7d32,stroke-width:2px;
+  classDef oss fill:#d6e4ff,stroke:#1565c0,stroke-width:2px;
+  classDef ext fill:#eeeeee,stroke:#616161,stroke-width:2px;
+  classDef data fill:#fff4cc,stroke:#f9a825,stroke-width:2px;
   class Rec,Gen,Val,Run,Norm,Exp,Diff build;
   class PW,ZAP oss;
   class LLM,GH,App ext;
-  class Art,SAR,Ev,State data;
+  class Art,SAR,Ev,State,Schema data;
 ```
 
 ### 5.1 What to build vs. reuse vs. integrate
@@ -174,6 +193,32 @@ Of the boxes above, only seven are custom code (and several are thin), two are r
 | Artifacts, SARIF, evidence, state | 🟨 Generated data | Produced at runtime by the components above; nothing to "build". |
 
 The practical takeaway for estimation: budget your time against the seven green boxes, expect the **scan runner** to be the single largest item, and treat ZAP and Playwright as capabilities to learn and configure rather than software to write.
+
+### 5.2 JSON files in the contracts folder and their role in the architecture
+
+The `contracts/` folder contains schemas and fixtures that define the data contracts between components. Here is where each JSON file flows through the system:
+
+| File | Purpose | Produced by | Consumed by | Role |
+|------|---------|-------------|------------|------|
+| **scope.schema.json** | JSON Schema validator for scope.json | N/A (hand-authored) | `validate` CLI, scan runner | Ensures scope.json has required fields (`app_id`, `environment_class`, `fqdn_allow_list`, `fqdn_deny_list`, `avoid_action_list`) and rejects any prod scans. **Critical safety contract.** |
+| **scope.json** | Target configuration: allow-list, deny-list, avoid-actions, app_id, environment class | `generate` CLI (via LLM assistance) | `validate` CLI, scan runner | Defines which hosts/actions are in/out of scope. Scan runner validates this file exists and `environment_class != prod` before launching (FR-S3). |
+| **detection.schema.json** | JSON Schema validator for normalized detection records | N/A (hand-authored) | Normalizer, quality validation, tests | Defines the shape of each normalized detection: `{app_id, scan_id, fingerprint, rule_id, title, severity, cwe_id, endpoint, parameter, status, evidence_path}`. Used to validate normalizer output. |
+| **sample_zap_output.json** | Real ZAP output fixture (captures detections from a known scan) | Captured from ZAP daemon | Normalizer unit tests, spike proof-of-concept | Lets the normalizer and fingerprint logic be tested without running the full scan loop. Contains raw ZAP findings; used to validate normalization logic and refine prompt/scan configuration. |
+
+**Data flow of JSON files:**
+
+1. **Record phase:** `record` CLI produces `trace.json` (interactions) and `index.json` (page list) — these feed to `generate`.
+2. **Generate phase:** LLM reads the trace and produces `flow.py` and `scope.json`. The `scope.json` is validated against `scope.schema.json`.
+3. **Validate phase:** Loads and validates `scope.json` against `scope.schema.json` to ensure coverage; replays `flow.py` to confirm auth works.
+4. **Scan runner phase:** Loads `scope.json` and validates it is not prod; if invalid or missing, aborts. Runs scan, ZAP outputs raw detections (JSON).
+5. **Normalizer phase:** Ingests raw ZAP JSON and normalizes each detection to match `detection.schema.json` schema; computes stable fingerprint for each.
+6. **SARIF export phase:** Reads normalized records and emits SARIF 2.1.0 JSON for GitHub ingestion.
+7. **Lifecycle diff phase:** Reads current fingerprints and compares to previous `state.json`, labels each detection open/new/resolved, writes updated state file.
+
+**Validation and safety:**
+- `scope.schema.json` enforces that `environment_class` is not `"prod"` and that required allow-list/deny-list fields exist.
+- `detection.schema.json` ensures every normalized detection has the required fields for SARIF export and lifecycle diff.
+- `sample_zap_output.json` serves as a regression fixture for normalizer unit tests, so parsing logic remains stable even as ZAP is upgraded.
 
 ## 6. Functional requirements
 
