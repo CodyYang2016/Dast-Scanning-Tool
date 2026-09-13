@@ -63,29 +63,29 @@ Record the exact **Juice Shop image tag** and **ZAP version** in the lock file (
 
 ### Current build status (as of latest `main`)
 
-Recent commits delivered the **Phase 2 deterministic results pipeline** (Engineer 1's track) —
-`detections/` normalizer, fingerprint, SARIF export, GitHub upload, and lifecycle diff, all
-fixture-tested. **Phase 1 (the `runner/`) is almost entirely unbuilt.** Against the Phase 1
-component table, only the fixture and the proven ZAP API sequence exist:
+**Both phases are now built and verified.** The Phase 2 deterministic results pipeline
+(`detections/` normalizer, fingerprint, SARIF export, GitHub upload, lifecycle diff) and the
+**entire Phase 1 `runner/`** are implemented and tested (107 objective tests). The whole loop
+runs from a single containerized command and passes the Phase 1 gate end-to-end.
 
-| Phase 1 component | Status | Remaining |
-|-------------------|--------|-----------|
-| Hand-authored `flow.py` | ❌ missing | Playwright login + one authenticated journey |
-| ZAP proxy integration | ⚠️ partial | ZAP **API** sequence proven in `capture_zap_fixture.sh`; nothing routes Playwright **through the ZAP proxy** |
-| Authentication & request replay | ❌ missing | Critical-path spike — no Playwright driver / auth replay |
-| Active scan | ⚠️ partial | Spider + bounded ascan proven in capture script; not yet a runner component |
-| Expected high/medium detection | ⚠️ data path only | Fixture→normalizer proven; not yet produced by a **live** scan |
-| Unsafe-configuration preflight | ❌ missing | `scope.json` / no-env / prod abort before traffic |
-| Block, log, fail on out-of-scope | ❌ missing | Proxy/interceptor allow/deny enforcement + structured log |
-| Pinned Juice Shop/ZAP versions | ❌ missing | No lock file in repo |
+| Phase 1 component | Status | Where / evidence |
+|-------------------|--------|------------------|
+| Hand-authored `flow.py` | ✅ done | `security/dast/juice-shop/flow.py` — register → form login → authenticated view |
+| ZAP proxy integration | ✅ done | `runner/replay.py` routes Chromium through the ZAP proxy; ZAP records the traffic |
+| Authentication & request replay | ✅ done | live-verified: ZAP saw the login POST + 8 `Authorization: Bearer` requests |
+| Active scan | ✅ done | `runner/scan.py` (spider + bounded ascan, host-bounded) → raw ZAP JSON |
+| Expected high/medium detection | ✅ done | live scan → normalizer produced high/medium detections (gate `has_high_or_medium`) |
+| Unsafe-configuration preflight | ✅ done | `runner/preflight.py` — aborts on missing/no-env/prod/no-allow-list before traffic |
+| Block, log, fail on out-of-scope | ✅ done | `runner/scope_guard.py` — `page.route` block/log/fail; injected off-list host blocked live |
+| Pinned Juice Shop/ZAP versions | ✅ done | `versions.lock` (images pinned by digest) |
 | `sample_zap_output.json` fixture | ✅ done | 38 alerts, 1 High SQLi — committed |
-| HAR & screenshots | ❌ missing | Evidence capture per scan |
-| Containerized single-command run | ❌ missing | No Containerfile |
-| 15-minute performance target | ❌ not measurable | Depends on the runner existing |
+| HAR & screenshots | ✅ done | `runner/evidence.py` — HAR + screenshot per scan, **redacted**, referenced from records/SARIF |
+| Containerized single-command run | ✅ done | `Containerfile` + `compose.yaml`; `docker compose up …` → gate passed, `out/records.json` |
+| 15-minute performance target | ✅ met | measured runner wall-clock ≈ 3m36s |
 
-**Reusable head start:** `runner/capture_zap_fixture.sh` already proves the exact ZAP API
-choreography the runner needs (`accessUrl` → spider → bounded `ascan` → alerts export, bounded to
-the pilot host). Port it into Python and wrap it with Playwright + safety.
+**Gate result (verified):** `docker compose up --build --abort-on-container-exit --exit-code-from
+runner` → `{authenticated: true, scope_ok: true, has_high_or_medium: true, detections: 1351,
+passed: true}`, exit 0. Details in `docs/junior_engineer/testing_and_running_roadmap.md`.
 
 ### Completion plan for Phase 1
 
