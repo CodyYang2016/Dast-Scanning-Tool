@@ -39,10 +39,10 @@ before the risky auth-replay spike.
 
 | # | Component | File | FRs | Testability | Status |
 |---|-----------|------|-----|-------------|--------|
-| 1 | **Preflight safety gate** | `runner/preflight.py` | S3, NFR-2 | **pure — test-first** | ← building now |
-| 2 | Hand-authored flow + auth replay | `security/dast/juice-shop/flow.py`, `runner/replay.py` | S1, R2 | live (spike) | todo |
-| 3 | Request-boundary scope enforcement | `runner/scope_guard.py` | S4, NFR-4 | mostly pure — test-first | todo |
-| 4 | Active-scan orchestration | `runner/scan.py` | S1, S2 | live; ports capture script | todo |
+| 1 | **Preflight safety gate** | `runner/preflight.py` | S3, NFR-2 | **pure — test-first** | ✅ done |
+| 2 | Hand-authored flow + auth replay | `security/dast/juice-shop/flow.py`, `runner/replay.py` | S1, R2 | live (spike) | ✅ done |
+| 3 | Request-boundary scope enforcement | `runner/scope_guard.py` | S4, NFR-4 | mostly pure — test-first | ✅ done |
+| 4 | Active-scan orchestration | `runner/scan.py` | S1, S2 | live; ports capture script | ← next |
 | 5 | Evidence capture | `runner/evidence.py` | E1 | live | todo |
 | 6 | Packaging + version pins | `Containerfile`, lock file | NFR-5, NFR-1 | manual | todo |
 | 7 | Wire the gate | `runner/main.py` | all | integration | todo |
@@ -224,3 +224,40 @@ Plus a **"does it bite?"** check: make `check()` always allow and confirm the bl
 pytest tests/test_scope_guard.py -q     # green only once implemented
 pytest -q
 ```
+
+---
+
+## 9. Component 2 — auth replay (`runner/replay.py` + flow) — LIVE-VALIDATED
+
+Not test-first (agreed): this is the integration spike. Validated by driving the real
+containers and confirming ZAP observes authenticated traffic. Only the pure `load_flow` helper
+has unit tests (`tests/test_replay.py`); the browser path is exercised live.
+
+### What it does
+`runner/replay.py` launches Chromium with its proxy pointed at the ZAP daemon, attaches the
+scope guard as a `page.route` interceptor (safety layer 2), runs preflight first (safety layer
+1), then executes the hand-authored `security/dast/juice-shop/flow.py`: register a test user →
+form login → visit an authenticated view (`#/basket`) → `whoami`.
+
+### Topology decision (why the app scope allow-lists `juice`, not `localhost`)
+The browser is proxied through ZAP, so **ZAP resolves the target host, not the browser**. With
+ZAP in a container on the `dast` network, the reachable target is `http://juice:3000`
+(`localhost:3000` would resolve to ZAP's own container). So the app scope
+(`security/dast/juice-shop/scope.json`) allow-lists **`juice`**. The canonical
+`contracts/scope.json` still uses `localhost` as the documented example; **step 6
+(containerization) unifies these** by running the browser + ZAP + target under one host view.
+Recorded as decision D7.
+
+### Verified live (2026-09-13)
+```
+python -m runner.replay --scope security/dast/juice-shop/scope.json \
+  --flow security/dast/juice-shop/flow.py --base-url http://juice:3000
+# result: authenticated=true, whoami 200 (dast-poc@juice-sh.op), 56 requests, 0 blocked
+```
+ZAP's history confirmed: the `POST /rest/user/login` and **8 authenticated requests**
+(`Authorization: Bearer`, incl. `/rest/user/whoami`, `/rest/basket/6`) — FR-S1 "an
+authenticated request is visible in ZAP" met.
+
+### Runtime dependency
+`playwright` + a Chromium download (`playwright install chromium`) — see `requirements.txt`.
+Imported lazily in `replay()` so the rest of the suite runs without a browser.

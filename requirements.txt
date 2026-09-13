@@ -1,0 +1,3 @@
+# Runtime dependencies for the DAST POC.
+jsonschema>=4          # scope/detection schema validation (preflight, contracts)
+playwright>=1.40       # browser automation for auth replay (run: playwright install chromium)

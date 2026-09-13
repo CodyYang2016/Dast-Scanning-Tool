@@ -13,6 +13,7 @@ should make us act.
 - D4 — FR-S4 out-of-scope policy: block, log, fail
 - D5 — scope granularity is host-based for the POC
 - D6 — scope matching: exact allow, wildcard deny, deny-precedence, fail-closed
+- D7 — replay topology: browser proxied through ZAP → app scope allow-lists `juice`
 - KI1 — endpoint_pattern id-collapsing heuristic (deferred fix)
 - KI2 — scope-enforcement edge cases (deferred)
 
@@ -158,6 +159,26 @@ and fail-closed both bias toward *not* sending traffic when uncertain — the NF
 `test_port_ignored`, `test_scheme_ignored`. If wildcard *allow* is ever needed, add it
 explicitly with tests — don't silently widen exact matching. Port/scheme sensitivity and other
 host forms are the deferred KI2 edge cases.
+
+---
+
+## D7 — Replay topology: browser proxied through ZAP; app scope allow-lists `juice` (ADOPTED)
+
+**Decision.** In `runner/replay.py`, Chromium is proxied through the ZAP daemon, so **ZAP
+resolves the target host**. With ZAP in a container on the `dast` network, the reachable target
+is `http://juice:3000`; therefore the app scope `security/dast/juice-shop/scope.json`
+allow-lists **`juice`**. The canonical `contracts/scope.json` keeps `localhost` as the
+documented example.
+
+**Why.** A browser using an HTTP proxy hands the full URL to the proxy for DNS. `localhost`
+from inside the ZAP container is ZAP itself, not Juice Shop — so the browser must request
+`juice:3000`, which only resolves inside the docker network (at ZAP).
+
+**How to interrogate / when it changes.** Step 6 (containerization) bundles browser + ZAP +
+target under one host view, at which point `localhost` works uniformly and the app scope can
+collapse back to the canonical value. Until then, two scope instances coexist by design:
+`contracts/scope.json` (example, `localhost`) and the app scope (`juice`). Both pass preflight
+and the same schema.
 
 ---
 
