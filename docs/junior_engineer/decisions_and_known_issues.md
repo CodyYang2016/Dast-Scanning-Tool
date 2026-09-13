@@ -6,6 +6,17 @@ should make us act.
 
 ---
 
+## Index
+- D1 — stream by default (scalability convention)
+- D2 — runner safety model: two independent layers, fail-closed
+- D3 — production rejection is explicit + case-insensitive (defense-in-depth)
+- D4 — FR-S4 out-of-scope policy: block, log, fail
+- D5 — scope granularity is host-based for the POC
+- KI1 — endpoint_pattern id-collapsing heuristic (deferred fix)
+- KI2 — scope-enforcement edge cases (deferred)
+
+---
+
 ## D1 — Scalability convention: stream by default (ADOPTED)
 
 **Decision.** Pipeline stages process detections as a **stream**, never materializing the
@@ -66,3 +77,74 @@ and `endpoint_pattern` feeds the **frozen fingerprint** — changing it is a con
 segments, or (b) shows fingerprint churn / collisions across two scans of an unchanged app.
 Treat any change as a fingerprint-contract change: bump `fingerprint_version` and re-pin the
 worked examples in `contracts/README.md` (per that file's change policy).
+
+---
+
+## D2 — Runner safety model: two independent layers, fail-closed (ADOPTED)
+
+**Decision.** The runner never relies on a single check to keep traffic safe (NFR-2). Two
+independent layers:
+1. **Preflight** (`runner/preflight.py`) — validates `scope.json` *before any traffic* and
+   aborts on unsafe config (built now; FR-S3).
+2. **Request-boundary enforcement** — a Playwright `page.route` interceptor that blocks any
+   non-allow-listed host *during* the scan (component 3; FR-S4).
+
+Both **fail closed**: any doubt → raise `PreflightError` / non-zero exit / blocked request.
+`check_scope` is a pure function (dict in, raise/return) so the safety logic is unit-tested
+with no I/O, independent of the schema and the filesystem.
+
+**Why.** A single guardrail is one bug away from sending unsafe traffic. Layering means a
+defect in one still leaves the other standing.
+
+**How to interrogate later.** See `tests/test_preflight.py` (adversarial: prod, missing/empty
+allow-list, missing file, schema violations) and `runner_design.md` §2. To revisit, change the
+layer boundaries there and re-run the safety suite.
+
+## D3 — Production rejection is explicit + case-insensitive (ADOPTED)
+
+**Decision.** `check_scope` rejects `environment_class` ∈ {`prod`, `production`} (any case),
+*in addition to* the schema enum (`dev|test|staging`). It does not rely on the schema alone.
+
+**Why.** The schema is editable; a well-meaning change could add `prod` to the enum and
+silently enable production scanning — the exact catastrophe NFR-2 forbids. The explicit
+denylist is defense-in-depth so that can't happen from a schema edit.
+
+**How to interrogate later.** `_PROD_VALUES` in `runner/preflight.py`; tests
+`test_prod_aborts` / `test_prod_case_insensitive_aborts`. If the org uses other production
+labels (e.g. `live`, `prd`), add them to `_PROD_VALUES` (and a test) — don't loosen it.
+
+## D4 — FR-S4 out-of-scope policy: block, log, fail (ADOPTED)
+
+**Decision.** An in-flight request to a non-allow-listed (or deny-listed) host is **blocked,
+logged, and fails the scan** (non-zero exit) — not block-and-continue.
+
+**Why.** For a safety POC, an out-of-scope request is a scope violation, not a warning; the
+scan result is only trustworthy if the boundary held. Failing loudly surfaces
+misconfiguration immediately.
+
+**How to interrogate later.** Enforced by component 3 (`runner/scope_guard.py`, todo). If a
+"block-and-continue" mode is ever wanted (e.g. noisy third-party assets), add it as an
+explicit opt-in flag, never the default.
+
+## D5 — Scope granularity is host-based for the POC (ADOPTED, with a known gap)
+
+**Decision.** The allow/deny lists match on **host** (per `scope.schema.json`). Scheme, port,
+path, redirects, IPv6/IP-literal forms are not part of matching for the POC.
+
+**Why.** Host-based matching is enough to demonstrate the guardrail on the single pinned pilot
+app; a full matching matrix is production hardening (out of scope, requirements §3.2).
+
+**How to interrogate later.** See KI2 for the deferred edge cases and the trigger to expand.
+
+---
+
+## KI2 — Scope-enforcement edge cases (DEFERRED)
+
+**Issue.** Host-only matching (D5) does not handle: alternate ports, scheme differences,
+redirect chains to out-of-scope hosts, host aliases, IPv6/IP-literal forms.
+
+**Why deferred.** Not exercised by the pilot app; production hardening per requirements §3.2.
+
+**Trigger to act.** Onboarding any target where these forms occur, or any evidence a request
+slipped the host-only check. Expansion goes in `runner/scope_guard.py` with adversarial tests
+per new form.
