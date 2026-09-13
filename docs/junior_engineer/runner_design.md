@@ -42,7 +42,7 @@ before the risky auth-replay spike.
 | 1 | **Preflight safety gate** | `runner/preflight.py` | S3, NFR-2 | **pure — test-first** | ✅ done |
 | 2 | Hand-authored flow + auth replay | `security/dast/juice-shop/flow.py`, `runner/replay.py` | S1, R2 | live (spike) | ✅ done |
 | 3 | Request-boundary scope enforcement | `runner/scope_guard.py` | S4, NFR-4 | mostly pure — test-first | ✅ done |
-| 4 | Active-scan orchestration | `runner/scan.py` | S1, S2 | live; ports capture script | ← next |
+| 4 | Active-scan orchestration | `runner/scan.py` | S1, S2 | live; ports capture script | ✅ done |
 | 5 | Evidence capture | `runner/evidence.py` | E1 | live | todo |
 | 6 | Packaging + version pins | `Containerfile`, lock file | NFR-5, NFR-1 | manual | todo |
 | 7 | Wire the gate | `runner/main.py` | all | integration | todo |
@@ -261,3 +261,31 @@ authenticated request is visible in ZAP" met.
 ### Runtime dependency
 `playwright` + a Chromium download (`playwright install chromium`) — see `requirements.txt`.
 Imported lazily in `replay()` so the rest of the suite runs without a browser.
+
+---
+
+## 10. Component 4 — active-scan orchestration (`runner/scan.py`) — LIVE-VALIDATED
+
+Python port of `runner/capture_zap_fixture.sh`: `accessUrl` → spider → bounded active-scan →
+alerts export, using the stdlib (`urllib`) — no new deps. The DOM-XSS scanner (40026) is
+disabled and scan/rule durations are capped, same as the capture script.
+
+### Safety
+`scan()` refuses out-of-scope targets **before touching ZAP**: the target host must be in the
+scope allow-list, else `ScanScopeError` (NFR-2). This is the one pure branch and it's unit
+tested (`tests/test_scan.py`) with an *exploding* ZAP URL, proving no traffic on refusal.
+
+### Output
+Emits raw ZAP alerts (`{"alerts": [...]}`) — the exact shape the normalizer already consumes,
+so the live path is `scan.py → detections/normalizer.py` with no glue.
+
+### Verified live (2026-09-13)
+Ran replay (populate ZAP with authenticated traffic) → `runner/scan.py` (bounded active scan) →
+`detections/normalizer.py`. Real result: **16,181 raw alerts → 16,181 detection records**,
+1 High (SQL Injection, `/rest/products/search`). The streaming normalizer (D1) handled 16k
+records with no memory issue — closing the **live scan → detection** path (no fixture).
+
+### Known consideration
+ZAP accumulates alerts across a session, so counts grow run-over-run (the 16k reflects the
+whole session). A clean per-scan result wants a fresh ZAP session or a scan-scoped export —
+folded into step 7 (`runner/main.py`) / step 6 (containerized single-shot run).
