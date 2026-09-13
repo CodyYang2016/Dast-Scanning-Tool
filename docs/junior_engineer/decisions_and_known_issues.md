@@ -12,6 +12,7 @@ should make us act.
 - D3 — production rejection is explicit + case-insensitive (defense-in-depth)
 - D4 — FR-S4 out-of-scope policy: block, log, fail
 - D5 — scope granularity is host-based for the POC
+- D6 — scope matching: exact allow, wildcard deny, deny-precedence, fail-closed
 - KI1 — endpoint_pattern id-collapsing heuristic (deferred fix)
 - KI2 — scope-enforcement edge cases (deferred)
 
@@ -135,6 +136,28 @@ path, redirects, IPv6/IP-literal forms are not part of matching for the POC.
 app; a full matching matrix is production hardening (out of scope, requirements §3.2).
 
 **How to interrogate later.** See KI2 for the deferred edge cases and the trigger to expand.
+
+---
+
+## D6 — Scope matching rules: exact allow, wildcard deny, deny-precedence, fail-closed (ADOPTED)
+
+**Decision.** The request-boundary guard (`runner/scope_guard.py`) matches on **host** (D5)
+with these precise rules:
+- **allow-list** = exact host, **case-insensitive** (no wildcards);
+- **deny-list** = **wildcard** patterns via `fnmatch` (e.g. `*.google-analytics.com`);
+- **deny precedence** — a deny match blocks even an allow-listed host;
+- **scheme and port are ignored** (`http://localhost:3000` ≡ host `localhost`);
+- **fail closed** — a request with no parseable host is blocked.
+
+**Why.** Exact allow keeps the in-scope set unambiguous and small (the pilot has one host);
+wildcard deny is what real deny-lists look like (whole analytics/ad domains). Deny-precedence
+and fail-closed both bias toward *not* sending traffic when uncertain — the NFR-2 stance.
+
+**How to interrogate later.** `ScopeGuard._evaluate` in `runner/scope_guard.py`; tests
+`test_denylist_wildcard_blocks`, `test_deny_precedence_over_allow`, `test_no_host_blocked`,
+`test_port_ignored`, `test_scheme_ignored`. If wildcard *allow* is ever needed, add it
+explicitly with tests — don't silently widen exact matching. Port/scheme sensitivity and other
+host forms are the deferred KI2 edge cases.
 
 ---
 
