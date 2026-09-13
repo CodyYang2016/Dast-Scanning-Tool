@@ -15,3 +15,6 @@ zap-report.*
 .DS_Store
 .idea/
 .vscode/
+
+# Runner output
+out/

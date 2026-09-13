@@ -44,7 +44,7 @@ before the risky auth-replay spike.
 | 3 | Request-boundary scope enforcement | `runner/scope_guard.py` | S4, NFR-4 | mostly pure — test-first | ✅ done |
 | 4 | Active-scan orchestration | `runner/scan.py` | S1, S2 | live; ports capture script | ✅ done |
 | 5 | Evidence capture | `runner/evidence.py` | E1 | live + pure redactor | ✅ done |
-| 6 | Packaging + version pins | `Containerfile`, lock file | NFR-5, NFR-1 | manual | ← last |
+| 6 | Packaging + version pins | `Containerfile`, `compose.yaml`, `versions.lock` | NFR-5, NFR-1 | authored | ✅ done* |
 | 7 | Wire the gate | `runner/main.py` | all | integration | ✅ done |
 
 **Reusable head start:** `runner/capture_zap_fixture.sh` already proves the exact ZAP API
@@ -351,3 +351,41 @@ path. Gate still passed.
 Local evidence is gitignored. Before publishing evidence externally (CI artifact / SARIF
 link), it is already redacted at capture — but confirm the destination is access-controlled
 (demo plan Phase 2). Durable/governed evidence hosting remains a documented gap.
+
+---
+
+## 13. Component 6 — packaging + version pins (NFR-5, NFR-1) — AUTHORED
+
+**\*Authored, not built here.** The Containerfile/compose are written and the compose file
+validates (`docker compose config`), but the image build + full run is left for you to execute
+in your environment (large multi-GB build; the "single command" is best proven where it'll run).
+
+### Files
+- `Containerfile` — runner image: base `mcr.microsoft.com/playwright/python:v1.62.0-jammy`
+  (pins Playwright + Chromium), `pip install -r requirements.txt`, copies the code;
+  entrypoint `python -m runner.main`.
+- `compose.yaml` — three services on one network: `juice` (pinned by digest, healthchecked via
+  node), `zap` (pinned by digest; `-silent` + `api.addrs` allow-list), `runner` (built here,
+  `depends_on` juice healthy). Records land in `./out/records.json` (gitignored).
+- `versions.lock` — the reproducibility pin (NFR-1): juice + zap **image digests**, ZAP
+  2.17.0, Playwright 1.62.0, Chromium build 1234, Python 3.12.
+
+### The single command (NFR-5)
+```bash
+docker compose up --build --abort-on-container-exit --exit-code-from runner
+# builds the runner, starts juice + zap, runs the scan, and exits with the Phase 1 gate code
+```
+
+### Readiness
+`runner/main.py` `wait_ready()` polls the ZAP API and the target before scanning, so container
+start-ordering can't cause a flaky first run (returns immediately when already up locally).
+Compose also gates the runner on `juice: service_healthy`.
+
+### Why digests, not tags
+`bkimminich/juice-shop:latest` and `zaproxy/zap-stable:latest` move over time; pinning by
+`@sha256:...` makes a scan reproducible regardless of when it runs (NFR-1). Bump deliberately
+via PR when upgrading, and re-verify the fingerprint worked examples if ZAP output shifts.
+
+### Remaining to fully close NFR-5/1 (your run)
+Build + run the compose stack once, confirm the gate exits 0 and `out/records.json` appears,
+and record the measured end-to-end time against the 15-minute budget (FR-S5).

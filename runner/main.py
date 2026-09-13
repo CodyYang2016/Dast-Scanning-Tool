@@ -16,6 +16,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -33,6 +35,29 @@ def _scan_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
+def _reachable(url: str, timeout: float = 3.0) -> bool:
+    try:
+        urllib.request.urlopen(url, timeout=timeout)
+        return True
+    except Exception:
+        return False
+
+
+def wait_ready(zap_api: str, base_url: str, timeout: float = 120.0, interval: float = 2.0) -> None:
+    """Poll until both the ZAP API and the target are reachable (robust containerized start).
+
+    Returns immediately when they're already up (the local dev case); raises after `timeout`.
+    """
+    zap_version = zap_api.rstrip("/") + "/JSON/core/view/version/"
+    end = time.monotonic() + timeout
+    while True:
+        if _reachable(zap_version) and _reachable(base_url):
+            return
+        if time.monotonic() >= end:
+            raise RuntimeError(f"services not ready within {timeout:.0f}s (zap={zap_api}, target={base_url})")
+        time.sleep(interval)
+
+
 def evaluate_gate(authenticated: bool, scope_ok: bool, records: list[dict]) -> dict:
     """Phase 1 gate: authenticated + in-scope + >=1 high/medium detection. Pure/testable."""
     has_high_or_medium = any(r["severity"] in ("critical", "high", "medium") for r in records)
@@ -46,9 +71,11 @@ def evaluate_gate(authenticated: bool, scope_ok: bool, records: list[dict]) -> d
 
 
 def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
-        fresh=True, do_spider=True, max_scan_min=4):
+        fresh=True, do_spider=True, max_scan_min=4, wait=True):
     """Execute the full loop. Returns (scope, replay_result, guard, records, scan_id)."""
-    scope = preflight(scope_path, schema)              # safety layer 1
+    scope = preflight(scope_path, schema)              # safety layer 1 (offline; fail fast)
+    if wait:
+        wait_ready(zap_api, base_url)                  # tolerate container startup ordering
     scan_id = _scan_id()
     app_dir = str(Path(scope_path).resolve().parent)   # evidence lives under the app dir
     ev_dir = evidence.evidence_dir(app_dir, scan_id)    # FR-E1
@@ -84,6 +111,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--records-out", default=None, help="Write detection records here")
     p.add_argument("--no-spider", action="store_true")
     p.add_argument("--no-fresh", action="store_true", help="Do not reset the ZAP session first")
+    p.add_argument("--no-wait", action="store_true", help="Do not wait for ZAP/target readiness")
     p.add_argument("--max-scan-min", type=int, default=4)
     args = p.parse_args(argv)
 
@@ -91,6 +119,7 @@ def main(argv: list[str] | None = None) -> int:
         scope, result, guard, records, scan_id = run(
             args.scope, args.schema, args.flow, args.base_url, args.zap_api, args.zap_proxy,
             fresh=not args.no_fresh, do_spider=not args.no_spider, max_scan_min=args.max_scan_min,
+            wait=not args.no_wait,
         )
     except (PreflightError, ScanScopeError, ScopeViolation) as exc:
         print(f"RUNNER ABORT: {exc}", file=sys.stderr)
