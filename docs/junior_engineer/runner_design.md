@@ -141,3 +141,86 @@ pytest tests/test_preflight.py -q      # green only once implemented
 pytest -q                               # whole suite stays green
 python -m runner.preflight --scope contracts/scope.json   # exit 0
 ```
+
+---
+
+## 8. Component 3 — `runner/scope_guard.py` (FROZEN test-first spec)
+
+**Built test-first.** The **second, independent** safety layer (D2): where preflight validates
+config before traffic, the scope guard enforces the boundary **on every in-flight request**
+during the scan — the FR-S4 / NFR-4 guardrail. The decision logic and the block/log/fail
+bookkeeping are pure and unit-tested; only the `page.route` wiring into a live Playwright page
+is integration (and even that is tested with a fake route object).
+
+### Purpose
+Block any request to a host not in `fqdn_allow_list` (or matching `fqdn_deny_list`), **log**
+each decision (NFR-4), and **fail** the scan if any violation occurred (D4 / FR-S4).
+
+### Frozen decisions
+- **Host-based matching (D5):** compare on hostname only; **scheme and port are ignored**
+  (`http://localhost:3000` and `https://localhost` both match host `localhost`).
+- **Allow-list = exact host, case-insensitive.** Deny-list = **wildcard** patterns via
+  `fnmatch` (e.g. `*.google-analytics.com`).
+- **Deny precedence:** a host matching the deny-list is blocked even if it is allow-listed.
+- **Fail closed:** a request with no parseable host is **blocked** ("no host").
+- **Block / log / fail (D4):** blocked requests are recorded as violations; `route_handler`
+  aborts them; `raise_if_violated()` fails the scan afterward (the runner calls it).
+- **Structured decision record (NFR-4):** each decision carries `allowed`, `url`, `host`,
+  `reason`.
+
+### Frozen API
+```python
+# runner/scope_guard.py
+
+class ScopeViolation(Exception): ...
+
+@dataclass
+class Decision:
+    allowed: bool
+    url: str
+    host: str | None
+    reason: str
+
+def host_of(url: str) -> str | None:            # hostname, lowercased, port stripped; None if absent
+
+class ScopeGuard:
+    def __init__(self, scope: dict): ...
+    def check(self, url: str) -> Decision:       # records + logs; appends to violations if blocked
+    @property
+    def decisions(self) -> list[Decision]: ...
+    @property
+    def violations(self) -> list[Decision]: ...
+    @property
+    def ok(self) -> bool: ...                    # no violations
+    def raise_if_violated(self) -> None: ...      # raise ScopeViolation if any (FR-S4 "fail")
+    def route_handler(self, route) -> None: ...   # Playwright: allowed -> route.continue_(); else route.abort()
+```
+
+### Frozen objective tests (`tests/test_scope_guard.py`)
+Oracle = hand-defined scope + URLs with known allow/block outcomes (host/set logic).
+
+| Test | Asserts |
+|------|---------|
+| `test_allowlisted_host_allowed` | host in allow-list → allowed |
+| `test_non_allowlisted_host_blocked` | host not in allow-list → blocked |
+| `test_denylist_wildcard_blocks` | `*.google-analytics.com` blocks `www.google-analytics.com` |
+| `test_deny_precedence_over_allow` | host in allow AND deny → blocked |
+| `test_port_ignored` | `http://localhost:3000` allowed when `localhost` allow-listed |
+| `test_scheme_ignored` | `https://localhost` allowed same as `http` |
+| `test_host_case_insensitive` | `LOCALHOST` allowed |
+| `test_no_host_blocked` | url with no host → blocked (fail closed) |
+| `test_check_records_decision` | `check()` appends to `decisions` |
+| `test_violation_recorded_and_ok_false` | a block → `violations` non-empty, `ok` is False |
+| `test_raise_if_violated` | raises after a block; does not raise when clean |
+| `test_route_handler_allows` | fake in-scope route → `continue_` called, not `abort` |
+| `test_route_handler_blocks` | fake out-of-scope route → `abort` called, not `continue_` |
+| `test_injected_out_of_scope_blocked` | FR-S4: injected off-list host is blocked + fails |
+| `test_decision_has_structured_fields` | NFR-4: decision has allowed/url/host/reason |
+
+Plus a **"does it bite?"** check: make `check()` always allow and confirm the block tests fail.
+
+### Verify (after implementation)
+```bash
+pytest tests/test_scope_guard.py -q     # green only once implemented
+pytest -q
+```
