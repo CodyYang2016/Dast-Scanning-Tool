@@ -11,13 +11,9 @@ services:
   juice:
     image: bkimminich/juice-shop@sha256:73c53fbf442e8337b3ea3d98c7e8550308854701ebdfce4cc39768f36b75430e
     networks: [dast]
-    healthcheck:
-      # node is present in the juice-shop image; check the app answers on :3000.
-      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3000',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\""]
-      interval: 10s
-      timeout: 5s
-      retries: 18
-      start_period: 20s
+    # No compose healthcheck: the juice-shop image is distroless (no /bin/sh), so shell-based
+    # healthchecks can't run. Readiness is handled by the runner's wait_ready() instead, which
+    # polls http://juice:3000 (and the ZAP API) before scanning.
 
   zap:
     image: zaproxy/zap-stable@sha256:781a2bdaea47324e7bab583e2263f21d257b0aee61ed51521a5be45f5f5081ef
@@ -33,12 +29,13 @@ services:
     build:
       context: .
       dockerfile: Containerfile
-    depends_on:
-      juice:
-        condition: service_healthy   # wait until the app actually serves
-      zap:
-        condition: service_started   # runner's wait_ready() then polls the ZAP API
+    # Both only need to have STARTED; the runner's wait_ready() polls until each actually
+    # serves (juice-shop is distroless so a compose healthcheck isn't possible — see above).
+    depends_on: [juice, zap]
     networks: [dast]
+    environment:
+      # Chromium runs as root with a small /dev/shm in-container; enable the needed flags.
+      RUNNER_CHROMIUM_NO_SANDBOX: "1"
     command:
       - "--scope=security/dast/juice-shop/scope.json"
       - "--flow=security/dast/juice-shop/flow.py"

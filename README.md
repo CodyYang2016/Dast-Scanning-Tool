@@ -6,8 +6,8 @@ normalize the findings with stable fingerprints, and publish them to the GitHub 
 with lifecycle tracking across scans.
 
 **Status: the full loop works end-to-end on real data.** All four demo proof points are
-achievable; 107 automated tests pass; the containerized single-command run is authored (build
-it in your environment to close the packaging requirement).
+achievable; 107 automated tests pass; the **containerized single-command run is verified**
+(`docker compose up` → gate passed, 1351 detections, ~3m36s, well under the 15-min budget).
 
 ## The four proof points (definition of done)
 
@@ -115,6 +115,7 @@ cookies, tokens, passwords) at capture, before anything could publish them.
 | Doc (`docs/junior_engineer/`) | What |
 |---|---|
 | `remaining_work_plan.md` | The 3-week scope + component inventory |
+| `testing_and_running_roadmap.md` | How to run/test (both paths), verification checklist, containerization issues + fixes |
 | `validation_and_testing.md` | Objective-testing method, catalogue, acceptance checklist |
 | `reproducing_the_sample.md` | Regenerate the ZAP fixture from scratch |
 | `sarif_exporter_design.md`, `github_upload_design.md`, `lifecycle_diff_design.md` | Results-pipeline component designs |
@@ -129,5 +130,5 @@ Background specs: `docs/dast_poc_requirements.md`, `dast_poc_3week_plan.md`,
 
 - `endpoint_pattern` id-collapsing is a heuristic (KI1) — per-app route config / OpenAPI later.
 - Scope matching is host-based (KI2) — scheme/port/redirect/IPv6 edge cases deferred.
-- Durable/governed evidence hosting beyond a local/CI artifact.
-- The containerized build + a timed run vs the 15-minute budget (FR-S5) — run it to confirm.
+- Durable/governed evidence hosting beyond a local/CI artifact; evidence isn't volume-mounted
+  out of the compose runner (add a volume to persist it).

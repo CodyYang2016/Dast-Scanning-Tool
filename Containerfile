@@ -4,12 +4,10 @@ FROM mcr.microsoft.com/playwright/python:v1.62.0-jammy
 
 WORKDIR /app
 
-# Runtime deps (jsonschema; playwright is already in the base image).
+# Runtime deps. Playwright is pinned to the base image's version (1.62.0), so its bundled
+# Chromium already matches — no browser re-download needed.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Ensure the Chromium matching our Playwright version is present (no-op on the base image).
-RUN python -m playwright install chromium
 
 # Application code + contracts + the pilot flow/scope.
 COPY pyproject.toml .

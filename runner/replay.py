@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -46,9 +47,14 @@ def replay(scope: dict, flow_module, base_url: str, zap_proxy: str, headless: bo
     before it is published (see runner/evidence.py)."""
     from playwright.sync_api import sync_playwright  # imported lazily so tests don't need it
 
+    # In a container Chromium runs as root and with a small /dev/shm; both need flags. Gated by
+    # an env var so local (non-root) runs are unaffected. Compose sets RUNNER_CHROMIUM_NO_SANDBOX=1.
+    launch_args = ["--no-sandbox", "--disable-dev-shm-usage"] if os.environ.get(
+        "RUNNER_CHROMIUM_NO_SANDBOX") else []
+
     guard = ScopeGuard(scope)
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=headless, proxy={"server": zap_proxy})
+        browser = pw.chromium.launch(headless=headless, proxy={"server": zap_proxy}, args=launch_args)
         ctx_kwargs = {"ignore_https_errors": True}
         if evidence_dir:
             ctx_kwargs["record_har_path"] = str(Path(evidence_dir) / "active-scan.har")
