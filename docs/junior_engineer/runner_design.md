@@ -43,8 +43,8 @@ before the risky auth-replay spike.
 | 2 | Hand-authored flow + auth replay | `security/dast/juice-shop/flow.py`, `runner/replay.py` | S1, R2 | live (spike) | ✅ done |
 | 3 | Request-boundary scope enforcement | `runner/scope_guard.py` | S4, NFR-4 | mostly pure — test-first | ✅ done |
 | 4 | Active-scan orchestration | `runner/scan.py` | S1, S2 | live; ports capture script | ✅ done |
-| 5 | Evidence capture | `runner/evidence.py` | E1 | live | todo |
-| 6 | Packaging + version pins | `Containerfile`, lock file | NFR-5, NFR-1 | manual | todo |
+| 5 | Evidence capture | `runner/evidence.py` | E1 | live + pure redactor | ✅ done |
+| 6 | Packaging + version pins | `Containerfile`, lock file | NFR-5, NFR-1 | manual | ← last |
 | 7 | Wire the gate | `runner/main.py` | all | integration | ✅ done |
 
 **Reusable head start:** `runner/capture_zap_fixture.sh` already proves the exact ZAP API
@@ -321,3 +321,33 @@ python -m runner.main --scope security/dast/juice-shop/scope.json \
 ### Run command (single documented entrypoint)
 The above `python -m runner.main ...` is the "single documented command" (NFR-5); step 6
 wraps it in a Containerfile so ZAP + Chromium + runner ship together.
+
+---
+
+## 12. Component 5 — evidence capture + redaction (`runner/evidence.py`) — FR-E1
+
+Each run captures a **HAR** (`active-scan.har`) and a **screenshot** (`screenshot.png`) under
+`security/dast/<app>/evidence/<scan_id>/` (gitignored). Playwright records the HAR via the
+context's `record_har_path`; the screenshot is taken before the context closes.
+
+### Redaction is mandatory (safety, not polish)
+A raw HAR contains bearer tokens, cookies, and passwords. `redact_har` scrubs sensitive
+headers (`Authorization`, `Cookie`, `Set-Cookie`, …), cookie values, and token/password/JWT
+bodies **immediately after capture, before anything could publish it**. The pure redactor is
+objectively tested (`tests/test_evidence.py`): the oracle re-scans the serialized HAR and
+asserts **no secret survives** while non-sensitive fields are preserved.
+
+### Referenced from results
+Each detection record's `evidence_path` is set to `evidence/<scan_id>/active-scan.har`
+(requirements §7.2 shape); the SARIF exporter turns that into a `result.attachments` entry
+(FR-E1 "referenced from the SARIF results").
+
+### Verified live (2026-09-13)
+End-to-end run produced `active-scan.har` (3.1 MB) + `screenshot.png`; the HAR had **0 leaked
+JWTs / no raw `Bearer` values / 130 `REDACTED` markers**, and records carried the evidence
+path. Gate still passed.
+
+### Publishing note
+Local evidence is gitignored. Before publishing evidence externally (CI artifact / SARIF
+link), it is already redacted at capture — but confirm the destination is access-controlled
+(demo plan Phase 2). Durable/governed evidence hosting remains a documented gap.

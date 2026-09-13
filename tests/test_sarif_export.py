@@ -114,3 +114,20 @@ def test_export_is_single_pass_iterable(records):
     one_shot = iter(records)  # a generator/iterator consumable exactly once
     sarif = to_sarif(one_shot)
     assert len(sarif["runs"][0]["results"]) == len(records)
+
+
+def test_evidence_path_becomes_attachment():
+    # FR-E1: a record with evidence_path must reference it from the SARIF result.
+    rec = {
+        "app_id": "juice-shop", "scan_id": SCAN_ID, "fingerprint": "a" * 64,
+        "rule_id": "40018", "title": "SQL Injection", "severity": "high", "cwe_id": "CWE-89",
+        "endpoint": "/rest/products/search", "parameter": "q", "status": "open",
+        "evidence_path": "evidence/20260101T000000Z/active-scan.har",
+    }
+    sarif = to_sarif([rec])
+    result = sarif["runs"][0]["results"][0]
+    assert result["attachments"][0]["artifactLocation"]["uri"] == rec["evidence_path"]
+    # and it still validates against the official schema
+    schema = json.loads(SARIF_SCHEMA.read_text())
+    Validator = validator_for(schema)
+    assert not list(Validator(schema).iter_errors(sarif))

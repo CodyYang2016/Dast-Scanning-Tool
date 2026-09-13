@@ -17,8 +17,10 @@ import argparse
 import json
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 from detections.normalizer import normalize, write_json_array
+from runner import evidence
 from runner.preflight import PreflightError, preflight
 from runner.replay import load_flow, replay
 from runner.scan import ScanScopeError, new_session, scan
@@ -47,14 +49,27 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
         fresh=True, do_spider=True, max_scan_min=4):
     """Execute the full loop. Returns (scope, replay_result, guard, records, scan_id)."""
     scope = preflight(scope_path, schema)              # safety layer 1
+    scan_id = _scan_id()
+    app_dir = str(Path(scope_path).resolve().parent)   # evidence lives under the app dir
+    ev_dir = evidence.evidence_dir(app_dir, scan_id)    # FR-E1
+
     if fresh:
         new_session(zap_api)                           # clean per-scan session
     flow = load_flow(flow_path)
-    result, guard = replay(scope, flow, base_url, zap_proxy)   # auth + safety layer 2
+    result, guard = replay(scope, flow, base_url, zap_proxy, evidence_dir=str(ev_dir))
+
+    # Redact the HAR immediately after capture — before it can be published (hard requirement).
+    har = ev_dir / "active-scan.har"
+    if har.exists():
+        evidence.redact_har_file(str(har))
+
     report = scan(zap_api, base_url, scope["fqdn_allow_list"],
                   do_spider=do_spider, max_scan_min=max_scan_min)
-    scan_id = _scan_id()
     records = list(normalize(report["alerts"], scope["app_id"], scan_id))
+    # Reference the scan's evidence from each record (FR-E1).
+    relpath = evidence.evidence_relpath(scan_id)
+    for r in records:
+        r["evidence_path"] = relpath
     return scope, result, guard, records, scan_id
 
 

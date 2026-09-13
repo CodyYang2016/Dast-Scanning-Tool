@@ -65,7 +65,7 @@ def _rule_for(rec: dict) -> dict:
 
 
 def _result_for(rec: dict, rule_index: int) -> dict:
-    return {
+    result = {
         "ruleId": rec["rule_id"],
         "ruleIndex": rule_index,
         "level": _LEVEL.get(rec["severity"], "note"),
@@ -81,6 +81,13 @@ def _result_for(rec: dict, rule_index: int) -> dict:
             "scan_id": rec.get("scan_id"),
         },
     }
+    # Reference the (redacted) evidence for this scan from the result (FR-E1).
+    evidence = rec.get("evidence_path")
+    if evidence:
+        result["attachments"] = [
+            {"artifactLocation": {"uri": evidence}, "description": {"text": "HAR + screenshot"}}
+        ]
+    return result
 
 
 def to_sarif(records: Iterable[dict], driver_version: str | None = None) -> dict:

@@ -36,22 +36,35 @@ def load_flow(flow_path: str):
     return module
 
 
-def replay(scope: dict, flow_module, base_url: str, zap_proxy: str, headless: bool = True):
+def replay(scope: dict, flow_module, base_url: str, zap_proxy: str, headless: bool = True,
+           evidence_dir: str | None = None):
     """Run the flow in Chromium proxied through ZAP, enforcing the scope guard. Returns
-    (result, guard). Raises ScopeViolation if any out-of-scope request occurred."""
+    (result, guard). Raises ScopeViolation if any out-of-scope request occurred.
+
+    If evidence_dir is given, a HAR (active-scan.har) and a screenshot (screenshot.png) are
+    captured there (FR-E1). The HAR is UNREDACTED at this point — the caller must redact it
+    before it is published (see runner/evidence.py)."""
     from playwright.sync_api import sync_playwright  # imported lazily so tests don't need it
 
     guard = ScopeGuard(scope)
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=headless, proxy={"server": zap_proxy})
-        context = browser.new_context(ignore_https_errors=True)
+        ctx_kwargs = {"ignore_https_errors": True}
+        if evidence_dir:
+            ctx_kwargs["record_har_path"] = str(Path(evidence_dir) / "active-scan.har")
+        context = browser.new_context(**ctx_kwargs)
         page = context.new_page()
         # Safety layer 2: every browser request passes the scope guard before the proxy.
         page.route("**/*", lambda route: guard.route_handler(route))
         try:
             result = flow_module.run(page, base_url)
         finally:
-            context.close()
+            if evidence_dir:
+                try:
+                    page.screenshot(path=str(Path(evidence_dir) / "screenshot.png"), full_page=True)
+                except Exception:
+                    pass
+            context.close()  # writes the HAR
             browser.close()
 
     guard.raise_if_violated()  # FR-S4: fail the scan if the boundary was crossed
