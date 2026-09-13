@@ -16,6 +16,7 @@ should make us act.
 - D7 — replay topology: browser proxied through ZAP → app scope allow-lists `juice`
 - KI1 — endpoint_pattern id-collapsing heuristic (deferred fix)
 - KI2 — scope-enforcement edge cases (deferred)
+- KI3 — Juice Shop container exits (133) between sessions
 
 ---
 
@@ -192,3 +193,23 @@ redirect chains to out-of-scope hosts, host aliases, IPv6/IP-literal forms.
 **Trigger to act.** Onboarding any target where these forms occur, or any evidence a request
 slipped the host-only check. Expansion goes in `runner/scope_guard.py` with adversarial tests
 per new form.
+
+---
+
+## KI3 — Juice Shop container exits (133) between sessions (OPERATIONAL)
+
+**Issue.** The `bkimminich/juice-shop` container is observed exiting with code 133 after a
+period of inactivity, so `localhost:3000` starts returning connection failures between work
+sessions. ZAP (long-lived) stays up; only the pilot app drops.
+
+**Impact.** Purely local/dev-loop friction — not a product defect. A run started against a
+dead app fails fast (preflight passes, replay's first navigation errors).
+
+**Workaround.** Re-create it before a run:
+`docker rm -f juice && docker run -d --name juice --network dast -p 3000:3000 bkimminich/juice-shop`,
+then confirm `curl -s -o /dev/null -w '%{http_code}' localhost:3000` is 200 and
+`docker exec zap curl -sS -m10 -o /dev/null -w '%{http_code}' http://juice:3000/` is 200.
+
+**Trigger to act.** If it recurs mid-scan (not just between sessions), pin a specific Juice
+Shop image tag in the lock file (NFR-1, step 6) and add a `--restart=unless-stopped` policy or
+a healthcheck+auto-recreate in the containerized runner (step 6).

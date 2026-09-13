@@ -45,7 +45,7 @@ before the risky auth-replay spike.
 | 4 | Active-scan orchestration | `runner/scan.py` | S1, S2 | live; ports capture script | ✅ done |
 | 5 | Evidence capture | `runner/evidence.py` | E1 | live | todo |
 | 6 | Packaging + version pins | `Containerfile`, lock file | NFR-5, NFR-1 | manual | todo |
-| 7 | Wire the gate | `runner/main.py` | all | integration | todo |
+| 7 | Wire the gate | `runner/main.py` | all | integration | ✅ done |
 
 **Reusable head start:** `runner/capture_zap_fixture.sh` already proves the exact ZAP API
 choreography step 4 needs (`accessUrl` → spider → bounded `ascan` → alerts export, host-bounded).
@@ -287,5 +287,37 @@ records with no memory issue — closing the **live scan → detection** path (n
 
 ### Known consideration
 ZAP accumulates alerts across a session, so counts grow run-over-run (the 16k reflects the
-whole session). A clean per-scan result wants a fresh ZAP session or a scan-scoped export —
-folded into step 7 (`runner/main.py`) / step 6 (containerized single-shot run).
+whole session). Resolved in step 7 via a fresh ZAP session per run (`scan.new_session`).
+
+---
+
+## 11. Component 7 — end-to-end gate (`runner/main.py`) — the payoff
+
+One command chains the whole loop and returns the Phase 1 gate as its exit code:
+
+```
+preflight (S3/NFR-2) → fresh ZAP session → replay auth via ZAP proxy (S1/R2) with the
+scope guard live (S4/NFR-4) → bounded active scan (S1/S2) → normalize (N1)
+```
+
+### The gate (pure, unit-tested in `tests/test_main.py`)
+`evaluate_gate(...)` returns `passed = authenticated AND scope_ok AND has_high_or_medium`.
+Exit 0 only if the gate passes; non-zero on any abort (preflight/scope/scan) or a failed gate.
+
+### Fresh session per run
+`scan.new_session(zap_api)` starts a clean in-memory ZAP session first, so results are
+**per-scan** — this run reported **1,345** detections vs the **16,181** accumulated before the
+fix.
+
+### Verified live (2026-09-13)
+```
+python -m runner.main --scope security/dast/juice-shop/scope.json \
+  --flow security/dast/juice-shop/flow.py --base-url http://juice:3000 \
+  --records-out records.json
+# -> gate: {authenticated: true, scope_ok: true, has_high_or_medium: true,
+#           detections: 1345, passed: true}  (exit 0)
+```
+
+### Run command (single documented entrypoint)
+The above `python -m runner.main ...` is the "single documented command" (NFR-5); step 6
+wraps it in a Containerfile so ZAP + Chromium + runner ship together.

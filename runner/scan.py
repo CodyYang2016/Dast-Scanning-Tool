@@ -38,6 +38,14 @@ def _api(zap_api: str, path: str, params: dict | None = None, timeout: float = 3
         return json.loads(resp.read().decode())
 
 
+def new_session(zap_api: str, name: str = "") -> None:
+    """Start a fresh in-memory ZAP session so results are per-scan, not accumulated across runs."""
+    params = {"overwrite": "true"}
+    if name:
+        params["name"] = name
+    _api(zap_api, "/JSON/core/action/newSession/", params)
+
+
 def configure_policy(zap_api: str, max_scan_min: int = 4, max_rule_min: int = 1) -> None:
     """Bound + lighten the active scan (matches the capture script)."""
     _api(zap_api, "/JSON/ascan/action/setOptionMaxScanDurationInMins/", {"Integer": max_scan_min})
