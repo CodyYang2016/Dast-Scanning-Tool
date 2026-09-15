@@ -14,6 +14,8 @@ should make us act.
 - D5 — scope granularity is host-based for the POC
 - D6 — scope matching: exact allow, wildcard deny, deny-precedence, fail-closed
 - D7 — replay topology: browser proxied through ZAP → app scope allow-lists `juice`
+- D8 — LLM emits a JSON journey plan; deterministic code renders flow.py (safety)
+- D9 — generate is LLM-primary with a deterministic fallback; auth.json is required
 - KI1 — endpoint_pattern id-collapsing heuristic (deferred fix)
 - KI2 — scope-enforcement edge cases (deferred)
 - KI3 — Juice Shop container exits (133) between sessions
@@ -213,3 +215,37 @@ then confirm `curl -s -o /dev/null -w '%{http_code}' localhost:3000` is 200 and
 **Trigger to act.** If it recurs mid-scan (not just between sessions), pin a specific Juice
 Shop image tag in the lock file (NFR-1, step 6) and add a `--restart=unless-stopped` policy or
 a healthcheck+auto-recreate in the containerized runner (step 6).
+
+---
+
+## D8 — LLM emits a JSON journey plan; deterministic code renders flow.py (ADOPTED)
+
+**Decision.** In `generate`, the LLM produces a **constrained JSON journey plan** (validated
+against `contracts/journey.schema.json`); deterministic code (`render_flow`) turns that plan
+into `flow.py`. The model never authors executable Python. The rendered code is AST-compiled
+before use, and credentials come from env (`auth.json` holds only env-var names), never baked in.
+
+**Why.** An LLM-generated `flow.py` is executable code; `validate`'s auth/allow-list checks
+don't make arbitrary generated Python safe (demo plan, Phase 2). Restricting the LLM to *data*
+that a template renders keeps generated code deterministic and safe, and makes FR-G4 idempotency
+nearly free (same plan → byte-identical `flow.py`).
+
+**How to interrogate later.** `render_flow` / `validate_plan` in `authoring/generate.py`;
+`journey.schema.json`; tests `test_rendered_flow_compiles_and_defines_run`,
+`test_render_flow_is_deterministic`, `test_rendered_flow_has_no_hardcoded_secrets`.
+
+## D9 — generate is LLM-primary with a deterministic fallback; auth.json is required (ADOPTED)
+
+**Decision.** The LLM is the **primary** path (Anthropic SDK + `ANTHROPIC_API_KEY`); a
+deterministic `journey_from_trace` fallback runs only when the key is absent or the model output
+can't be repaired into a schema-valid plan. `generate` always emits **`auth.json`** — resolving
+the demo-plan contract-freeze items: auth.json is required and is the "fourth file" of FR-G3
+(`flow.py`, `scope.json`, `zap-policy.yaml`, `manifest.json`, `lock`, plus `auth.json`).
+
+**Why.** Keeps the pipeline demoable without a key (fallback) while making the LLM the real
+path when keyed; `auth.json` externalizes credentials (NFR-3) and gives the runner a stable
+place to read env-var names.
+
+**How to interrogate later.** `make_plan` / `emit_auth` in `authoring/generate.py`; the LLM
+path requires `ANTHROPIC_API_KEY` in env (never committed). Model id via `--model`
+(default `claude-sonnet-5`).

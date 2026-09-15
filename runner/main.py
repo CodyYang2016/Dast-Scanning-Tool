@@ -17,6 +17,7 @@ import argparse
 import json
 import sys
 import time
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,15 +44,32 @@ def _reachable(url: str, timeout: float = 3.0) -> bool:
         return False
 
 
-def wait_ready(zap_api: str, base_url: str, timeout: float = 120.0, interval: float = 2.0) -> None:
-    """Poll until both the ZAP API and the target are reachable (robust containerized start).
+def _zap_can_reach(zap_api: str, target: str, timeout: float = 10.0) -> bool:
+    """True if ZAP can fetch the target (checked THROUGH ZAP via accessUrl).
 
-    Returns immediately when they're already up (the local dev case); raises after `timeout`.
+    The runner reaches the target only via ZAP (ZAP resolves the host, e.g. `juice` on the
+    docker network), so readiness must be checked from ZAP's perspective — not by the runner
+    polling the target directly, which fails on the host where `juice` doesn't resolve.
+    """
+    q = urllib.parse.urlencode({"url": target, "followRedirects": "true"})
+    url = zap_api.rstrip("/") + "/JSON/core/action/accessUrl/?" + q
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            return bool(json.loads(resp.read()).get("accessUrl"))
+    except Exception:
+        return False
+
+
+def wait_ready(zap_api: str, base_url: str, timeout: float = 120.0, interval: float = 2.0) -> None:
+    """Poll until the ZAP API is up AND ZAP can reach the target (robust start ordering).
+
+    Works on the host and in compose alike, because both reach ZAP and it's ZAP that resolves
+    the target host. Returns immediately when ready; raises after `timeout`.
     """
     zap_version = zap_api.rstrip("/") + "/JSON/core/view/version/"
     end = time.monotonic() + timeout
     while True:
-        if _reachable(zap_version) and _reachable(base_url):
+        if _reachable(zap_version) and _zap_can_reach(zap_api, base_url):
             return
         if time.monotonic() >= end:
             raise RuntimeError(f"services not ready within {timeout:.0f}s (zap={zap_api}, target={base_url})")
