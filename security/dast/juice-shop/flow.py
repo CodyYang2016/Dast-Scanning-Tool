@@ -14,10 +14,19 @@ log/assert on. Raise on failure.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 # A unique-ish test account. Registered fresh each run so we never depend on seed data.
 TEST_EMAIL = "dast-poc@juice-sh.op"
 TEST_PASSWORD = "Dast-POC-passw0rd!"
+
+
+def _capture(page, evidence_dir: str | None, filename: str) -> None:
+    if not evidence_dir:
+        return
+    path = Path(evidence_dir)
+    path.mkdir(parents=True, exist_ok=True)
+    page.screenshot(path=str(path / filename), full_page=True)
 
 
 def _dismiss_banners(page) -> None:
@@ -55,23 +64,25 @@ def _register_user(page, base_url: str) -> None:
     _ = resp.status
 
 
-def _login_via_form(page, base_url: str) -> None:
+def _login_via_form(page, base_url: str, evidence_dir: str | None = None) -> None:
     page.goto(f"{base_url}/#/login", wait_until="networkidle")
     _dismiss_banners(page)
+    _capture(page, evidence_dir, "01-login-page.png")
     page.fill("#email", TEST_EMAIL)
     page.fill("#password", TEST_PASSWORD)
     page.click("#loginButton")
     # Auth success = a JWT lands in localStorage under 'token'.
     page.wait_for_function("() => !!window.localStorage.getItem('token')", timeout=15000)
+    _capture(page, evidence_dir, "02-after-login.png")
 
 
-def run(page, base_url: str) -> dict:
+def run(page, base_url: str, evidence_dir: str | None = None) -> dict:
     """Register -> form login -> hit an authenticated endpoint. Returns a result summary."""
     page.goto(f"{base_url}/#/", wait_until="networkidle")
     _dismiss_banners(page)
 
     _register_user(page, base_url)
-    _login_via_form(page, base_url)
+    _login_via_form(page, base_url, evidence_dir)
 
     token = page.evaluate("() => window.localStorage.getItem('token')")
     if not token:
@@ -81,6 +92,7 @@ def run(page, base_url: str) -> dict:
     # its own interceptor). These go through page.route (the scope guard) AND the ZAP proxy,
     # so ZAP records genuine authenticated in-browser traffic.
     page.goto(f"{base_url}/#/basket", wait_until="networkidle")
+    _capture(page, evidence_dir, "03-basket-page.png")
 
     # Authenticated request: /rest/user/whoami echoes the logged-in user when the Bearer
     # token is sent. This is the request we want ZAP to observe as authenticated traffic.

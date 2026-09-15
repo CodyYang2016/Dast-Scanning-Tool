@@ -14,6 +14,7 @@ scope's allow-list must contain that host (see security/dast/juice-shop/scope.js
 from __future__ import annotations
 
 import argparse
+import inspect
 import importlib.util
 import json
 import os
@@ -57,19 +58,21 @@ def replay(scope: dict, flow_module, base_url: str, zap_proxy: str, headless: bo
         browser = pw.chromium.launch(headless=headless, proxy={"server": zap_proxy}, args=launch_args)
         ctx_kwargs = {"ignore_https_errors": True}
         if evidence_dir:
+            Path(evidence_dir).mkdir(parents=True, exist_ok=True)
             ctx_kwargs["record_har_path"] = str(Path(evidence_dir) / "active-scan.har")
         context = browser.new_context(**ctx_kwargs)
         page = context.new_page()
         # Safety layer 2: every browser request passes the scope guard before the proxy.
         page.route("**/*", lambda route: guard.route_handler(route))
         try:
-            result = flow_module.run(page, base_url)
+            run_params = inspect.signature(flow_module.run).parameters
+            if evidence_dir and "evidence_dir" in run_params:
+                result = flow_module.run(page, base_url, evidence_dir=evidence_dir)
+            else:
+                result = flow_module.run(page, base_url)
         finally:
-            if evidence_dir:
-                try:
-                    page.screenshot(path=str(Path(evidence_dir) / "screenshot.png"), full_page=True)
-                except Exception:
-                    pass
+            if evidence_dir and "evidence_dir" not in inspect.signature(flow_module.run).parameters:
+                page.screenshot(path=str(Path(evidence_dir) / "screenshot.png"), full_page=True)
             context.close()  # writes the HAR
             browser.close()
 
@@ -84,6 +87,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--flow", required=True, help="Path to the hand-authored flow.py")
     p.add_argument("--base-url", default="http://juice:3000", help="Target as ZAP resolves it")
     p.add_argument("--zap-proxy", default="http://localhost:8080")
+    p.add_argument("--evidence-dir", default=None,
+                   help="Optional directory for replay HAR and screenshot evidence")
     p.add_argument("--headed", action="store_true", help="Run with a visible browser")
     args = p.parse_args(argv)
 
@@ -92,7 +97,8 @@ def main(argv: list[str] | None = None) -> int:
     flow = load_flow(args.flow)
 
     try:
-        result, guard = replay(scope, flow, args.base_url, args.zap_proxy, headless=not args.headed)
+        result, guard = replay(scope, flow, args.base_url, args.zap_proxy,
+                               headless=not args.headed, evidence_dir=args.evidence_dir)
     except Exception as exc:
         print(f"REPLAY FAILED: {exc}", file=sys.stderr)
         return 1

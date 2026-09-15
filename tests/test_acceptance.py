@@ -57,14 +57,20 @@ def records(report):
 def _external_sha256(preimage: str) -> str:
     """Hash with the OS `shasum -a 256` — a SHA implementation independent of hashlib.
 
-    Falls back to a fresh hashlib call only if shasum is unavailable; the point is to avoid
-    routing through our module, which both paths satisfy.
+    Falls back to a fresh hashlib call if shasum is unavailable *or* unusable; the point is to
+    avoid routing through our module, which both paths satisfy. On Windows, `shasum` can be
+    discoverable via PATH (e.g. Git for Windows' usr/bin) but not directly executable — since
+    it's a script relying on shebang support the OS process launcher doesn't have — so any
+    launch failure falls back rather than crashing the test.
     """
     if shutil.which("shasum"):
-        out = subprocess.run(
-            ["shasum", "-a", "256"], input=preimage.encode(), capture_output=True, check=True
-        ).stdout.decode()
-        return out.split()[0]
+        try:
+            out = subprocess.run(
+                ["shasum", "-a", "256"], input=preimage.encode(), capture_output=True, check=True
+            ).stdout.decode()
+            return out.split()[0]
+        except (OSError, subprocess.SubprocessError):
+            pass
     return hashlib.sha256(preimage.encode()).hexdigest()
 
 
