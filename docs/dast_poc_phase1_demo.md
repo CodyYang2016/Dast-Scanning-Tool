@@ -23,9 +23,9 @@ Presenter: Cherry Yang · Developer Experience & Platform (DevXP)
 
 ```mermaid
 flowchart LR
-  P1["Phase 1\nSafe deterministic scanner\nProve auth, proxy, scope, detection"]
-  P2["Phase 2\nGenerated artifacts + results pipeline\nRecord, generate, validate, normalize, SARIF"]
-  P3["Phase 3\nLifecycle + hardening\nRe-scan, resolve, evidence, final demo"]
+  P1["Phase 1<br/>Safe deterministic scanner<br/>Prove auth, proxy, scope, detection"]
+  P2["Phase 2<br/>Generated artifacts + results pipeline<br/>Record, generate, validate, normalize, SARIF"]
+  P3["Phase 3<br/>Lifecycle + hardening<br/>Re-scan, resolve, evidence, final demo"]
 
   P1 -->|"Scanner gate is trusted"| P2
   P2 -->|"Generated flow and SARIF path are trusted"| P3
@@ -39,29 +39,31 @@ The POC is split into three gates:
 
 Today is Phase 1 — because every later phase depends on this scanner gate being trustworthy.
 
+**Look at:** `docs/dast_poc_requirements.md` — the requirements and scope boundary these three gates are derived from.
+
 ---
 
 ## What the Full POC Becomes
 
 ```mermaid
 flowchart LR
-  Human["User/app owner\nInput: app URL + login journey\nOutput: demo intent"]
-  Record["record CLI\nInput: app URL + browser actions\nOutput: trace.json + index.json"]
-  Generate["generate CLI\nInput: trace.json + contracts\nOutput: flow.py + scope.json + policy + manifest"]
-  Validate["validate CLI\nInput: generated bundle\nOutput: validation-report.json"]
+  Human["User/app owner<br/>Input: app URL + login journey<br/>Output: demo intent"]
+  Record["record CLI<br/>Input: app URL + browser actions<br/>Output: trace.json + index.json"]
+  Generate["generate CLI<br/>Input: trace.json + contracts<br/>Output: flow.py + scope.json + policy + manifest"]
+  Validate["validate CLI<br/>Input: generated bundle<br/>Output: validation-report.json"]
 
-  Scope[/"Scope artifact\nscope.json\nConsumed as: scan boundary"/]
-  Flow[/"Flow artifact\nflow.py\nConsumed as: Playwright instructions"/]
-  Playwright["Playwright-controlled Chromium\nLaunched by runner/replay.py\nOutput: browser traffic"]
-  Guard["ScopeGuard\nrunner/scope_guard.py\nOutput: allow/block decisions"]
-  Zap["OWASP ZAP\nInput: proxied traffic + scan command\nOutput: raw alerts JSON"]
-  Juice["OWASP Juice Shop\nInput: HTTP requests\nOutput: app responses + vulnerabilities"]
-  Runner["runner\nInput: flow.py + scope.json + ZAP endpoints\nOutput: gate result + out/records.json"]
+  Scope[/"Scope artifact<br/>scope.json<br/>Consumed as: scan boundary"/]
+  Flow[/"Flow artifact<br/>flow.py<br/>Consumed as: Playwright instructions"/]
+  Playwright["Playwright-controlled Chromium<br/>Launched by runner/replay.py<br/>Output: browser traffic"]
+  Guard["ScopeGuard<br/>runner/scope_guard.py<br/>Output: allow/block decisions"]
+  Zap["OWASP ZAP<br/>Input: proxied traffic + scan command<br/>Output: raw alerts JSON"]
+  Juice["OWASP Juice Shop<br/>Input: HTTP requests<br/>Output: app responses + vulnerabilities"]
+  Runner["runner<br/>Input: flow.py + scope.json + ZAP endpoints<br/>Output: gate result + out/records.json"]
 
-  Normalize["normalizer\nInput: raw ZAP alerts\nOutput: stable detection records"]
-  Sarif["SARIF export\nOutput: SARIF 2.1.0 file"]
-  Github["GitHub code scanning\nOutput: security alerts"]
-  Lifecycle["lifecycle diff\nOutput: open / new / resolved"]
+  Normalize["normalizer<br/>Input: raw ZAP alerts<br/>Output: stable detection records"]
+  Sarif["SARIF export<br/>Output: SARIF 2.1.0 file"]
+  Github["GitHub code scanning<br/>Output: security alerts"]
+  Lifecycle["lifecycle diff<br/>Output: open / new / resolved"]
 
   Human --> Record --> Generate --> Validate
   Validate --> Flow
@@ -80,6 +82,8 @@ flowchart LR
 
 Blue = what Phase 1 delivers today. Gray = the Phase 2 / Phase 3 pieces that build on this foundation. Slanted boxes are file artifacts; rectangles are running code or services.
 
+**Look at:** Phase 1 code already in the repo — `runner/` and `security/dast/juice-shop/flow.py`. Results pipeline (already built) — `detections/normalizer.py`, `detections/fingerprint.py`, `detections/sarif_export.py`, `detections/github_upload.py`, `detections/lifecycle_diff.py`. Future CLIs land in `authoring/` (`record`, `generate`, `validate`).
+
 ---
 
 ## What Phase 1 Proves
@@ -93,18 +97,20 @@ Four things must all be true for the gate to pass:
 
 The point is not that a command returns green. We show the target app, show ZAP, show where Playwright is launched, show where the login flow lives, then prove ZAP saw authenticated traffic.
 
+**Look at:** gate logic in `runner/main.py` (`evaluate_gate`); the fail-closed check in `runner/preflight.py`; requirements in `docs/dast_poc_requirements.md`.
+
 ---
 
 ## How the Pieces Fit Together
 
 ```mermaid
 flowchart LR
-  Flow["flow.py\nscripted app journey"]
-  Playwright["Playwright\nChromium browser session"]
-  ScopeGuard["scope guard\nallow-list enforcement"]
-  Zap["OWASP ZAP\nproxy + scanner"]
-  Juice["OWASP Juice Shop\napplication under test"]
-  Records["out/records.json\nnormalized findings"]
+  Flow["flow.py<br/>scripted app journey"]
+  Playwright["Playwright<br/>Chromium browser session"]
+  ScopeGuard["scope guard<br/>allow-list enforcement"]
+  Zap["OWASP ZAP<br/>proxy + scanner"]
+  Juice["OWASP Juice Shop<br/>application under test"]
+  Records["out/records.json<br/>normalized findings"]
 
   Flow --> Playwright
   Playwright --> ScopeGuard
@@ -119,6 +125,8 @@ flowchart LR
 * OWASP ZAP — proxy during replay, then active scanner.
 * OWASP Juice Shop — the real, intentionally vulnerable application under test.
 
+**Look at:** `security/dast/juice-shop/flow.py`, `runner/replay.py`, `runner/scope_guard.py`, `runner/scan.py`, `compose.yaml`.
+
 ---
 
 ## Demo Step 1 — Show the Wiring
@@ -131,6 +139,14 @@ Before running anything, make the moving parts visible:
 
 Key handoff: the runner creates the Playwright `page`, attaches the scope guard, then calls `flow_module.run(page, base_url)`. So `page.goto`, `page.fill`, and `page.click` are real browser actions.
 
+**Files / commands to look at:**
+
+* `sed -n '1,80p' compose.yaml` — the three services and the runner's `--flow` / `--base-url` / `--zap-api` / `--zap-proxy` args
+* `sed -n '40,95p' runner/replay.py` — Chromium launched with `proxy={"server": zap_proxy}`
+* `sed -n '1,130p' security/dast/juice-shop/flow.py` — the hand-authored login journey
+* `sed -n '55,85p' runner/replay.py` — the `flow_module.run(page, base_url)` handoff
+* `sed -n '1,60p' tests/test_replay.py` — the flow-loading contract test
+
 ---
 
 ## Demo Step 2 — Bring Up the App and Scanner
@@ -141,6 +157,14 @@ Start only Juice Shop and ZAP first, so the audience can see them from the host 
 * ZAP mapped to `127.0.0.1:8080` — running as a daemon, controlled through its API UI.
 
 Before the scan, ZAP's sites/messages are empty or minimal. After Playwright runs through the proxy, ZAP's API becomes our independent proof source.
+
+**Files / commands to look at:**
+
+* `compose.yaml` + `compose.demo.yaml` — the demo overlay publishes `127.0.0.1:3000` and `127.0.0.1:8080`
+* `podman-compose -f compose.yaml -f compose.demo.yaml up --build -d juice zap`
+* `podman ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"`
+* `curl -I http://localhost:3000/` — Juice Shop; browser `http://localhost:3000/#/login`
+* `curl -s http://localhost:8080/JSON/core/view/version/` — ZAP; browser `http://localhost:8080/UI/`
 
 ---
 
@@ -162,6 +186,13 @@ Plus evidence files under `out/replay-evidence/`: `active-scan.har` and `screens
 
 This is the smallest live proof that `flow.py` is being consumed by Playwright — we are replaying the session, not scanning yet.
 
+**Files / commands to look at:**
+
+* `./demo_replay_flow.sh` — resets, builds, starts Juice/ZAP, waits, replays, prints evidence
+* `runner/replay.py` — launches Chromium through ZAP and runs the flow
+* `security/dast/juice-shop/flow.py` — the journey being replayed
+* evidence written to `out/replay-evidence/` (`active-scan.har`, `01-login-page.png`, `02-after-login.png`, `03-basket-page.png`)
+
 ---
 
 ## Demo Step 4 — The Gate Fails Closed
@@ -176,6 +207,12 @@ PREFLIGHT ABORT: environment_class='prod' is production — refusing to scan (NF
 ```
 
 Same file, environment flipped. Zero traffic is sent — it aborts before touching the network.
+
+**Files / commands to look at:**
+
+* `python -m runner.preflight --scope security/dast/juice-shop/scope.json` — valid dev scope
+* flip `environment_class` to `prod`, then re-run preflight → `PREFLIGHT ABORT`
+* `runner/preflight.py`, `security/dast/juice-shop/scope.json`, `contracts/scope.schema.json`
 
 ---
 
@@ -203,6 +240,13 @@ Successful gate output:
 
 `passed: true`, exit code 0 — all four Phase 1 gate conditions in one shot.
 
+**Files / commands to look at:**
+
+* `./demo_full_scan.sh` — the full gate: replay + ZAP spider + active scan + normalize
+* `runner/main.py` — orchestration and `evaluate_gate`
+* `runner/scan.py` — ZAP spider + bounded active scan
+* output written to `out/records.json`
+
 ---
 
 ## Independent Proof of Authentication
@@ -218,6 +262,12 @@ ZAP independently recorded N request(s) carrying an Authorization header
 
 This isn't our runner talking — it's ZAP's own record. If the browser had bypassed the proxy, this list would be empty no matter what our code claims. The authentication proof has two parts: the flow reports it got a token, and ZAP's log shows an authenticated request went through.
 
+**Files / commands to look at:**
+
+* `curl -s 'http://localhost:8080/JSON/search/view/messagesByRequestRegex/?regex=Authorization'` — ask ZAP directly
+* swap the regex for `rest/user/login` to confirm the login POST was seen
+* `runner/replay.py` — the proxy wiring this proves
+
 ---
 
 ## Guardrail — Scope Enforcement, Live
@@ -229,6 +279,12 @@ Point the runner at a host that is NOT on the allow-list (`localhost` instead of
 * Expect a non-zero exit and `"blocked": > 0` or a `ScopeViolation` abort.
 
 Blocked requests are blocked, logged with a reason, and the scan fails closed — never silently continues.
+
+**Files / commands to look at:**
+
+* point the runner at an off-list host (`localhost` instead of `juice`):
+  `podman-compose -f compose.yaml -f compose.demo.yaml run --rm --no-deps runner --scope security/dast/juice-shop/scope.json --flow security/dast/juice-shop/flow.py --base-url http://localhost:3000 --zap-api http://zap:8080 --zap-proxy http://zap:8080`
+* `runner/scope_guard.py` — the `page.route` block/log/fail interceptor
 
 ---
 
@@ -243,6 +299,13 @@ Each normalized detection record in `out/records.json` includes:
 
 Note: replay HAR / screenshot evidence lives inside the container and is discarded on teardown by design. Durable evidence hosting is a Phase 2 / Phase 3 concern, tracked as a known gap — not a Phase 1 defect.
 
+**Files / commands to look at:**
+
+* `cat out/records.json | head -40` — normalized detection records
+* `detections/normalizer.py`, `detections/fingerprint.py` — field mapping + stable fingerprint
+* `runner/evidence.py` — HAR/screenshot capture and redaction
+* contract: `contracts/detection.schema.json`
+
 ---
 
 ## Wrap-Up
@@ -253,6 +316,12 @@ Note: replay HAR / screenshot evidence lives inside the container and is discard
 * Backup evidence: `pytest -q` → 107 passed, plus the last known-good containerized run.
 
 Next up — Phase 2: LLM-generated `record` / `generate` / `validate` replacing the hand-authored `flow.py`, behind the code-safety boundary already scoped in the demo plan.
+
+**Files / commands to look at:**
+
+* `pytest -q` — 107 passed, the fallback evidence
+* `compose.yaml` — Juice Shop + ZAP images pinned by digest (reproducibility)
+* `Containerfile` — Playwright/Chromium base pinned to `v1.62.0-jammy`
 
 ---
 
