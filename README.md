@@ -5,9 +5,11 @@ through a login, scan the authenticated app with OWASP ZAP inside a hard safety 
 normalize the findings with stable fingerprints, and publish them to the GitHub Security tab
 with lifecycle tracking across scans.
 
-**Status: the full loop works end-to-end on real data.** All four demo proof points are
-achievable; 107 automated tests pass; the **containerized single-command run is verified**
-(`docker compose up` → gate passed, 1351 detections, ~3m36s, well under the 15-min budget).
+**Status: the full loop works end-to-end on real data**, including the Phase 2 authoring CLIs
+(`record → generate → validate`). 129 automated tests pass; the containerized single-command
+run is verified; and the **auto-generated `flow.py` drives a passing scan** end-to-end
+(Week-2 checkpoint). The LLM path in `generate` runs with an `ANTHROPIC_API_KEY`; without one
+it uses a deterministic fallback (verified here).
 
 ## The four proof points (definition of done)
 
@@ -120,6 +122,7 @@ cookies, tokens, passwords) at capture, before anything could publish them.
 | `reproducing_the_sample.md` | Regenerate the ZAP fixture from scratch |
 | `sarif_exporter_design.md`, `github_upload_design.md`, `lifecycle_diff_design.md` | Results-pipeline component designs |
 | `runner_design.md` | Full runner design + per-component frozen specs (§7–§13) |
+| `authoring_clis_design.md` | Phase 2 record/generate/validate design + the LLM safety architecture |
 | `chromium_and_playwright_setup.md` | All Playwright/Chromium usage + gotchas |
 | `decisions_and_known_issues.md` | Every design decision (D1–D7) + known gaps (KI1–KI3) |
 

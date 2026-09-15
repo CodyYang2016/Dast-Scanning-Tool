@@ -125,6 +125,15 @@ path independently (see Phase 2 below — it runs concurrently with this phase, 
 
 ## Phase 2 — Contracted results pipeline + generated artifacts (Week 1–2)
 
+> **Build status — DONE (verified).** The results pipeline (`detections/`) and the authoring
+> CLIs (`authoring/record`, `generate`, `validate`) are built and tested (129 tests). The LLM
+> emits a schema-validated JSON journey plan and deterministic code renders `flow.py` (safety
+> boundary, D8); `generate` is LLM-primary with a deterministic fallback (D9), and `auth.json`
+> is emitted (the FR-G3 "fourth file"). **Verified live (fallback path):** `record → generate →
+> validate` (allow-list + live auth replay) → the generated `flow.py` drove `runner.main` to a
+> **passing gate** (1212 detections) — the Week-2 checkpoint. LLM path verified separately with
+> `ANTHROPIC_API_KEY`. See `docs/junior_engineer/authoring_clis_design.md`.
+
 **Goal:** prove deterministic result handling and the external GitHub path **before** introducing
 LLM variability. The deterministic half is **not** a Week 2 activity — per the 3-week plan's team
 split, Engineer 1 builds it starting Day 1/Week 1, in parallel with Engineer 2's Phase 1 spike, so
