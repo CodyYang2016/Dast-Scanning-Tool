@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nationwide.com/ssd-dast-poc/contracts/journey.schema.json",
+  "title": "Journey plan",
+  "description": "The constrained, LLM-emitted (or fallback-derived) plan that generate renders into flow.py. The LLM produces DATA validated against this schema; deterministic code turns it into code (LLM safety boundary). No credentials appear here — they live in auth.json / env.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["app_id", "base_url", "login", "journey"],
+  "properties": {
+    "app_id": {"type": "string", "minLength": 1},
+    "base_url": {"type": "string", "minLength": 1},
+    "login": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url", "email_selector", "password_selector", "submit_selector"],
+      "properties": {
+        "url": {"type": "string", "minLength": 1, "description": "Login route, e.g. /#/login"},
+        "email_selector": {"type": "string", "minLength": 1},
+        "password_selector": {"type": "string", "minLength": 1},
+        "submit_selector": {"type": "string", "minLength": 1},
+        "token_check": {
+          "type": "string",
+          "description": "JS truthy expression proving auth, e.g. window.localStorage.getItem('token')",
+          "default": "window.localStorage.getItem('token')"
+        }
+      }
+    },
+    "journey": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Authenticated steps after login.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["action", "target"],
+        "properties": {
+          "action": {"type": "string", "enum": ["goto", "click", "api_get"]},
+          "target": {"type": "string", "minLength": 1, "description": "URL/route for goto/api_get, or a selector for click"}
+        }
+      }
+    }
+  }
+}
