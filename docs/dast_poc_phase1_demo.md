@@ -23,9 +23,9 @@ Presenter: Cherry Yang · Developer Experience & Platform (DevXP)
 
 ```mermaid
 flowchart LR
-  P1["Phase 1<br/>Safe deterministic scanner<br/>Prove auth, proxy, scope, detection"]
-  P2["Phase 2<br/>Generated artifacts + results pipeline<br/>Record, generate, validate, normalize, SARIF"]
-  P3["Phase 3<br/>Lifecycle + hardening<br/>Re-scan, resolve, evidence, final demo"]
+  P1["Phase 1<br/>Safe deterministic scanner<br/>Prove auth, proxy, scope,<br/>detection"]
+  P2["Phase 2<br/>Generated artifacts +<br/>results pipeline<br/>Record, generate,<br/>validate, normalize, SARIF"]
+  P3["Phase 3<br/>Lifecycle + hardening<br/>Re-scan, resolve,<br/>evidence, final demo"]
 
   P1 -->|"Scanner gate is trusted"| P2
   P2 -->|"Generated flow and SARIF path are trusted"| P3
@@ -47,23 +47,23 @@ Today is Phase 1 — because every later phase depends on this scanner gate bein
 
 ```mermaid
 flowchart LR
-  Human["User/app owner<br/>Input: app URL + login journey<br/>Output: demo intent"]
-  Record["record CLI<br/>Input: app URL + browser actions<br/>Output: trace.json + index.json"]
-  Generate["generate CLI<br/>Input: trace.json + contracts<br/>Output: flow.py + scope.json + policy + manifest"]
-  Validate["validate CLI<br/>Input: generated bundle<br/>Output: validation-report.json"]
+  Human["User/app owner<br/>Input: app URL +<br/>login journey<br/>Output: demo intent"]
+  Record["record CLI<br/>Input: app URL +<br/>browser actions<br/>Output: trace.json,<br/>index.json"]
+  Generate["generate CLI<br/>Input: trace.json,<br/>contracts<br/>Output: flow.py,<br/>scope.json, policy,<br/>manifest"]
+  Validate["validate CLI<br/>Input: generated bundle<br/>Output:<br/>validation-report.json"]
 
-  Scope[/"Scope artifact<br/>scope.json<br/>Consumed as: scan boundary"/]
-  Flow[/"Flow artifact<br/>flow.py<br/>Consumed as: Playwright instructions"/]
-  Playwright["Playwright-controlled Chromium<br/>Launched by runner/replay.py<br/>Output: browser traffic"]
-  Guard["ScopeGuard<br/>runner/scope_guard.py<br/>Output: allow/block decisions"]
-  Zap["OWASP ZAP<br/>Input: proxied traffic + scan command<br/>Output: raw alerts JSON"]
-  Juice["OWASP Juice Shop<br/>Input: HTTP requests<br/>Output: app responses + vulnerabilities"]
-  Runner["runner<br/>Input: flow.py + scope.json + ZAP endpoints<br/>Output: gate result + out/records.json"]
+  Scope[/"Scope artifact<br/>scope.json<br/>Consumed as:<br/>scan boundary"/]
+  Flow[/"Flow artifact<br/>flow.py<br/>Consumed as:<br/>Playwright instructions"/]
+  Playwright["Playwright-controlled<br/>Chromium<br/>Launched by<br/>runner/replay.py<br/>Output: browser traffic"]
+  Guard["ScopeGuard<br/>runner/scope_guard.py<br/>Output:<br/>allow/block decisions"]
+  Zap["OWASP ZAP<br/>Input: proxied traffic<br/>+ scan command<br/>Output: raw alerts JSON"]
+  Juice["OWASP Juice Shop<br/>Input: HTTP requests<br/>Output: app responses<br/>+ vulnerabilities"]
+  Runner["runner<br/>Input: flow.py,<br/>scope.json,<br/>ZAP endpoints<br/>Output: gate result +<br/>out/records.json"]
 
-  Normalize["normalizer<br/>Input: raw ZAP alerts<br/>Output: stable detection records"]
+  Normalize["normalizer<br/>Input: raw ZAP alerts<br/>Output: stable<br/>detection records"]
   Sarif["SARIF export<br/>Output: SARIF 2.1.0 file"]
   Github["GitHub code scanning<br/>Output: security alerts"]
-  Lifecycle["lifecycle diff<br/>Output: open / new / resolved"]
+  Lifecycle["lifecycle diff<br/>Output:<br/>open / new / resolved"]
 
   Human --> Record --> Generate --> Validate
   Validate --> Flow
