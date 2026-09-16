@@ -134,6 +134,28 @@ path independently (see Phase 2 below — it runs concurrently with this phase, 
 > **passing gate** (1212 detections) — the Week-2 checkpoint. LLM path verified separately with
 > `ANTHROPIC_API_KEY`. See `docs/junior_engineer/authoring_clis_design.md`.
 
+### Phase 2 status
+
+| Deliverable | Req | Status |
+|-------------|-----|--------|
+| `record` → `trace.json` / `index.json` | FR-R1 | ✅ complete |
+| Forms + API/XHR capture in the trace | FR-R3 | ✅ complete |
+| LLM → runnable `flow.py` that reaches an authenticated page | FR-G1 | ✅ complete (LLM path verified live) |
+| `scope.json` emission (allow-list seeded from hosts) | FR-G2 | ✅ complete |
+| `zap-policy` + `manifest.json` + `lock` (+ `auth.json`) | FR-G3 | ✅ complete |
+| Generate idempotency (same trace → equivalent flow) | FR-G4 | ✅ complete |
+| `validate` replays flow + confirms auth | FR-V1 | ✅ complete |
+| `validate` allow-list coverage check | FR-V2 | ✅ complete |
+| `validation-report.json` + non-zero exit on failure | FR-V3 | ✅ complete |
+| Normalizer (ZAP → detection record) | FR-N1 | ✅ complete |
+| Stable fingerprint | FR-N2 | ✅ complete |
+| SARIF 2.1.0 export | FR-X1 | ✅ complete |
+| SARIF upload to GitHub Security tab | FR-X2 | ✅ complete |
+| LLM safety boundary (JSON plan → deterministic render, AST-checked) | D8 | ✅ complete |
+| Week-2 full-chain checkpoint (`record → … → SARIF → GitHub`) | — | ✅ complete (verified) |
+| Redact secrets from the trace **before** it reaches the LLM | — | ⚠️ partial — secret-free *by construction* (record captures names/URLs, not values); no explicit redactor yet |
+| Evidence linking as a clickable GitHub Actions artifact | — | ❌ incomplete — HAR is redacted + referenced by a relative path, but not hosted/clickable |
+
 **Goal:** prove deterministic result handling and the external GitHub path **before** introducing
 LLM variability. The deterministic half is **not** a Week 2 activity — per the 3-week plan's team
 split, Engineer 1 builds it starting Day 1/Week 1, in parallel with Engineer 2's Phase 1 spike, so
@@ -202,6 +224,23 @@ Deliver:
 - evidence redaction, reproducibility checks,
 - final container + README cleanup,
 - recorded end-to-end demo covering all four requirements section 9 acceptance steps.
+
+### Phase 3 status
+
+| Deliverable | Req | Status |
+|-------------|-----|--------|
+| Two-scan state handling + fingerprint diff | FR-L1/L2 | ✅ complete |
+| open / new / resolved output | FR-L2 | ✅ complete |
+| Local acceptance: one detection flips `resolved`, others stay `open` | FR-L1/L2 | ✅ complete (verified: 1 resolved / rest open) |
+| Generated-flow rerun through the runner | — | ✅ complete |
+| Evidence redaction (HAR: auth headers, cookies, tokens, passwords) | NFR-3 | ✅ complete |
+| Reproducibility: pinned image digests + tool versions | NFR-1 | ✅ complete (`versions.lock`) |
+| Structured, timestamped logging | NFR-4 | ✅ complete |
+| Final container + README cleanup | NFR-5 | ✅ complete (built + run; comprehensive README) |
+| One controlled vulnerability **fix in the pilot app** + re-scan | — | ⚠️ partial — diff proven via a *simulated* fix (finding removed); no in-app code fix + live re-scan |
+| Fingerprint stability matrix (5 cases) | — | ⚠️ partial — identical-scan / endpoint-sensitivity / fixed-weakness covered; "changed payload" & "changed ZAP message text" not yet dedicated tests |
+| Recorded end-to-end demo of the four §9 acceptance steps | — | ⚠️ partial — written demo script exists (`docs/dast_poc_phase1_demo_script.md`); no recording produced |
+| GitHub alert auto-resolution after the 2nd upload | — | ❌ incomplete — observed-not-asserted; documented as an out-of-scope gap |
 
 ### Local vs. GitHub lifecycle (keep them separate)
 - **Acceptance criterion (local):** fingerprint diff flips one detection to `resolved` while others
