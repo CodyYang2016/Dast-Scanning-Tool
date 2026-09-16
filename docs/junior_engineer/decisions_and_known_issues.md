@@ -16,9 +16,11 @@ should make us act.
 - D7 — replay topology: browser proxied through ZAP → app scope allow-lists `juice`
 - D8 — LLM emits a JSON journey plan; deterministic code renders flow.py (safety)
 - D9 — generate is LLM-primary with a deterministic fallback; auth.json is required
+- D10 — authenticated route discovery: OpenAPI first, crawl fallback, recorded walk floor
 - KI1 — endpoint_pattern id-collapsing heuristic (deferred fix)
 - KI2 — scope-enforcement edge cases (deferred)
 - KI3 — Juice Shop container exits (133) between sessions
+- KI4 — authenticated route discovery is bounded by the recorded walk (deferred)
 
 ---
 
@@ -249,3 +251,74 @@ place to read env-var names.
 **How to interrogate later.** `make_plan` / `emit_auth` in `authoring/generate.py`; the LLM
 path requires `ANTHROPIC_API_KEY` in env (never committed). Model id via `--model`
 (default `claude-opus-4-8`).
+
+---
+
+## D10 — Authenticated route discovery: OpenAPI first, crawl fallback, recorded walk floor (ADOPTED as direction)
+
+**Decision.** When we invest in expanding authenticated coverage, the preferred order for
+discovering which endpoints to scan is:
+
+1. **OpenAPI/Swagger spec** — if the app publishes an accurate, current one. Best on every
+   axis: authoritative + complete endpoint list, `securitySchemes`/`security` say which
+   endpoints need auth and how, typed request shapes improve active-scan quality. Crucially it
+   is a **file parse — no browser**, so it is stable, deterministic (same spec → same endpoint
+   set, which keeps the FR-L2 lifecycle diff's new/resolved labels trustworthy), fast (fits the
+   FR-S5 budget), and safe (filter destructive/logout operations by method/path *before*
+   touching them).
+2. **Authenticated crawl (ZAP AJAX spider or an autonomous Playwright crawl)** — the fallback
+   when there is no spec, or to catch undocumented endpoints a spec omits. Powerful but
+   browser-heavy: prone to the same instability that wedged ZAP's DOM-XSS scanner, plus
+   nondeterminism (noisy lifecycle diff), state mutation, and self-logout risk. See KI4 / the
+   crawl analysis for the required guardrails.
+3. **Human-recorded walk (`record`)** — the floor; always works, but coverage = what was
+   walked (plus the SPA's auto-fired XHR + ZAP's traditional spider).
+
+**Why OpenAPI beats the crawl (when a spec exists).** Completeness, no browser instability,
+determinism (protects the lifecycle diff), speed, and pre-scan filtering of destructive ops —
+the crawl loses on all of these. So the crawl is a *fallback*, not the default.
+
+**What OpenAPI does NOT do.** It describes the API surface, not the SPA's UI routes, and it
+does **not** perform authentication — you still log in to obtain/maintain the JWT (Playwright
+form login or a direct token call), then attach that token to the enumerated endpoints. It also
+requires an accurate spec: specs drift, and our pilot (Juice Shop) publishes only a *partial*
+Swagger, so for the pilot the crawl/recorded-walk paths remain necessary.
+
+**Strongest combined design.** OpenAPI (discovery + scope + which endpoints need auth) + our
+existing login (obtain/maintain the JWT) + attach token to enumerated endpoints + exclude
+destructive/session-ending operations (extend `avoid_action_list` to operations) + active scan;
+crawl/record as the fallback for spec-less apps.
+
+**How to interrogate / when to act.** Trigger: onboarding an app that ships an OpenAPI spec, or
+needing broader authenticated coverage than the recorded walk gives. Implementation options:
+ZAP's OpenAPI add-on import (`/JSON/openapi/action/importUrl|importFile`) with ZAP-side auth, or
+an `--openapi <spec>` option that parses the spec, builds the scope allow-list from `servers[]`,
+seeds each endpoint via `accessUrl` with the `Authorization: Bearer` header from our login, then
+active-scans. Relates to KI1 (OpenAPI route templates also fix the fingerprint id-collapse
+heuristic) and KI4 (the current discovery limitation this addresses).
+
+---
+
+## KI4 — Authenticated route discovery is bounded by the recorded walk (DEFERRED)
+
+**Issue.** Today the authenticated attack surface that gets scanned ≈ what the `record` session
+actually walked, plus the endpoints the SPA auto-fetches on those pages, plus ZAP's traditional
+spider (weak on SPAs). The LLM does **not** discover routes — it selects/prioritizes/infers from
+the trace, and any inferred endpoints are unverified guesses. So areas nobody walked, whose
+endpoints the SPA never auto-fetches, are simply not scanned.
+
+**Why deferred.** For the single pinned pilot app a broad human walk is sufficient to hit the
+demo's target weaknesses, and the safety-first runner + deterministic results pipeline were the
+critical path. Automated discovery adds real complexity and risk (browser instability,
+non-reproducibility, session destruction) that isn't warranted for one app.
+
+**Chosen direction when we act.** Per D10: prefer an OpenAPI spec; otherwise a **bounded
+authenticated crawl** with hard guardrails — exclude session-ending actions (enforce
+`avoid_action_list` against clicks/ops), a continuous logged-in check with re-auth on token
+expiry, single-session/bounded concurrency, depth+time caps under the FR-S5 budget, and a
+phase-split scope policy (block-and-continue during discovery; keep block/log/fail during the
+active scan).
+
+**Trigger to act.** Onboarding an app whose interesting surface exceeds what a reasonable human
+walk covers, or evidence that behind-the-login endpoints are being missed. Prototype behind an
+opt-in flag (`--openapi` and/or `--crawl`) so the default scripted flow stays deterministic.
