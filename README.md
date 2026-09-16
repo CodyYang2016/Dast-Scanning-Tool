@@ -116,6 +116,7 @@ cookies, tokens, passwords) at capture, before anything could publish them.
 
 | Doc (`docs/junior_engineer/`) | What |
 |---|---|
+| `architecture_overview.md` | **Start here** — front-to-back: how every part fits, the LLM's role, diagrams |
 | `remaining_work_plan.md` | The 3-week scope + component inventory |
 | `testing_and_running_roadmap.md` | How to run/test (both paths), verification checklist, containerization issues + fixes |
 | `validation_and_testing.md` | Objective-testing method, catalogue, acceptance checklist |
