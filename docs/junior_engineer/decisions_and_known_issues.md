@@ -248,4 +248,4 @@ place to read env-var names.
 
 **How to interrogate later.** `make_plan` / `emit_auth` in `authoring/generate.py`; the LLM
 path requires `ANTHROPIC_API_KEY` in env (never committed). Model id via `--model`
-(default `claude-sonnet-5`).
+(default `claude-opus-4-8`).

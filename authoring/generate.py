@@ -28,7 +28,7 @@ _JOURNEY_SCHEMA = _ROOT / "contracts" / "journey.schema.json"
 _SCOPE_SCHEMA = _ROOT / "contracts" / "scope.schema.json"
 _VERSIONS_LOCK = _ROOT / "versions.lock"
 
-_DEFAULT_MODEL = "claude-sonnet-5"
+_DEFAULT_MODEL = "claude-opus-4-8"
 _DEFAULT_TOKEN_CHECK = "window.localStorage.getItem('token')"
 
 
@@ -217,8 +217,9 @@ def plan_from_llm(trace: dict, model: str, api_key: str) -> dict:
         "Do not include credentials."
     )
     client = anthropic.Anthropic(api_key=api_key)
+    # Latest models (Opus 4.8, Sonnet 5, ...) reject temperature/top_p/top_k; omit them.
     msg = client.messages.create(
-        model=model, max_tokens=2000, temperature=0,
+        model=model, max_tokens=4096,
         system=system, messages=[{"role": "user", "content": user}],
     )
     text = "".join(getattr(b, "text", "") for b in msg.content)
