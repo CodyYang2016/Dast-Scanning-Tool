@@ -5,6 +5,10 @@ authoring CLIs, the runner, the detections pipeline, the contracts, the safety m
 exactly where (and how narrowly) the LLM is used. Start here; the per-component design docs
 (`runner_design.md`, `authoring_clis_design.md`, `sarif_exporter_design.md`, …) go deeper.
 
+> **Diagram legend (colors used throughout):**
+> 🟨 human input · 🟩 our code (a build step) · 🟪 the LLM (Claude) · 🟦 external system
+> (GitHub / target app) · 🟧 safety gate · 🟥 abort/block · pale-yellow cylinders = data artifacts.
+
 ---
 
 ## 1. What this is
@@ -24,34 +28,53 @@ full loop runs from a single containerized command, and the four proof points al
 
 ## 2. The whole pipeline, front to back
 
-```
-        ┌──────────────── AUTHORING (once, per app) ────────────────┐   ┌──────────── SCANNING (every run) ────────────┐
-        │                                                            │   │                                              │
- human  │  record ──▶ trace.json ──▶ generate ──▶ flow.py           │   │  preflight ──▶ replay ──▶ scope-enforced     │
- +creds │  (browser   (pages,        │  scope.json  auth.json       │   │  (safety 1)   (auth via   active scan        │
-        │   crawl)     forms, API,   │  zap-policy.yaml manifest lock│   │              ZAP proxy)   (safety 2)          │
-        │              hosts)        │                              │   │                    │                         │
-        │                            ▼                              │   │                    ▼                         │
-        │                     ┌─────────────┐                       │   │            raw ZAP alerts JSON               │
-        │                     │  LLM call    │  trace → JSON journey │   │                    │                         │
-        │                     │  (Claude)    │  plan (data, not code)│   │                    ▼                         │
-        │                     └─────────────┘                       │   │   normalizer ─▶ fingerprint                  │
-        │                            │  deterministic render        │   │        │                                     │
-        │                            ▼                              │   │        ▼                                     │
-        │                          flow.py  ◀── validate (allowlist  │   │  detection records ──▶ SARIF ──▶ GitHub      │
-        │                                       + live auth replay)  │   │        │                        Security tab │
-        └────────────────────────────────────────────────────────┘   │        ▼                                     │
-                                                                       │  lifecycle diff (new/open/resolved)          │
-        evidence: redacted HAR + screenshots ──────────────────────────┘   (state file across two scans)             │
-                                                                       └──────────────────────────────────────────────┘
-```
+Two phases, and the seam between them is the generated `flow.py` + `scope.json`. **Authoring**
+turns a human's recording into scan config (the LLM lives here and only here). **Scanning**
+executes a safe authenticated scan and processes the results (no LLM runs during a scan).
 
-Two phases, and the seam between them is the generated `flow.py` + `scope.json`:
+```mermaid
+flowchart LR
+    human(["👤 Human + creds"]):::human
 
-- **Authoring** (`authoring/`) turns a human's recording into scan config. The **LLM lives
-  here and only here.**
-- **Scanning** (`runner/` → `detections/`) executes a safe authenticated scan and processes the
-  results. **No LLM runs during a scan.**
+    subgraph AUTH["🖊️ AUTHORING — once per app"]
+        direction LR
+        rec["record<br/>browser crawl"]:::build
+        trace[("trace.json<br/>pages · forms · API · hosts")]:::data
+        gen["generate"]:::build
+        llm{{"LLM · Claude<br/>trace → JSON plan"}}:::llm
+        cfg[("flow.py · scope.json<br/>auth.json · zap-policy<br/>manifest · lock")]:::data
+        val["validate<br/>allow-list + auth replay"]:::build
+    end
+
+    subgraph SCAN["🛡️ SCANNING — every run"]
+        direction LR
+        pre["preflight<br/>safety layer 1"]:::safety
+        rep["replay<br/>auth via ZAP proxy"]:::build
+        guard["scope guard<br/>safety layer 2"]:::safety
+        ascan["active scan<br/>bounded to allow-list"]:::build
+        raw[("raw ZAP alerts")]:::data
+        norm["normalizer + fingerprint"]:::build
+        recs[("detection records")]:::data
+        sarif["SARIF export"]:::build
+        diff["lifecycle diff<br/>new / open / resolved"]:::build
+    end
+
+    gh[("🌐 GitHub Security tab")]:::ext
+
+    human --> rec --> trace --> gen
+    gen <--> llm
+    gen --> cfg --> val
+    cfg ==> pre ==> rep ==> guard ==> ascan ==> raw ==> norm ==> recs
+    recs --> sarif --> gh
+    recs --> diff
+
+    classDef human fill:#fde68a,stroke:#b45309,color:#1f2937
+    classDef build fill:#bbf7d0,stroke:#15803d,color:#14532d
+    classDef llm fill:#e9d5ff,stroke:#7e22ce,color:#3b0764
+    classDef data fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    classDef safety fill:#fed7aa,stroke:#c2410c,color:#7c2d12
+    classDef ext fill:#dbeafe,stroke:#1d4ed8,color:#1e3a8a
+```
 
 ---
 
@@ -101,24 +124,28 @@ The LLM is a **single, stateless, authoring-time step**. It reads the recording 
 **constrained JSON journey plan** — *data*. Deterministic code turns that data into `flow.py`.
 The model never authors executable code and never runs during a scan.
 
-```
-   trace.json (redacted: no creds)
-        │
-        ▼
-   ┌───────────────────────────────┐
-   │  authoring/generate.py         │
-   │                                │
-   │  plan_from_llm() ── Claude ──▶ │  { "login": {...selectors...},
-   │     (one Messages API call)    │    "journey": [ {goto ...}, {api_get ...} ] }
-   │         │                      │            │  validated against
-   │         │  (on failure)        │            │  journey.schema.json
-   │         ▼                      │            ▼
-   │  journey_from_trace()  ← deterministic fallback (no key / bad output)
-   │         │                      │
-   │         ▼                      │
-   │  render_flow(plan) ────────────┼──▶  flow.py   (templated Python, AST-checked)
-   │  emit_scope / zap-policy / …   │      scope.json, auth.json, zap-policy.yaml, manifest, lock
-   └───────────────────────────────┘
+```mermaid
+flowchart TD
+    trace[("trace.json<br/>redacted — no creds")]:::data
+    subgraph GEN["authoring/generate.py"]
+        plan["plan_from_llm"]:::build
+        claude{{"Claude · one stateless<br/>Messages API call"}}:::llm
+        fb["journey_from_trace<br/>deterministic fallback"]:::build
+        schema{"journey.schema.json<br/>validation"}:::gate
+        render["render_flow<br/>plan → flow.py (templated)"]:::build
+        emit["emit scope / zap-policy /<br/>manifest / lock / auth"]:::build
+    end
+    flow[("flow.py + config")]:::data
+
+    trace --> plan --> claude --> schema
+    plan -. "on failure / no key" .-> fb --> schema
+    schema --> render --> flow
+    render --> emit --> flow
+
+    classDef build fill:#bbf7d0,stroke:#15803d,color:#14532d
+    classDef llm fill:#e9d5ff,stroke:#7e22ce,color:#3b0764
+    classDef data fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    classDef gate fill:#99f6e4,stroke:#0f766e,color:#134e4a
 ```
 
 Key properties:
@@ -133,21 +160,37 @@ Key properties:
 
 ### The two "sessions" — different things that share a word
 
-```
-   USER (APP) SESSION                          LLM (API) SESSION
-   ------------------                          -----------------
-   the authenticated login to Juice Shop       one call to the Claude API
-   (JWT in localStorage after form login)
+```mermaid
+flowchart LR
+    subgraph U["👤 USER (app) session — SCAN time"]
+        direction TB
+        u1["Chromium logs into Juice Shop"]:::build
+        u2[("JWT in localStorage<br/>STATEFUL — persists across requests")]:::data
+        u3["ZAP observes<br/>authenticated traffic"]:::ext
+        u1 --> u2 --> u3
+    end
+    subgraph L["🤖 LLM (API) session — AUTHORING time"]
+        direction TB
+        l1["generate sends the<br/>redacted trace"]:::build
+        l2{{"Claude · one STATELESS call"}}:::llm
+        l3[("JSON journey plan (data)")]:::data
+        l1 --> l2 --> l3
+    end
 
-   where:  runner/replay.py (scan time)        where:  authoring/generate.py (authoring time)
-   when:   established live, every scan         when:   once, before any scan
-   state:  STATEFUL (JWT/cookies persist        state:  STATELESS (single request/response)
-           so ZAP reaches auth endpoints)
-   talks:  the target app, via the ZAP proxy    talks:  api.anthropic.com only
-   holds:  REAL credentials + JWT               holds:  a REDACTED trace (no secrets)
-   trust:  trusted (our creds, our target)      trust:  UNTRUSTED output — schema-validated,
-                                                        rendered by deterministic code
+    classDef build fill:#bbf7d0,stroke:#15803d,color:#14532d
+    classDef llm fill:#e9d5ff,stroke:#7e22ce,color:#3b0764
+    classDef data fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    classDef ext fill:#dbeafe,stroke:#1d4ed8,color:#1e3a8a
 ```
+
+| | **User (app) session** | **LLM (API) session** |
+|---|---|---|
+| **What it is** | The authenticated login to Juice Shop — the JWT in `localStorage` after form login | One call to the Claude API |
+| **Where / when** | `runner/replay.py`, at scan time (established live every run) | `authoring/generate.py`, at authoring time (once, before any scan) |
+| **Stateful?** | **Yes** — JWT/cookies persist so ZAP reaches authenticated endpoints | **No** — single request/response, nothing persists |
+| **Talks to** | The target app, via the ZAP proxy | api.anthropic.com only — never the target, never ZAP |
+| **Carries secrets?** | **Yes** — real creds + JWT (why HAR is redacted, creds from env) | **No** — receives a *redacted* trace, emits only a plan |
+| **Trust** | Trusted (our creds, our target) | **Untrusted output** — schema-validated, rendered by deterministic code |
 
 The user session is the stateful authenticated connection **to the app being scanned** (what
 makes the scan "authenticated"). The LLM session is a stateless config-authoring call that never
@@ -157,16 +200,21 @@ touches the app, ZAP, or any secret.
 
 ## 5. The safety model (NFR-2 — the top guardrail)
 
-Two independent, fail-closed layers, so a bug in one can't send unsafe traffic:
+Two independent, fail-closed layers, so a bug in one can't send unsafe traffic.
 
-```
-   scope.json ──▶ preflight (layer 1)                    every browser request
-                  ├─ missing / no environment_class ──▶ ABORT     │
-                  ├─ environment_class == prod ─────────▶ ABORT     ▼
-                  └─ empty allow-list ──────────────────▶ ABORT   scope_guard (layer 2)
-                          │ (safe)                                 ├─ host in allow-list ─▶ continue ─▶ ZAP proxy
-                          ▼                                        └─ else ──────────────▶ block + log + FAIL scan
-                    launch browser / scan                                (FR-S4: block/log/fail)
+```mermaid
+flowchart TD
+    scope[("scope.json")]:::data --> pre{"preflight · layer 1<br/>(before any traffic)"}:::safety
+    pre -->|"missing · no env · prod · empty allow-list"| abort1["ABORT — no traffic sent"]:::stop
+    pre -->|"safe"| launch["launch browser / scan"]:::build
+    launch --> req["every browser request"]:::build --> guard{"scope guard · layer 2<br/>(per in-flight request)"}:::safety
+    guard -->|"host in allow-list"| ok["continue → ZAP proxy"]:::build
+    guard -->|"otherwise"| abort2["block + log + FAIL scan"]:::stop
+
+    classDef data fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    classDef build fill:#bbf7d0,stroke:#15803d,color:#14532d
+    classDef safety fill:#fed7aa,stroke:#c2410c,color:#7c2d12
+    classDef stop fill:#fecaca,stroke:#b91c1c,color:#7f1d1d
 ```
 
 Plus: evidence HARs are **redacted** (auth headers, cookies, tokens, passwords) at capture,
@@ -177,32 +225,26 @@ ever sees a redacted trace.
 
 ## 6. Data & contract flow (one concrete example)
 
-Following the High SQL Injection from raw scan to Security-tab alert:
+Following the High SQL Injection from raw scan to Security-tab alert. The **fingerprint** is the
+thread that ties it together — the stable identity SARIF carries into GitHub (so re-uploads
+dedupe) and the key the lifecycle diff compares across scans.
 
-```
-ZAP alert                          → normalizer                 → detection record
-{ pluginId:"40018",                  rule_id  "40018"             { rule_id:"40018",
-  alert:"SQL Injection",             title    "SQL Injection"       title:"SQL Injection",
-  risk:"High",                       severity High→"high"           severity:"high",
-  url:".../rest/products/            endpoint /rest/products/       endpoint:"/rest/products/search",
-       search?q=apple%27",                    search  (query dropped) parameter:"q",
-  param:"q", cweid:"89" }            cwe      "CWE-89"              cwe_id:"CWE-89",
-                                     fingerprint = sha256(          fingerprint:"ece130…",
-                                       "40018|/rest/products/       status:"open" }
-                                        search|q|sqli")
-        │
-        ▼  sarif_export
-   SARIF result: level "error", security-severity "8.0", tag external/cwe/cwe-89,
-                 partialFingerprints.dastFingerprint/v1 = "ece130…"
-        │
-        ▼  github_upload  →  GitHub Security tab: "SQL Injection" alert, High severity
-        │
-        ▼  lifecycle_diff (scan 2, after a fix): fingerprint "ece130…" gone from current
-                          → labeled RESOLVED, others stay OPEN
-```
+```mermaid
+flowchart LR
+    a[("ZAP alert<br/>pluginId 40018 · risk High<br/>url .../search?q=apple' · param q · cwe 89")]:::data
+    b["normalizer + fingerprint<br/>High→high · path-only endpoint<br/>cwe 89→CWE-89"]:::build
+    c[("detection record<br/>severity high · CWE-89<br/>endpoint /rest/products/search · param q<br/>fingerprint ece130…")]:::data
+    d["SARIF result<br/>level error · security-severity 8.0<br/>tag external/cwe/cwe-89<br/>partialFingerprint ece130…"]:::build
+    e[("🌐 GitHub Security tab<br/>SQL Injection · High")]:::ext
+    f["lifecycle diff (scan 2, after fix)<br/>fingerprint ece130… gone → RESOLVED<br/>others stay OPEN"]:::build
 
-The **fingerprint** is the thread that ties it all together: it's the stable identity SARIF
-carries into GitHub (so re-uploads dedupe) and the key the lifecycle diff compares across scans.
+    a --> b --> c --> d --> e
+    c --> f
+
+    classDef data fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    classDef build fill:#bbf7d0,stroke:#15803d,color:#14532d
+    classDef ext fill:#dbeafe,stroke:#1d4ed8,color:#1e3a8a
+```
 
 For how `journey.schema` steps become `flow.py` and then authenticated requests ZAP records,
 see §4 above + `authoring_clis_design.md`.
