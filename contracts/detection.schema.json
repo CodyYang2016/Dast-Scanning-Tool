@@ -61,8 +61,8 @@
     },
     "status": {
       "type": "string",
-      "enum": ["open", "new", "resolved"],
-      "description": "Lifecycle state assigned by the diff against the previous scan's fingerprint set."
+      "enum": ["open", "new", "resolved", "not_scanned"],
+      "description": "Lifecycle state assigned by the diff against the previous scan's fingerprint set. 'resolved' is asserted only when the finding's (route x rule) pair was actually exercised this scan; 'not_scanned' marks a previously-open finding whose (route x rule) pair was not exercised this scan (coverage-driven disappearance, not a confirmed fix) — see R2 in docs/junior_engineer/seeded_session_exploration_design.md."
     },
     "evidence_path": {
       "type": ["string", "null"],

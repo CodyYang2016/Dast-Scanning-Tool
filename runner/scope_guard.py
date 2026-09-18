@@ -38,7 +38,17 @@ def host_of(url: str) -> str | None:
 
 
 class ScopeGuard:
-    def __init__(self, scope: dict):
+    def __init__(self, scope: dict, mode: str = "enforce"):
+        """mode:
+          - "enforce"   (default): out-of-scope requests are blocked AND the scan fails
+            (finalize/raise_if_violated raises) — the active-scan policy (D4/FR-S4).
+          - "discovery": out-of-scope requests are still blocked and logged, but do NOT fail
+            the run (block-and-continue) — the exploration policy (open question 5 / KI4).
+        Blocking + logging is identical in both modes; only the terminal failure differs.
+        """
+        if mode not in ("enforce", "discovery"):
+            raise ValueError(f"unknown scope-guard mode: {mode!r}")
+        self.mode = mode
         self._allow = {h.strip().lower() for h in scope.get("fqdn_allow_list", [])}
         self._deny = [p.strip().lower() for p in scope.get("fqdn_deny_list", [])]
         self._decisions: list[Decision] = []
@@ -85,6 +95,14 @@ class ScopeGuard:
                 f"{len(v)} out-of-scope request(s) blocked; scan failed. "
                 f"First: {v[0].url} ({v[0].reason})"
             )
+
+    def finalize(self) -> None:
+        """Phase-split terminal check: raise in 'enforce' mode, block-and-continue in 'discovery'.
+
+        Discovery still blocked + logged every out-of-scope request (route.abort in route_handler);
+        it just doesn't fail the run, so a stray request can't abort the whole crawl (KI4)."""
+        if self.mode == "enforce":
+            self.raise_if_violated()
 
     def route_handler(self, route) -> None:
         """Playwright page.route handler: continue allowed requests, abort blocked ones."""

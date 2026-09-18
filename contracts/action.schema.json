@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nationwide.com/ssd-dast-poc/contracts/action.schema.json",
+  "title": "Exploration action",
+  "description": "One constrained action the LLM proposes during the Phase B exploration loop. The model emits DATA validated against this schema; deterministic code validates it against scope + the action deny-list and only then executes it (LLM safety boundary, D8). The model never emits code. See docs/junior_engineer/seeded_session_exploration_design.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["action"],
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": ["follow_link", "submit_form", "visit_api", "expand_nav", "stop"],
+      "description": "What to do. 'stop' ends the loop (no unexplored, in-scope, non-destructive branches left)."
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]},
+        "path": {"type": "string", "description": "Route/URL for follow_link/goto/visit_api."},
+        "selector": {"type": "string", "description": "CSS selector for submit_form/expand_nav."},
+        "field_bindings": {"type": "array", "items": {"type": "string"}, "description": "Form field names (no values)."}
+      }
+    },
+    "reason": {"type": "string", "description": "Why this action (e.g. 'unexplored authenticated branch off dashboard')."},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+  }
+}
