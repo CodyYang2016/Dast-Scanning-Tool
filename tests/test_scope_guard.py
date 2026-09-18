@@ -146,3 +146,42 @@ def test_injected_out_of_scope_blocked():
     assert len(g.violations) == 1
     with pytest.raises(ScopeViolation):
         g.raise_if_violated()
+
+
+# ---- phase-split mode (enforce vs discovery — open question 5 / KI4) ----------------------
+
+def test_default_mode_is_enforce():
+    assert ScopeGuard(SCOPE).mode == "enforce"
+
+
+def test_unknown_mode_rejected():
+    with pytest.raises(ValueError):
+        ScopeGuard(SCOPE, mode="bogus")
+
+
+def test_discovery_still_blocks_out_of_scope():
+    # block-and-continue: the request is STILL blocked + recorded, just non-fatal.
+    g = ScopeGuard(SCOPE, mode="discovery")
+    route = FakeRoute("http://evil.example.com/")
+    g.route_handler(route)
+    assert route.aborted is True
+    assert len(g.violations) == 1
+
+
+def test_discovery_finalize_does_not_raise():
+    g = ScopeGuard(SCOPE, mode="discovery")
+    g.check("http://evil.example.com/")   # a violation is present
+    g.finalize()                          # discovery: block-and-continue, must NOT raise
+
+
+def test_enforce_finalize_raises_on_violation():
+    g = ScopeGuard(SCOPE, mode="enforce")
+    g.check("http://evil.example.com/")
+    with pytest.raises(ScopeViolation):
+        g.finalize()
+
+
+def test_enforce_finalize_clean_does_not_raise():
+    g = ScopeGuard(SCOPE, mode="enforce")
+    g.check("http://localhost/")
+    g.finalize()  # no violations -> no raise
