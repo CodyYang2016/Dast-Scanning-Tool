@@ -1,10 +1,11 @@
 # Seeded-Session + LLM Exploration Loop — Design
 
-**Status:** implemented (Phase A + Phase B), except a live LLM-driven exploration run (verified
-only via the deterministic fallback here; the LLM path is unit-tested and mirrors `generate`'s,
-pending an `ANTHROPIC_API_KEY`). Concrete design for the authenticated route-discovery work deferred
-as **KI4**, following the direction adopted in **D10**. Reuses the **D8** code-safety boundary and
-emits the same `record` artifacts, so nothing downstream of `record` changes.
+**Status:** implemented and verified (Phase A + Phase B), including the live LLM-driven exploration
+run: with a key, `explore` drove every step via the LLM (0 fallback), reaching authenticated routes
+beyond the seed set with 0 out-of-scope requests, and the LLM-authored trace fed `generate` (LLM
+path) into a compiling, scope-valid bundle. Concrete design for the authenticated route-discovery
+work deferred as **KI4**, following the direction adopted in **D10**. Reuses the **D8** code-safety
+boundary and emits the same `record` artifacts, so nothing downstream of `record` changes.
 
 **Where it lives:** seed = `authoring/seed.py` (+ `contracts/seed.schema.json`); seeded replay =
 `runner/replay.py::replay_seeded` / `prove_auth_live`; exploration = `authoring/explore.py`
