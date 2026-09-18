@@ -252,16 +252,34 @@ touches the app, ZAP, or any secret.
 
 ## 5. The safety model (NFR-2 — the top guardrail)
 
-Two independent, fail-closed layers, so a bug in one can't send unsafe traffic.
+Two independent, fail-closed layers (preflight + the request-boundary scope guard), so a bug in
+one can't send unsafe traffic. The LLM exploration path keeps both layers and adds two
+authoring-only gates — a redactor (before the model) and the action policy (after it) — with the
+scope guard running in **discovery** mode (block-and-continue) instead of **enforce** (block/fail).
 
 ```mermaid
 flowchart TD
     scope[("scope.json")]:::data --> pre{"preflight · layer 1<br/>(before any traffic)"}:::safety
     pre -->|"missing · no env · prod · empty allow-list"| abort1["ABORT — no traffic sent"]:::stop
-    pre -->|"safe"| launch["launch browser / scan"]:::build
-    launch --> req["every browser request"]:::build --> guard{"scope guard · layer 2<br/>(per in-flight request)"}:::safety
-    guard -->|"host in allow-list"| ok["continue → ZAP proxy"]:::build
-    guard -->|"otherwise"| abort2["block + log + FAIL scan"]:::stop
+    pre -->|"safe"| launch["launch browser"]:::build
+    launch --> phase{"which phase?"}:::build
+
+    %% Exploration (authoring-time, LLM in the loop)
+    phase -->|"exploration<br/>(authoring)"| obs["observation<br/>DOM · XHR"]:::build
+    obs --> red["redact secrets/PII<br/>before the LLM"]:::safety
+    red --> llm["LLM proposes<br/>one JSON action"]:::build
+    llm --> apol{"action policy<br/>deny state-changing verbs<br/>+ avoid_action_list"}:::safety
+    apol -->|"destructive / denied"| rej["reject action<br/>(skip, keep exploring)"]:::stop
+    apol -->|"allowed"| dreq["browser request"]:::build
+    dreq --> gd{"scope guard · layer 2<br/>DISCOVERY mode"}:::safety
+    gd -->|"host in allow-list"| okd["continue → ZAP proxy"]:::build
+    gd -->|"otherwise"| bkd["block + log<br/>(continue — non-fatal)"]:::stop
+
+    %% Scan (every run, no LLM)
+    phase -->|"scan<br/>(every run)"| sreq["every browser request"]:::build
+    sreq --> ge{"scope guard · layer 2<br/>ENFORCE mode"}:::safety
+    ge -->|"host in allow-list"| oks["continue → ZAP proxy"]:::build
+    ge -->|"otherwise"| bks["block + log + FAIL scan"]:::stop
 
     classDef data fill:#fef9c3,stroke:#ca8a04,color:#713f12
     classDef build fill:#bbf7d0,stroke:#15803d,color:#14532d
