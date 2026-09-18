@@ -26,7 +26,7 @@ from detections.normalizer import normalize, write_json_array
 from runner import coverage as coverage_capture
 from runner import evidence
 from runner.preflight import PreflightError, preflight
-from runner.replay import load_flow, replay
+from runner.replay import SessionDeadError, load_flow, replay, replay_seeded
 from runner.scan import ScanScopeError, new_session, scan
 from runner.scope_guard import ScopeViolation
 
@@ -90,10 +90,13 @@ def evaluate_gate(authenticated: bool, scope_ok: bool, records: list[dict]) -> d
 
 
 def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
-        fresh=True, do_spider=True, max_scan_min=4, wait=True):
+        fresh=True, do_spider=True, max_scan_min=4, wait=True,
+        storage_state=None, seed_routes=None):
     """Execute the full loop. Returns (scope, replay_result, guard, records, scan_id, coverage).
 
-    `coverage` is the (route x rule) surface this scan exercised (R2), for the lifecycle diff."""
+    `coverage` is the (route x rule) surface this scan exercised (R2), for the lifecycle diff.
+    If `storage_state` is given, replay a seeded session (Phase A) instead of the login flow,
+    falling back to the hand-authored flow if the seeded session is dead (fail closed)."""
     scope = preflight(scope_path, schema)              # safety layer 1 (offline; fail fast)
     if wait:
         wait_ready(zap_api, base_url)                  # tolerate container startup ordering
@@ -103,8 +106,18 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
 
     if fresh:
         new_session(zap_api)                           # clean per-scan session
-    flow = load_flow(flow_path)
-    result, guard = replay(scope, flow, base_url, zap_proxy, evidence_dir=str(ev_dir))
+    if storage_state:
+        try:
+            result, guard = replay_seeded(scope, base_url, zap_proxy, storage_state,
+                                          seed_routes or [], evidence_dir=str(ev_dir))
+        except SessionDeadError as exc:
+            print(f"SEEDED SESSION DEAD ({exc}); falling back to hand-authored flow",
+                  file=sys.stderr)
+            flow = load_flow(flow_path)
+            result, guard = replay(scope, flow, base_url, zap_proxy, evidence_dir=str(ev_dir))
+    else:
+        flow = load_flow(flow_path)
+        result, guard = replay(scope, flow, base_url, zap_proxy, evidence_dir=str(ev_dir))
 
     # Redact the HAR immediately after capture — before it can be published (hard requirement).
     har = ev_dir / "active-scan.har"
@@ -127,7 +140,10 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="End-to-end DAST runner (Phase 1 gate).")
     p.add_argument("--scope", required=True, help="App scope.json")
     p.add_argument("--schema", default=_DEFAULT_SCHEMA)
-    p.add_argument("--flow", required=True, help="Hand-authored flow.py")
+    p.add_argument("--flow", required=True, help="Hand-authored flow.py (also the seeded-session fallback)")
+    p.add_argument("--seed", default=None,
+                   help="Seed config (Phase A): replay a seeded storageState + seed routes instead "
+                        "of the login flow; falls back to --flow if the session is dead")
     p.add_argument("--base-url", default="http://juice:3000", help="Target as ZAP resolves it")
     p.add_argument("--zap-api", default="http://localhost:8080")
     p.add_argument("--zap-proxy", default="http://localhost:8080")
@@ -140,11 +156,18 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--max-scan-min", type=int, default=4)
     args = p.parse_args(argv)
 
+    storage_state = seed_routes = None
+    if args.seed:
+        from authoring.seed import load_seed
+        seed_cfg = load_seed(args.seed)
+        storage_state = seed_cfg["session"]["storage_state"]
+        seed_routes = seed_cfg["seed_routes"]
+
     try:
         scope, result, guard, records, scan_id, coverage = run(
             args.scope, args.schema, args.flow, args.base_url, args.zap_api, args.zap_proxy,
             fresh=not args.no_fresh, do_spider=not args.no_spider, max_scan_min=args.max_scan_min,
-            wait=not args.no_wait,
+            wait=not args.no_wait, storage_state=storage_state, seed_routes=seed_routes,
         )
     except (PreflightError, ScanScopeError, ScopeViolation) as exc:
         print(f"RUNNER ABORT: {exc}", file=sys.stderr)

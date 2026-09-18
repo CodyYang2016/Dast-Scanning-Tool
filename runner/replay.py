@@ -27,6 +27,35 @@ from runner.scope_guard import ScopeGuard
 _DEFAULT_SCHEMA = str(Path(__file__).resolve().parent.parent / "contracts" / "scope.schema.json")
 
 
+_LOGIN_MARKERS = ("/login", "/#/login", "/signin")
+
+
+class SessionDeadError(Exception):
+    """Raised when a seeded session is not authenticated (expired/invalid). Fail closed: the
+    caller must fall back to a login flow, never scan an unauthenticated surface (Phase A)."""
+
+
+def prove_auth_live(page, base_url: str, seed_route: str, token_check: str | None = None) -> dict:
+    """Visit a seed route and decide whether the (seeded) session is authenticated.
+
+    Dead if the app redirects to a login route, the response is 401/403, or `token_check` (a JS
+    truthy expression) is falsy. Pure w.r.t. the page object (takes any page-like) so the decision
+    logic is unit-testable with a fake page. Returns {"alive": bool, "reason": str, "url": str}.
+    """
+    resp = page.goto(base_url + seed_route, wait_until="networkidle")
+    status = getattr(resp, "status", None)
+    if callable(status):  # some fakes/clients expose status() as a method
+        status = status()
+    current = page.url
+    if any(m in current for m in _LOGIN_MARKERS):
+        return {"alive": False, "reason": f"redirected to login: {current}", "url": current}
+    if status in (401, 403):
+        return {"alive": False, "reason": f"seed route returned {status}", "url": current}
+    if token_check and not page.evaluate(f"() => !!({token_check})"):
+        return {"alive": False, "reason": "auth token missing (session not established)", "url": current}
+    return {"alive": True, "reason": "session authenticated", "url": current}
+
+
 def load_flow(flow_path: str):
     """Load a hand-authored flow module from a file path (the app dir has a hyphen, so it is
     not importable as a package)."""
@@ -78,6 +107,50 @@ def replay(scope: dict, flow_module, base_url: str, zap_proxy: str, headless: bo
 
     guard.raise_if_violated()  # FR-S4: fail the scan if the boundary was crossed
     return result, guard
+
+
+def replay_seeded(scope: dict, base_url: str, zap_proxy: str, storage_state: str,
+                  seed_routes: list[str], headless: bool = True, evidence_dir: str | None = None,
+                  token_check: str | None = None):
+    """Replay a SEEDED session through ZAP: start already authenticated from `storage_state` (no
+    login flow), prove the session is live, then visit the seed routes so ZAP observes the
+    authenticated traffic. Returns (result, guard).
+
+    Raises SessionDeadError if the seeded session is not authenticated (caller falls back to a
+    login flow — never scan unauthenticated). Both safety layers stay active: preflight (caller)
+    and the scope guard (page.route). HAR is unredacted here; the caller redacts before publishing.
+    """
+    from playwright.sync_api import sync_playwright  # lazy, as in replay()
+
+    if not seed_routes:
+        raise ValueError("replay_seeded requires at least one seed route")
+    launch_args = ["--no-sandbox", "--disable-dev-shm-usage"] if os.environ.get(
+        "RUNNER_CHROMIUM_NO_SANDBOX") else []
+
+    guard = ScopeGuard(scope)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=headless, proxy={"server": zap_proxy}, args=launch_args)
+        ctx_kwargs = {"ignore_https_errors": True, "storage_state": storage_state}
+        if evidence_dir:
+            Path(evidence_dir).mkdir(parents=True, exist_ok=True)
+            ctx_kwargs["record_har_path"] = str(Path(evidence_dir) / "active-scan.har")
+        context = browser.new_context(**ctx_kwargs)
+        page = context.new_page()
+        page.route("**/*", lambda route: guard.route_handler(route))  # safety layer 2
+        try:
+            liveness = prove_auth_live(page, base_url, seed_routes[0], token_check)
+            if not liveness["alive"]:
+                raise SessionDeadError(liveness["reason"])
+            for route in seed_routes:
+                page.goto(base_url + route, wait_until="networkidle")
+        finally:
+            if evidence_dir:
+                page.screenshot(path=str(Path(evidence_dir) / "screenshot.png"), full_page=True)
+            context.close()  # writes the HAR
+            browser.close()
+
+    guard.raise_if_violated()  # FR-S4
+    return {"authenticated": True, "seeded": True, "routes_visited": len(seed_routes)}, guard
 
 
 def main(argv: list[str] | None = None) -> int:

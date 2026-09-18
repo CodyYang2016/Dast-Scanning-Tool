@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nationwide.com/ssd-dast-poc/contracts/seed.schema.json",
+  "title": "Seed config",
+  "description": "The once-per-target human seed for the Seeded-Session + LLM Exploration Loop (Phase A). The human logs in once (handling SSO/MFA/CAPTCHA) so Playwright can save a storageState; scans then start already authenticated and replay the seed routes. deny_actions/exploration are consumed by the Phase B exploration loop. File contents are JSON (a valid YAML subset), matching the repo's zap-policy convention. See docs/junior_engineer/seeded_session_exploration_design.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["target", "session", "seed_routes"],
+  "properties": {
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base_url"],
+      "properties": {
+        "base_url": {"type": "string", "minLength": 1, "description": "Target as the browser/ZAP reaches it, e.g. http://juice:3000"},
+        "scope_file": {"type": "string", "minLength": 1, "description": "Path to the app scope.json (validated by preflight before any traffic)."}
+      }
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["storage_state"],
+      "properties": {
+        "storage_state": {"type": "string", "minLength": 1, "description": "Path to the Playwright storageState (cookies + localStorage) saved by the human seed step. MUST be gitignored (holds live session secrets)."}
+      }
+    },
+    "seed_routes": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1},
+      "description": "Known authenticated entry-point routes; the seeded replay visits these and the exploration loop starts from them."
+    },
+    "deny_actions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1},
+      "description": "Destructive actions to never perform (Phase B). Enforced deterministically, not by LLM judgment."
+    },
+    "exploration": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_pages": {"type": "integer", "minimum": 1},
+        "max_depth": {"type": "integer", "minimum": 1},
+        "time_budget_minutes": {"type": "number", "exclusiveMinimum": 0}
+      },
+      "description": "Budgets bounding the Phase B exploration loop."
+    }
+  }
+}
