@@ -69,9 +69,12 @@ def _launch_args() -> list[str]:
 
 
 def crawl(app_id: str, base_url: str, email: str, password: str,
-          zap_proxy: str | None = None, headless: bool = True) -> dict:
+          zap_proxy: str | None = None, headless: bool = True, slow_mo: int = 0) -> dict:
     """Drive a real browser through register -> login -> an authenticated page, recording
-    goto/fill/click/form interactions and API/XHR requests. Returns a build_trace() result."""
+    goto/fill/click/form interactions and API/XHR requests. Returns a build_trace() result.
+
+    slow_mo (ms) delays each Playwright action so a headed run is watchable in a live demo /
+    screen recording; 0 (default) is full speed and does not affect the captured trace."""
     from playwright.sync_api import sync_playwright
 
     events: list[dict] = []
@@ -79,6 +82,8 @@ def crawl(app_id: str, base_url: str, email: str, password: str,
         launch = {"headless": headless, "args": _launch_args()}
         if zap_proxy:
             launch["proxy"] = {"server": zap_proxy}
+        if slow_mo:
+            launch["slow_mo"] = slow_mo
         browser = pw.chromium.launch(**launch)
         page = browser.new_context(ignore_https_errors=True).new_page()
         page.on("request", lambda r: events.append(
@@ -123,12 +128,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--zap-proxy", default=None, help="Proxy through ZAP so hosts match the runner (D7)")
     p.add_argument("--out-dir", required=True, help="Directory for trace.json + index.json")
     p.add_argument("--headed", action="store_true")
+    p.add_argument("--slow-mo", type=int, default=0, metavar="MS",
+                   help="Delay each browser action by MS milliseconds (for headed demos/recordings)")
     args = p.parse_args(argv)
 
     email = os.environ.get("AUTH_EMAIL", "dast-poc@juice-sh.op")
     password = os.environ.get("AUTH_PASSWORD", "Dast-POC-passw0rd!")
     trace = crawl(args.app_id, args.base_url, email, password,
-                  zap_proxy=args.zap_proxy, headless=not args.headed)
+                  zap_proxy=args.zap_proxy, headless=not args.headed, slow_mo=args.slow_mo)
     write_trace(trace, args.out_dir)
     print(f"recorded: {len(trace['interactions'])} interactions, {len(trace['api'])} api calls, "
           f"hosts={trace['hosts']} -> {args.out_dir}/trace.json")
