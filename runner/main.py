@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from detections.normalizer import normalize, write_json_array
+from runner import coverage as coverage_capture
 from runner import evidence
 from runner.preflight import PreflightError, preflight
 from runner.replay import load_flow, replay
@@ -90,7 +91,9 @@ def evaluate_gate(authenticated: bool, scope_ok: bool, records: list[dict]) -> d
 
 def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
         fresh=True, do_spider=True, max_scan_min=4, wait=True):
-    """Execute the full loop. Returns (scope, replay_result, guard, records, scan_id)."""
+    """Execute the full loop. Returns (scope, replay_result, guard, records, scan_id, coverage).
+
+    `coverage` is the (route x rule) surface this scan exercised (R2), for the lifecycle diff."""
     scope = preflight(scope_path, schema)              # safety layer 1 (offline; fail fast)
     if wait:
         wait_ready(zap_api, base_url)                  # tolerate container startup ordering
@@ -115,7 +118,9 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
     relpath = evidence.evidence_relpath(scan_id)
     for r in records:
         r["evidence_path"] = relpath
-    return scope, result, guard, records, scan_id
+    # Capture the (route x rule) surface this scan exercised, for the coverage-aware diff (R2).
+    coverage = coverage_capture.capture(zap_api, base_url)
+    return scope, result, guard, records, scan_id, coverage
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -127,6 +132,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--zap-api", default="http://localhost:8080")
     p.add_argument("--zap-proxy", default="http://localhost:8080")
     p.add_argument("--records-out", default=None, help="Write detection records here")
+    p.add_argument("--coverage-out", default=None,
+                   help="Write this scan's (route x rule) coverage here for the lifecycle diff (R2)")
     p.add_argument("--no-spider", action="store_true")
     p.add_argument("--no-fresh", action="store_true", help="Do not reset the ZAP session first")
     p.add_argument("--no-wait", action="store_true", help="Do not wait for ZAP/target readiness")
@@ -134,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
 
     try:
-        scope, result, guard, records, scan_id = run(
+        scope, result, guard, records, scan_id, coverage = run(
             args.scope, args.schema, args.flow, args.base_url, args.zap_api, args.zap_proxy,
             fresh=not args.no_fresh, do_spider=not args.no_spider, max_scan_min=args.max_scan_min,
             wait=not args.no_wait,
@@ -147,6 +154,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.records_out:
         with open(args.records_out, "w") as fh:
             write_json_array(records, fh)
+    if args.coverage_out:
+        with open(args.coverage_out, "w") as fh:
+            json.dump(coverage, fh, indent=2)
 
     print(json.dumps({
         "scan_id": scan_id,
