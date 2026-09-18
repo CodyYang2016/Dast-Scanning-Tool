@@ -172,7 +172,9 @@ Human (once): log in + seed routes + deny-list + scope
 - **Dead/expired session** — stop and request human re-seed; never scan unauthenticated.
 - **Low-confidence or ambiguous branch** — skip or fall back to the seeded/hand-authored flow
   rather than guessing.
-- **Scope violation** — block, log the reason, and fail closed.
+- **Scope violation** — block and log the reason. Handling is **phase-split** (see open question 5):
+  *block-and-continue* during discovery (reject the out-of-scope action, keep exploring) and
+  *block/log/fail-closed* during the active scan.
 - **Auth loss mid-exploration** — halt exploration; do not continue against a downgraded surface.
 
 ## Why this is the right compromise
@@ -187,53 +189,93 @@ Human (once): log in + seed routes + deny-list + scope
 
 ---
 
+## Decisions (resolved in review)
+
+These were open tensions in the first draft; the team resolved them in review.
+
+**R1 — The LLM runs only at authoring/discovery time; monitoring scans replay a committed bundle.**
+The LLM is *never* in the loop on a routine scan. There are two run modes:
+
+- **Authoring / discovery run** (LLM in the loop, occasional): seeded session → exploration loop →
+  `trace.json` → `generate` → the flow bundle (`flow.py`, `scope.json`, `zap-policy`,
+  `manifest.json`, `lock`, `auth.json`). A human reviews and **commits** it.
+- **Monitoring scan run** (no LLM, repeatable): the runner replays the *committed* bundle through
+  ZAP; this feeds `lifecycle_diff.py`, and it is fully deterministic.
+
+This maps onto the existing architecture with no structural change — `record`/`generate`/`validate`
+are already authoring-time and the runner is already the repeatable scan, so this is effectively a
+new *mode of `record`*. Because the output is human-reviewed before use, the exploration loop
+**does not itself need to be deterministic** (a human walk isn't either) — the review step is
+load-bearing instead. This preserves FR-L2, and FR-G4 idempotency (same trace → equivalent bundle)
+still holds downstream.
+
+*Pinned artifact:* commit **both** `trace.json` (the reviewable "what the LLM discovered") and the
+generated bundle, but treat the **bundle** as the source of truth for reproducibility. *(Default —
+override if you'd rather commit the trace only and always regenerate.)*
+
+**R2 — Coverage-aware `resolved`: assert a fix only for (route × rule) pairs the scan actually exercised.**
+A finding disappearing between scans has two very different causes that must not be conflated:
+*fix-driven* (same surface tested, finding genuinely gone) vs *coverage-driven* (we never looked
+there this run — a re-authored flow dropped the route, or the ZAP rule that found it was disabled).
+Only the first is a real `resolved`.
+
+So the lifecycle diff becomes **coverage-aware at (route × rule) granularity**. A finding's route is
+already the `endpoint_pattern` component of its fingerprint (carried as `endpoint` on every record),
+and its rule is `rule_id`. At scan time we capture the set of `(endpoint_pattern, rule_id)` pairs the
+scan **actually exercised — from ZAP's real accessed-URL / active-scan data**, not the flow's
+*intended* routes — canonicalized through the same `endpoint_pattern()` so it is directly comparable.
+Then:
+
+```
+previous-only finding F, with pair (R, rule) = (F.endpoint_pattern, F.rule_id):
+  (R, rule) exercised this scan     -> resolved      (we tested it; it's gone -> real fix)
+  (R, rule) NOT exercised this scan -> not_scanned   (we didn't test for it; no fix claim)
+```
+
+This adds a `not_scanned` value to the record `status` enum (`{new, open, resolved, not_scanned}`)
+and persists the exercised-pair set per scan in the lifecycle state (today `save_state` stores
+`scan_id` + `records`; add `coverage`). Using **ZAP's actual coverage** plus the **rule** dimension
+is what keeps `resolved` honest — notably it stops the issue-#7 "disable the SQLi rule for scan 2"
+case from being mislabeled a fix: the route is still covered, but the SQLi rule wasn't run, so the
+pair is *not exercised* → `not_scanned`, not `resolved`.
+
 ## Open questions / review notes
 
-These are the tensions surfaced in review — decisions to resolve before building, not settled
-positions.
+Still open — decisions to resolve before building, not settled positions.
 
-1. **Decouple exploration from scanning to protect the FR-L2 lifecycle diff (load-bearing).**
-   The fingerprint/lifecycle system rests on the invariant that *two scans of an unchanged app
-   produce byte-identical fingerprints* (`fingerprint.py`, `lifecycle_diff.py`). An LLM in the loop
-   on every scan is nondeterministic: different runs discover different routes → different endpoints
-   scanned → findings blink in and out for reasons unrelated to a real fix → spurious
-   `new`/`resolved` labels (exactly the "noisy lifecycle diff" risk named in D10). Proposed stance:
-   treat LLM exploration as a **trace-authoring** step whose output (`trace.json`) is reviewed and
-   **committed**; scans replay the *committed* trace deterministically. `generate` is already
-   idempotent (FR-G4: same trace → byte-identical `flow.py`), so this preserves FR-L2. Exploration
-   becomes an occasional "re-map the app" activity, decoupled from repeatable monitoring scans.
-
-2. **Deny-list enforcement must be deterministic, not an LLM judgment.** Scope is host-based and
+1. **Deny-list enforcement must be deterministic, not an LLM judgment.** Scope is host-based and
    trivially enforced; "logout / delete / purchase / admin-mutation" are *semantic*. The design must
    not trust the LLM's `"non-destructive"` self-label (that violates principle 2). Fail-closed
    answer: **default-deny all state-changing methods (POST/PUT/PATCH/DELETE)** during exploration
    except an explicit allow-list of known-safe forms, plus per-app deny path patterns. This is the
    `avoid_action_list` enforcement mechanism left unspecified in the issue-#1 contract-freeze
-   checklist.
+   checklist. Concretely, Stage 3's `"submit a non-destructive form"` means **a form on the
+   known-safe allow-list** — the LLM's own `"non-destructive"` label is never authoritative; the
+   deterministic method/path check decides.
 
-3. **Session expiry mid-active-scan.** Seeding solves login, but the seeded token can expire during
+2. **Session expiry mid-active-scan.** Seeding solves login, but the seeded token can expire during
    the (minutes-long) ZAP active scan (Stage 6), silently downgrading to an unauthenticated surface.
    Failure handling covers auth loss mid-*exploration* but not mid-*scan*. Needs a continuous
    logged-in check during the scan and a defined re-auth (or halt) story — noting re-auth is the
    part deliberately deferred to the human.
 
-4. **The redactor surface grows.** Today's `record` is "secret-free by construction" (it captures
+3. **The redactor surface grows.** Today's `record` is "secret-free by construction" (it captures
    names/URLs, not values — the documented Phase 2 gap). This design feeds **live DOM + XHR response
    bodies** to the LLM, so the redactor must scrub response bodies, PII, and CSRF, not just header
    names. Build on `runner/evidence.py::redact_har` (JWT + token-field regexes, sensitive-header
    list), but this needs its **own adversarial test suite** — higher stakes than the current partial
    redactor.
 
-5. **Keep BOTH safety layers during exploration.** The runner's real guarantee is two independent,
+4. **Keep BOTH safety layers during exploration.** The runner's real guarantee is two independent,
    fail-closed layers (D2/D6): action/preflight validation **and** the `page.route` request-boundary
    guard. An in-scope `follow_link` can still fire an out-of-scope XHR. Retain the request-boundary
    guard during exploration; do not rely on action-validation alone.
 
-6. **Phase-split the scope policy.** "Block, log, fail closed" is right for the active scan, but a
+5. **Phase-split the scope policy.** "Block, log, fail closed" is right for the active scan, but a
    hard fail on the first stray request would abort the whole crawl during discovery. Adopt KI4's
    split: **block-and-continue during discovery, block/log/fail during the active scan.**
 
-7. **Pilot reality check.** The headline benefit — seeding a hard SSO/MFA/CAPTCHA login — **will not
+6. **Pilot reality check.** The headline benefit — seeding a hard SSO/MFA/CAPTCHA login — **will not
    be exercised by Juice Shop**, whose login is already trivially automatable (the current `flow.py`
    does it; its JWT lives in `localStorage`, so `storageState` seeding works but isn't *needed*). On
    the pilot the demonstrable win is the **coverage/breadth** improvement (the KI4 fix), not the auth
