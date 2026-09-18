@@ -107,3 +107,48 @@ pytest -q                                   # whole suite stays green
 ## 6. Out of scope
 - Wiring into the runner / real two-scan run on Juice Shop (that's integration, later).
 - Any change to the fingerprint formula (frozen).
+
+## 7. R2 extension — coverage-aware `resolved` (added after freeze)
+
+The frozen sections above stay valid; this extension only refines how a previous-only finding is
+labeled. Decided in review as **R2** (see
+`docs/junior_engineer/seeded_session_exploration_design.md`).
+
+**Why.** `resolved` must mean *fixed*, not *we stopped looking*. A finding can vanish for two
+different reasons: a real fix, or a coverage change (a re-authored flow dropped the route, or the
+rule that found it was disabled). Only the first is a real `resolved`.
+
+**Refinement.** A previous-only finding is now split by whether this scan actually exercised its
+`(route × rule)` pair — `route = record.endpoint` (the fingerprint's `endpoint_pattern`),
+`rule = record.rule_id` (the ZAP pluginId):
+
+| Label | Condition |
+|-------|-----------|
+| **resolved** | fingerprint in previous only **and** its `(route × rule)` pair was exercised this scan |
+| **not_scanned** | fingerprint in previous only **and** its `(route × rule)` pair was **not** exercised |
+
+`not_scanned` is added to the status enum (`open|new|resolved|not_scanned`, matches
+`detection.schema.json`). `new`/`open` are unchanged.
+
+**API delta (backward compatible).**
+```python
+def diff(current, previous, covered=None) -> list[dict]: ...
+#   covered=None  -> coverage-blind: every previous-only finding is `resolved` (legacy behavior,
+#                    so all section-4 tests still hold verbatim)
+#   covered={"routes": [...], "rules": [...]}  -> resolved iff route in routes AND rule in rules
+#   covered=<iterable of (route, rule) pairs>  -> resolved iff the exact pair is present
+
+def save_state(state_path, app_id, records, coverage=None) -> None: ...  # persists coverage too
+def load_coverage(state_path, app_id): ...                               # or None if absent
+```
+
+**Coverage source (runner).** `runner/coverage.py::capture(zap_api, target)` returns
+`{"routes": [...], "rules": [...]}`: ZAP's accessed URLs (`/JSON/core/view/urls`) canonicalized
+with the same `endpoint_pattern()` as the fingerprint, crossed with the **enabled** active-scan
+plugins (`/JSON/ascan/view/scanners`). `runner/main.py --coverage-out` writes it; pass it to the
+diff via `lifecycle_diff --coverage`.
+
+**Added tests** (`tests/test_lifecycle_diff.py`): resolved requires route+rule covered;
+`not_scanned` when the route isn't covered; `not_scanned` when the rule was disabled (the issue-#7
+shape); `covered=None` stays legacy-`resolved`; pair-set form; coverage persistence round-trip; and
+a `not_scanned` record validates against `detection.schema.json`.

@@ -6,10 +6,16 @@ normalize the findings with stable fingerprints, and publish them to the GitHub 
 with lifecycle tracking across scans.
 
 **Status: the full loop works end-to-end on real data**, including the Phase 2 authoring CLIs
-(`record → generate → validate`). 129 automated tests pass; the containerized single-command
+(`record → generate → validate`). 188 automated tests pass; the containerized single-command
 run is verified; and the **auto-generated `flow.py` drives a passing scan** end-to-end
 (Week-2 checkpoint). The LLM path in `generate` runs with an `ANTHROPIC_API_KEY`; without one
 it uses a deterministic fallback (verified here).
+
+An optional **seeded-session + LLM exploration** authoring path is also built and verified: a
+human seeds an authenticated session once (`seed`), an LLM-driven loop explores the authenticated
+surface behind the same safety boundary (`explore`), and the lifecycle diff is **coverage-aware**
+— it only labels a finding `resolved` if the scan actually exercised its route with its rule
+enabled, else `not_scanned`. See `docs/junior_engineer/seeded_session_exploration_design.md`.
 
 ## The four proof points (definition of done)
 
@@ -32,11 +38,17 @@ scope.json ─▶ preflight ─▶ replay (Chromium ─▶ ZAP proxy) ─▶ sco
                                               lifecycle diff ◀── detection records ─▶ SARIF ─▶ GitHub Security tab
 ```
 
-- **`runner/`** — the scanner: `preflight` (never scan prod/unbounded), `replay` (Playwright
-  auth through the ZAP proxy), `scope_guard` (per-request block/log/fail), `scan` (bounded ZAP
-  active scan), `evidence` (redacted HAR + screenshot), `main` (one-command gate).
+- **`authoring/`** — produce scan config from a login journey: `record` (browser crawl) **or**
+  `seed` + `explore` (human-seeded session + LLM-driven exploration) → `trace.json`; `generate`
+  (LLM → JSON plan → `flow.py` + config); `validate` (allow-list + auth replay).
+- **`runner/`** — the scanner: `preflight` (never scan prod/unbounded), `replay`/`replay_seeded`
+  (Playwright auth through the ZAP proxy, form-login or seeded session), `scope_guard` (per-request
+  block/log/fail; phase-split enforce/discovery), `action_policy` + `redact` (exploration safety),
+  `scan` (bounded ZAP active scan), `coverage` (route×rule surface exercised), `evidence` (redacted
+  HAR + screenshot), `main` (one-command gate).
 - **`detections/`** — the results pipeline: `normalizer`, `fingerprint`, `sarif_export`,
-  `github_upload`, `lifecycle_diff`. Pure, streaming, fixture-testable.
+  `github_upload`, `lifecycle_diff` (coverage-aware: `new`/`open`/`resolved`/`not_scanned`).
+  Pure, streaming, fixture-testable.
 - **`contracts/`** — frozen shared contracts: `scope.json`/`scope.schema.json`,
   `detection.schema.json`, the fingerprint formula (`README.md`), the vendored SARIF schema,
   and the real ZAP fixture `sample_zap_output.json`.
@@ -92,11 +104,37 @@ python -m detections.normalizer contracts/sample_zap_output.json --app-id juice-
   python -m detections.sarif_export -o out.sarif
 ```
 
+### Option C — seeded session + LLM exploration (authoring)
+
+Removes the autonomous-login dependency: a human seeds an authenticated session once, then an
+LLM-driven loop explores the authenticated surface (behind the same safety boundary) and emits the
+same `trace.json` as `record`. The LLM runs only at **authoring** time; the committed trace/bundle
+is what scans replay (deterministic — protects the lifecycle diff).
+
+```bash
+# 1. Seed a session once (human logs in; --assisted auto-logs-in the pilot). Saved gitignored.
+python -m authoring.seed --base-url http://juice:3000 --zap-proxy http://localhost:8080 \
+  --assisted --storage-state .secrets/storageState.json     # AUTH_EMAIL/AUTH_PASSWORD from env
+
+# 2. Explore from a seed config (storage_state + seed_routes); LLM primary, deterministic fallback.
+python -m authoring.explore --seed security/dast/juice-shop/seed.json \
+  --scope security/dast/juice-shop/scope.json --zap-proxy http://localhost:8080 --out-dir rec/
+#   --no-llm forces the deterministic fallback proposer
+
+# 3. From here it rejoins the normal path: generate → validate → runner → detections (as above).
+
+# Coverage-aware lifecycle: have the runner emit the (route×rule) surface it exercised, then feed
+# it to the diff so 'resolved' is only claimed for exercised pairs (else 'not_scanned').
+python -m runner.main --scope … --flow … --records-out out/records.json --coverage-out out/coverage.json
+python -m detections.lifecycle_diff out/records.json --app-id juice-shop \
+  --state out/state.json --coverage out/coverage.json
+```
+
 ## Tests
 
 ```bash
 pip install -r requirements-dev.txt
-pytest -q          # 107 tests
+pytest -q          # 188 tests
 ```
 
 Testing philosophy is **objective / test-first**: expectations are anchored to independent
@@ -112,6 +150,11 @@ allow-list — *before any traffic*; and the **scope guard** blocks, logs, and f
 in-flight request to a non-allow-listed host. Evidence HARs are **redacted** (auth headers,
 cookies, tokens, passwords) at capture, before anything could publish them.
 
+The LLM exploration path adds matching guardrails: a **deterministic action policy** (default-deny
+state-changing verbs + `avoid_action_list`; the LLM's own "non-destructive" label is never trusted),
+a **phase-split scope guard** (block-and-continue during discovery, block/log/fail during the scan),
+and a **redactor** that scrubs DOM/XHR bodies before anything reaches the model.
+
 ## Docs
 
 | Doc (`docs/junior_engineer/`) | What |
@@ -124,8 +167,9 @@ cookies, tokens, passwords) at capture, before anything could publish them.
 | `sarif_exporter_design.md`, `github_upload_design.md`, `lifecycle_diff_design.md` | Results-pipeline component designs |
 | `runner_design.md` | Full runner design + per-component frozen specs (§7–§13) |
 | `authoring_clis_design.md` | Phase 2 record/generate/validate design + the LLM safety architecture |
+| `seeded_session_exploration_design.md` | Seeded-session + LLM exploration loop (`seed`/`explore`), coverage-aware lifecycle (R1/R2) |
 | `chromium_and_playwright_setup.md` | All Playwright/Chromium usage + gotchas |
-| `decisions_and_known_issues.md` | Every design decision (D1–D7) + known gaps (KI1–KI3) |
+| `decisions_and_known_issues.md` | Every design decision (D1–D10) + known gaps (KI1–KI4) |
 
 Background specs: `docs/dast_poc_requirements.md`, `dast_poc_3week_plan.md`,
 `dast_poc_demo_plan.md`, `dast_poc_day1_runbook.md`.

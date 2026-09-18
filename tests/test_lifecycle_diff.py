@@ -8,12 +8,18 @@ See docs/junior_engineer/lifecycle_diff_design.md for the frozen API and criteri
 """
 
 import json
+from pathlib import Path
 
 import pytest
+from jsonschema import Draft202012Validator
 
 # Import target does not exist yet (test-first). Until it's implemented this whole module is
 # "red" at collection — which is the point: the tests predate the code.
-from detections.lifecycle_diff import diff, load_previous, save_state
+from detections.lifecycle_diff import diff, load_coverage, load_previous, save_state
+
+_DET_SCHEMA = json.loads(
+    (Path(__file__).resolve().parent.parent / "contracts" / "detection.schema.json").read_text()
+)
 
 
 def rec(fp, **kw):
@@ -36,7 +42,7 @@ def rec(fp, **kw):
 
 
 def _by_status(result):
-    out = {"new": set(), "open": set(), "resolved": set()}
+    out = {"new": set(), "open": set(), "resolved": set(), "not_scanned": set()}
     for r in result:
         out[r["status"]].add(r["fingerprint"])
     return out
@@ -165,3 +171,78 @@ def test_diff_accepts_iterators():
     result = diff(iter([rec("A"), rec("C")]), iter([rec("A"), rec("B")]))
     s = _by_status(result)
     assert s["open"] == {"A"} and s["new"] == {"C"} and s["resolved"] == {"B"}
+
+
+# ---- Coverage-aware resolved vs not_scanned (R2) ----------------------------------------
+
+def test_resolved_requires_route_and_rule_covered():
+    prev = [rec("B", endpoint="/rest/products/search", rule_id="40018")]
+    cov = {"routes": ["/rest/products/search"], "rules": ["40018"]}
+    assert diff([], prev, cov)[0]["status"] == "resolved"
+
+
+def test_not_scanned_when_route_not_covered():
+    # The route was never exercised this scan -> cannot claim a fix.
+    prev = [rec("B", endpoint="/rest/products/search", rule_id="40018")]
+    cov = {"routes": ["/rest/other"], "rules": ["40018"]}
+    assert diff([], prev, cov)[0]["status"] == "not_scanned"
+
+
+def test_not_scanned_when_rule_disabled():
+    # issue-#7 shape: route still covered, but the SQLi rule (40018) was disabled this scan,
+    # so the finding's disappearance is coverage-driven, NOT a real fix.
+    prev = [rec("B", endpoint="/rest/products/search", rule_id="40018")]
+    cov = {"routes": ["/rest/products/search"], "rules": ["10038"]}  # 40018 not enabled
+    assert diff([], prev, cov)[0]["status"] == "not_scanned"
+
+
+def test_coverage_none_is_legacy_all_resolved():
+    prev = [rec("B", endpoint="/x", rule_id="1")]
+    assert diff([], prev)[0]["status"] == "resolved"          # default arg
+    assert diff([], prev, None)[0]["status"] == "resolved"    # explicit None
+
+
+def test_coverage_accepts_pair_set():
+    prev = [rec("B", endpoint="/a", rule_id="1"), rec("C", endpoint="/b", rule_id="2")]
+    s = _by_status(diff([], prev, {("/a", "1")}))
+    assert s["resolved"] == {"B"} and s["not_scanned"] == {"C"}
+
+
+def test_open_and_new_unaffected_by_coverage():
+    # Coverage only decides resolved vs not_scanned; open/new labels are untouched.
+    prev = [rec("A", endpoint="/a", rule_id="1")]
+    current = [rec("A", endpoint="/a", rule_id="1"), rec("C", endpoint="/c", rule_id="3")]
+    cov = {"routes": [], "rules": []}  # nothing covered
+    s = _by_status(diff(current, prev, cov))
+    assert s["open"] == {"A"} and s["new"] == {"C"}
+    assert not s["resolved"] and not s["not_scanned"]
+
+
+def test_labels_include_not_scanned_in_enum():
+    prev = [rec("B", endpoint="/a", rule_id="1")]
+    result = diff([], prev, {"routes": [], "rules": []})
+    assert all(r["status"] in {"open", "new", "resolved", "not_scanned"} for r in result)
+
+
+def test_save_state_persists_and_loads_coverage(tmp_path):
+    state = tmp_path / "state.json"
+    cov = {"routes": ["/a"], "rules": ["1"]}
+    save_state(str(state), "juice-shop", [rec("A")], cov)
+    assert load_coverage(str(state), "juice-shop") == cov
+
+
+def test_coverage_absent_loads_none(tmp_path):
+    state = tmp_path / "state.json"
+    save_state(str(state), "app-b", [rec("B")])  # no coverage arg
+    assert load_coverage(str(state), "app-b") is None
+    assert load_coverage(str(state), "missing-app") is None
+
+
+def test_not_scanned_record_validates_against_schema():
+    # A diffed not_scanned record must still conform to contracts/detection.schema.json
+    # (oracle: the third-party jsonschema validator, not our code).
+    fp = "a" * 64  # matches the schema's ^[a-f0-9]{64}$ fingerprint pattern
+    prev = [rec(fp, endpoint="/rest/products/search", rule_id="40018")]
+    out = diff([], prev, {"routes": [], "rules": []})
+    assert out[0]["status"] == "not_scanned"
+    Draft202012Validator(_DET_SCHEMA).validate(out[0])

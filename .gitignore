@@ -5,6 +5,9 @@ __pycache__/
 venv/
 .env
 
+# Seeded sessions (live auth secrets: cookies + tokens) — never commit
+.secrets/
+
 # Scan outputs / evidence (do NOT commit secrets or raw evidence)
 *.har
 evidence/
