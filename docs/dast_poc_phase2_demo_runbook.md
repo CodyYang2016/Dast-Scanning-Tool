@@ -10,15 +10,16 @@ Nationwide Trusted Registry). Every command below is bash — on Windows run the
 (MINGW64), never PowerShell or cmd**.
 
 **Story to land:** Phase 1 proved the scanner is safe. Phase 2 proves (a) the `flow.py` that
-drives it can be *recorded and generated* — with an LLM that only ever emits data, never code —
-and (b) findings flow deterministically out of our JSON into SARIF and GitHub's Security tab.
+drives it can be *recorded, explored and generated* — with an LLM that only ever emits data,
+never code, and that widens coverage beyond what a human walked — and (b) findings flow
+deterministically out of our JSON into SARIF and GitHub's Security tab.
 
-**Total on-stage time:** ~18–22 min (the live scan in Part G is ~3–4 min of that).
+**Total on-stage time:** ~22–26 min (the live scan in Part G is ~3–4 min of that; Part D2 adds ~3).
 
 **Verification status:** the whole chain in this runbook (§1.3 health checks → record through ZAP →
-generate → idempotency → validate live replay → runner gate → SARIF) was executed end-to-end on
-the mac on 2026-09-19 with the commands exactly as written; every SEE block shows that run's
-output. Windows-specific lines come from the day-1 runbook's Podman appendix and have not been
+seed → explore with Claude driving → generate on the LLM path → idempotency → validate live
+replay → runner gate → SARIF) was executed end-to-end on the mac on 2026-09-19 with the
+commands exactly as written; every SEE block shows that run's output. Windows-specific lines come from the day-1 runbook's Podman appendix and have not been
 re-run there — do the §1 pre-flight on the Windows box the day before.
 
 Legend used below:
@@ -74,7 +75,7 @@ ZAP_IMG=ntr.nwie.net/docker.io/zaproxy/zap-stable
 | Container tool (win) | Podman runs in a WSL VM; the VM ships a dead `127.0.0.1:8888` proxy that breaks pulls | one-time fix: `dast_poc_day1_runbook.md` Appendix A2; pull images the day before |
 | Compose file | `compose.yaml` (project `ssd-dast-poc`) does **not publish ports** for `juice`/`zap` — it's for the all-in-container runner | for a host-side demo you need `localhost:3000` / `localhost:8080`, so start juice+zap with `$CT run -p …` (README "Option B"), not compose |
 | GitHub | mac: `gh` is logged in as `CodyYang2016`; remote = `github.com/CodyYang2016/Dast-Scanning-Tool`; Security tab already has 38 alerts from the fixture upload on 2026-09-12. win: run `gh auth status` the day before | live SARIF upload works from the mac; on Windows only if `gh` is authenticated and the enterprise repo has code scanning enabled |
-| LLM key | `ANTHROPIC_API_KEY` is **not** set in the shell | fallback path is the default; export the key only if you choose to demo the LLM path (§5b) |
+| LLM key | `ANTHROPIC_API_KEY` is **not** set in a fresh shell; keep it in gitignored `.secrets/anthropic.key` | this demo runs the LLM live (Part D2 + §5); export per §1.7 in both terminals |
 | Old script drift | The Phase 2 script mentions `podman-compose`, `compose.demo.yaml`, `cleanup_demo_ports.sh`, `demo_full_scan.sh`, `/c/Users/yangq4/…` — **none of these exist here** | ignore them; this runbook has the real commands |
 
 ### macOS only — fix the `docker` command once
@@ -205,11 +206,30 @@ $PY -m authoring.record --app-id juice-shop \
 > (which go through ZAP to `juice:3000`) get **blocked by the scope guard**. The Phase 2 demo
 > must record *through ZAP* so the generated scope matches the runner topology.
 
-### 1.7 Decide: fallback or LLM path for `generate`
+### 1.7 LLM key (this demo runs the LLM live in Part D2 `explore` and Part E `generate`)
 
-- **Fallback (recommended for a live audience):** do nothing; `--no-llm` is used in §5.
-- **LLM path:** `export ANTHROPIC_API_KEY=sk-ant-…` in Terminal A now, and do a dry run of §5b
-  before the audience arrives so you know the network is fine.
+```bash
+export ANTHROPIC_API_KEY="$(cat .secrets/anthropic.key)"     # .secrets/ is gitignored; never paste the key on camera
+$PY -c "import anthropic,os; print(anthropic.Anthropic().models.list(limit=1).data[0].id)"   # SEE: a model id => key + network OK
+```
+
+Do this in **both** terminals. Then do a full dry run of D2 → E → F **now** (≈3 min) so a bad
+network or a rate limit is discovered off camera. If the key/network is dead on the day, every
+LLM command below has a `--no-llm` twin that produces the same artifact shape — the demo
+degrades, it doesn't stop (see §9).
+
+### 1.8 RUN — seed the authenticated session once (needed by Part D2)
+
+```bash
+$PY -m authoring.seed --base-url http://juice:3000 --zap-proxy http://localhost:8080 \
+  --assisted --storage-state .secrets/storageState.json
+```
+**SEE** `seeded session saved -> .secrets/storageState.json` (~2 s, headless). This is the
+"human logs in once" step; `--assisted` auto-fills the Juice Shop form with `AUTH_EMAIL` /
+`AUTH_PASSWORD`. It must be seeded **through ZAP at `juice:3000`** — `storageState` is keyed by
+origin, so a session seeded at `localhost:3000` is invisible to a scan of `juice:3000`.
+You can also do this on camera (§D2.1) — it's a nice visual — but seeding here means Part D2
+can't be sunk by a login hiccup.
 
 ---
 
@@ -334,6 +354,14 @@ cat contracts/journey.schema.json
 plus a list of `goto` / `click` / `api_get` steps — that's the entire vocabulary the model may
 use. `additionalProperties: false` everywhere."
 
+**RUN**
+```bash
+cat contracts/action.schema.json
+```
+**SAY** "And this is the *other* place the model speaks — one action at a time during
+exploration, which you'll see in Part D2. Five verbs, a path or a selector, a reason, a
+confidence. Same rule: data in, code decides. Both contracts are frozen files in `contracts/`."
+
 ---
 
 ## Part D — `record`: a real browser captures the trace (3 min, Terminal A + Playwright window)
@@ -378,22 +406,107 @@ from environment variables; the trace only knows what to fill, not what with."
 
 ---
 
-## Part E — `generate`: trace → plan → `flow.py` + scan config (3 min, Terminal A/B)
+## Part D2 — `seed` + `explore`: the LLM widens the authenticated surface (3 min, Terminal A + Playwright window)
 
-### 5. Deterministic fallback path (run this one live)
+Part D was the **floor** — what a human walked. This is the KI4 fix: from a seeded session the
+LLM drives the browser itself, one validated JSON action at a time, and emits the **same
+`trace.json`** `record` does — so everything after this Part is unchanged, just fed a wider
+trace.
+
+### D2.1 (optional on camera, ~5 s) — the human seed
+
+If you seeded in §1.8 you can skip this, or re-run it headed for the visual:
+```bash
+$PY -m authoring.seed --base-url http://juice:3000 --zap-proxy http://localhost:8080 \
+  --assisted --headed --storage-state .secrets/storageState.json
+```
+**SEE** Chromium opens on the login page, fills it, closes; `seeded session saved -> …`.
+**SAY** "On a real target this is where a person handles SSO/MFA/CAPTCHA once. Playwright saves
+the resulting session — cookies and tokens — to a gitignored file. On Juice Shop the login is
+trivial, so the win here is *breadth*, not auth; the seeding value shows on enterprise apps."
+
+### D2.2 — the exploration loop (the recorded moment)
 
 **RUN** (Terminal A)
 ```bash
-$PY -m authoring.generate --trace out/phase2-demo/trace/trace.json \
-  --out-dir out/phase2-demo/gen --no-llm
+cat security/dast/juice-shop/seed.json         # the whole human input: 3 seed routes + a deny-list + a page budget
+
+$PY -m authoring.explore \
+  --seed  security/dast/juice-shop/seed.json \
+  --scope security/dast/juice-shop/scope.json \
+  --zap-proxy http://localhost:8080 \
+  --out-dir out/phase2-demo/explore \
+  --max-pages 12 --headed --slow-mo 500
 ```
-**SEE**
+**SEE** a Chromium window opens **already logged in** (no login form — the seeded session), lands
+on the three seed routes, then hops through routes *it* picked — in the verified run Claude went
+straight for the authenticated API surface (`/rest/order-history`, `/rest/admin/application-
+configuration`, `/rest/user/whoami`, `/rest/continue-code`, `/rest/basket/…`, …) rendered as raw
+JSON pages — and closes. ~30 s with the model; Terminal prints:
 ```json
-{ "plan_source": "fallback", "journey_steps": <n>, "out_dir": "out/phase2-demo/gen" }
+{ "app_id": "juice-shop", "pages": 12, "api_calls": 27, "forms": 0, "hosts": ["juice"],
+  "requests_seen": 45, "blocked": 0, "out_dir": "out/phase2-demo/explore" }
 ```
-**SAY** "`--no-llm` forces the deterministic fallback, `journey_from_trace`: it builds a valid
-plan from the trace's routes and GET calls. This is what keeps the pipeline runnable with zero
-external dependencies."
+(Verified 2026-09-19 with Claude proposing every step, 0 rejections, 0 fallbacks. `record` gave
+3 pages / 22 API calls from the same app. **Be straight if asked:** the `--no-llm` greedy
+proposer got 15 / 30 on the same budget — it walks unvisited UI links first and each SPA page
+fires fresh XHR, whereas Claude went straight for the `/rest/…` endpoints it had already seen.
+On this pilot the win is *explore vs. the human walk* (both modes ~25% more detections than
+`record`), not *LLM vs. the deterministic crawler*; the LLM's edge is prioritization on apps
+too big to crawl greedily, which Juice Shop isn't. The page set differs run to run with the
+model — expected, see the SAY below. Lines on stderr like `explore: LLM action rejected (matches deny-list …): visit_api
+GET /rest/admin/…` are the **policy doing its job** — point at them, don't apologise for them.
+`explore: LLM path failed … using fallback` means the loop continued deterministically; say so.)
+
+**SAY** (while it runs) "Every step: Playwright snapshots the page — links, forms, API calls
+seen — that snapshot is **redacted** (`runner/redact.py`) before it goes anywhere, then Claude
+is asked for exactly *one* next action as JSON against `action.schema.json`: follow a link,
+visit an API route, submit a form, or stop. Deterministic code then checks that action against
+the scope allow-list and the action policy — POST/PUT/PATCH/DELETE are denied by default, the
+deny-list (`logout`, `delete-account`, `purchase`…) is a code check, and a path that embeds an
+off-scope URL like `/redirect?to=github.com` is refused before it's ever clicked. Only then does
+the browser act. The model's own 'this is non-destructive' opinion is never trusted. `blocked: 0`
+means the request-boundary guard — still on during discovery — never saw a request leave scope."
+
+**RUN** (Terminal B) — the comparison that makes the point:
+```bash
+echo "record:"; $PY -m json.tool out/phase2-demo/trace/index.json
+echo "explore:"; $PY -m json.tool out/phase2-demo/explore/index.json
+grep -c '"url"' out/phase2-demo/trace/trace.json out/phase2-demo/explore/trace.json
+```
+**SAY** "Same app, same session, same output format — four times the pages and more API routes
+than the human walk, with zero out-of-scope requests. And per design decision R1 the LLM only
+runs *here*, at authoring time: this trace is reviewed and committed, and the monitoring scans
+replay the committed bundle deterministically — which is what keeps Phase 3's lifecycle diff
+honest."
+
+From here on the demo uses **`out/phase2-demo/explore/trace.json`**. (To run Parts E–H on the
+Part D trace instead, substitute `out/phase2-demo/trace/trace.json` — everything else is
+identical.)
+
+---
+
+## Part E — `generate`: trace → plan → `flow.py` + scan config (3 min, Terminal A/B)
+
+### 5. LLM path (live) — Claude turns the explored trace into a journey plan
+
+**RUN** (Terminal A)
+```bash
+$PY -m authoring.generate --trace out/phase2-demo/explore/trace.json \
+  --out-dir out/phase2-demo/gen
+```
+**SEE** (~6 s)
+```json
+{ "plan_source": "llm", "journey_steps": 12, "out_dir": "out/phase2-demo/gen" }
+```
+(Verified 2026-09-19: the plan was 3 `goto` + 9 `api_get`, `validate` passed with live replay.)
+**SAY** "Claude gets the redacted trace plus `journey.schema.json` and returns a plan: a login
+block of selectors and an ordered list of `goto` / `api_get` steps. It's validated against the
+schema, then a deterministic renderer writes `flow.py` and AST-compiles it. If the model's
+output doesn't validate — or the API is down — `generate` warns on stderr and falls back to a
+deterministic plan built straight from the trace, so this step never blocks on the model."
+(If you see `generate: LLM path failed (…); using deterministic fallback` and
+`"plan_source": "fallback"`, that *is* the resilience story — say so and keep going.)
 
 **RUN** (Terminal B) — show the plan and all six artifacts:
 ```bash
@@ -423,33 +536,23 @@ cat out/phase2-demo/gen/flow.py
 was templated from the plan. Credentials are read from env at line 1 of `run`; nothing is
 baked in."
 
-### 5a. Idempotency proof (FR-G4) — 20 seconds
+### 5a. Idempotency proof (FR-G4) — 20 seconds, deterministic path
 
 **RUN** (Terminal A)
 ```bash
-$PY -m authoring.generate --trace out/phase2-demo/trace/trace.json \
-  --out-dir out/phase2-demo/gen2 --no-llm
-diff out/phase2-demo/gen/flow.py out/phase2-demo/gen2/flow.py && echo "IDENTICAL"
+$PY -m authoring.generate --trace out/phase2-demo/explore/trace.json --out-dir out/phase2-demo/gen-det  --no-llm
+$PY -m authoring.generate --trace out/phase2-demo/explore/trace.json --out-dir out/phase2-demo/gen-det2 --no-llm
+diff out/phase2-demo/gen-det/flow.py out/phase2-demo/gen-det2/flow.py && echo "IDENTICAL"
 ```
 **SEE** no diff output, then `IDENTICAL`.
-**SAY** "Same trace, two separate runs, byte-identical `flow.py`. That determinism is what makes
-Phase 3's lifecycle diffing trustworthy."
+**SAY** "Idempotency lives in the deterministic half: same plan → byte-identical `flow.py`, and
+the fallback planner is itself deterministic — same trace, two runs, identical file. The LLM
+plan isn't re-generated on every scan; it's produced once at authoring time, reviewed, and
+committed (R1). That's what makes Phase 3's lifecycle diffing trustworthy."
 
-### 5b. (Optional) LLM path — only if `ANTHROPIC_API_KEY` is exported and you dry-ran it in §1.7
-
-**RUN**
-```bash
-$PY -m authoring.generate --trace out/phase2-demo/trace/trace.json \
-  --out-dir out/phase2-demo/gen-llm
-cat out/phase2-demo/gen-llm/journey.json
-```
-**SEE** `"plan_source": "llm"` (default model `claude-opus-4-8`; override with `--model`).
-**SAY** "Same command, no `--no-llm`. Claude returns a plan; the exact same schema validation
-and AST-compile check apply. If its output doesn't validate, `generate` warns on stderr and
-falls back — the demo never hard-fails because a model call had a bad day."
-
-If it prints `generate: LLM path failed (…); using deterministic fallback` — that *is* the
-resilience story; say so and move on.
+(Anticipate: "so two LLM runs could give different plans?" — Yes, and it doesn't matter: the
+scan replays the *committed* bundle, never a fresh model call. Same trace → same fallback plan
+is the guarantee; the model is an authoring aid, not a runtime dependency.)
 
 ---
 
@@ -557,7 +660,13 @@ $PY -m runner.main --flow out/phase2-demo/gen/flow.py \
             "detections": <hundreds+>, "passed": true } }
 exit=0
 ```
-(Verified on the mac 2026-09-19 with this exact command: `requests_seen: 37, blocked: 0, detections: 1214`, wall-clock **2m39s**; ZAP had seen 16 `Authorization: Bearer` requests from the generated flow.)
+(Verified on the mac 2026-09-19 with this exact command, three ways. **LLM end-to-end** —
+Claude drove `explore` and authored the plan in `generate`: `requests_seen: 41, blocked: 0,
+detections: 1490`, **2m54s**. Explore trace with the `--no-llm` proposer: `detections: 1581`,
+2m32s. Part D **record** trace: `requests_seen: 37, blocked: 0, detections: 1214`, 2m39s.)
+**SAY** "Same runner, same budget — the explored bundle surfaced 20–30% more detections than
+the human walk, because it exercised more of the authenticated app. That's KI4 closing."
+
 **SAY** "Authenticated, in scope, high/medium found, gate passed, exit 0 — the exact Phase 1
 gate, driven by a generated bundle. That's the Week-2 checkpoint."
 
@@ -571,7 +680,7 @@ $PY -m detections.sarif_export out/phase2-demo/live-records.json --app-id juice-
   --driver-version "ZAP 2.17.0" -o out/phase2-demo/live-results.sarif
 $PY -c "import json;s=json.load(open('out/phase2-demo/live-results.sarif'));print(len(s['runs'][0]['results']),'SARIF results')"
 ```
-**SEE** `1214 SARIF results` (or whatever the gate printed under `detections`).
+**SEE** `1490 SARIF results` (or whatever the gate printed under `detections`).
 **SAY** "`record → generate → validate → runner → normalizer → SARIF`, end to end. The only
 difference from Phase 1's output is that everything upstream of the runner was generated."
 
@@ -590,6 +699,10 @@ Then **OPEN** Browser tab 2 and **CLICK** refresh after ~60 s.
   risk retired early.
 - `record → generate → validate` yields a bundle that satisfies the exact same contract as the
   hand-authored flow — the **unchanged runner** is the proof.
+- `seed → explore` removes the human walk as the coverage ceiling (KI4): an LLM-driven loop
+  found 4× the pages from three seed routes with zero out-of-scope requests — every action
+  schema-checked and policy-checked by code before the browser moved, and only at authoring time
+  (R1), so monitoring scans stay deterministic.
 - The LLM only emits a schema-validated JSON **plan**; deterministic code renders and
   AST-checks `flow.py`. Fallback means zero hard dependency on the model.
 - Idempotency shown live (§5a); fail-closed shown live (§6a + the `prod` abort).
@@ -617,11 +730,16 @@ Then, off camera, the usual fixes (§11).
 ## 10. Reset between takes / rehearsals
 
 ```bash
-rm -rf out/phase2-demo/trace out/phase2-demo/gen out/phase2-demo/gen2 out/phase2-demo/gen-llm \
+rm -rf out/phase2-demo/trace out/phase2-demo/explore out/phase2-demo/gen out/phase2-demo/gen-det* \
        out/phase2-demo/live-* out/phase2-demo/*report.json out/phase2-demo/bad_plan.json
 export AUTH_EMAIL="dast-demo-$(date +%H%M%S)@juice-sh.op"      # fresh user => clean register beat
-# re-export the same AUTH_EMAIL in Terminal B
+# re-export the same AUTH_EMAIL in Terminal B, then RE-SEED (the storageState belongs to the old user):
+$PY -m authoring.seed --base-url http://juice:3000 --zap-proxy http://localhost:8080 \
+  --assisted --storage-state .secrets/storageState.json
 ```
+(`record` in Part D must run before `seed` — it's what registers the new user. Or keep the same
+`AUTH_EMAIL` across takes; re-registering no-ops and the seed stays valid until Juice Shop
+restarts.)
 
 Keep `out/phase2-demo/records.json` / `results.sarif` (Part B) — they're fixture-derived and
 regenerate identically anyway. Everything under `out/` is gitignored.
@@ -649,7 +767,14 @@ Full teardown at the end of the day: `$CT rm -f juice zap; $CT network rm dast`
 | `github_upload` rejected | HEAD commit not on the remote, or token lacks `security_events`/`repo` | `git push` first; `gh auth status` |
 | Bare `python` → `ModuleNotFoundError` | wrong interpreter (mac 3.9 / Windows Store stub) | `$PY` everywhere |
 | Chromium window never appears in Part D | forgot `--headed`, or running inside a container | add `--headed`; run on the host |
-| `generate` prints `LLM path failed … using deterministic fallback` | no/invalid key, network, or off-schema output | that's the designed behavior — say so; or add `--no-llm` to avoid the wait |
+| `generate`/`explore` prints `LLM path failed … using deterministic fallback` | no/invalid key, network, or off-schema output | that's the designed behavior — say so; or add `--no-llm` to avoid the wait |
+| `EXPLORE ABORT: seeded session dead` | storageState is stale (Juice Shop restarted → users gone), belongs to a different `AUTH_EMAIL`, or was seeded at `localhost:3000` instead of `juice:3000` | re-run Part D `record` (registers the user) then §1.8 `seed` through ZAP at `juice:3000` |
+| `explore` window shows the login page instead of being logged in | same as above — session not loaded for this origin | same fix |
+| `explore` result has `blocked: >0` | the model proposed a link that fetched something off-scope (discovery mode blocks-and-continues) | fine for discovery; the trace won't contain the blocked host. If it recurs, add the term to `deny_actions` in `seed.json` |
+| `validate` on the explore bundle: `Cannot navigate to invalid URL … juice:3000./redirect` | you're on a checkout older than 2026-09-19 (hrefs weren't normalized and open-redirect links weren't refused) | `git pull` — fixed in `explore.normalize_href` + `action_policy` rule 3 |
+| `explore` crashes `ValueError: Invalid IPv6 URL`, or its index is full of `http://juice:3000nav [aria-label=…]` | pre-2026-09-19 checkout: LLM paths weren't normalized and `expand_nav` selectors were navigated to instead of clicked | `git pull` — `host_of` now fails closed, LLM paths are normalized, `dispatch()` clicks selectors |
+| `explore` "succeeds" with `pages: 3, api_calls: 0, requests_seen: 1` | Juice Shop died (KI3 exit 133) and ZAP is answering 502; pre-2026-09-19 `prove_auth_live` only checked 401/403 | now aborts with `EXPLORE ABORT: seeded session dead (seed route returned 502)`. Fix the app: `$CT start juice`, wait for 200, re-run Part D `record` + §1.8 `seed` |
+| `explore` stderr: `LLM action rejected (matches deny-list …): visit_api GET /rest/admin/application-version` | a deny term substring-matches a read-only route (`"admin"` matched `/rest/admin/*`) | that's the policy working; if it's blocking routes you *want*, narrow the term in `seed.json` (`"administration"`) — state-changing verbs are denied by default anyway |
 
 ---
 
@@ -665,6 +790,8 @@ $PY -m pytest -q
 rm -rf out/phase2-demo && mkdir -p out/phase2-demo
 export AUTH_EMAIL="dast-demo-$(date +%H%M%S)@juice-sh.op" AUTH_PASSWORD="Dast-Demo-passw0rd!"; echo $AUTH_EMAIL
 $PY -m authoring.record --app-id juice-shop --base-url http://juice:3000 --zap-proxy http://localhost:8080 --out-dir out/phase2-demo/warmup --headed --slow-mo 300
+export ANTHROPIC_API_KEY="$(cat .secrets/anthropic.key)"
+$PY -m authoring.seed --base-url http://juice:3000 --zap-proxy http://localhost:8080 --assisted --storage-state .secrets/storageState.json
 
 # ---- Part B (Terminal B) ----
 $PY -m detections.normalizer contracts/sample_zap_output.json --app-id juice-shop --scan-id demo-fixture-1 -o out/phase2-demo/records.json
@@ -674,9 +801,12 @@ $PY -m detections.sarif_export out/phase2-demo/records.json --app-id juice-shop 
 # ---- Part D (Terminal A) ----
 $PY -m authoring.record --app-id juice-shop --base-url http://juice:3000 --zap-proxy http://localhost:8080 --out-dir out/phase2-demo/trace --headed --slow-mo 700
 
-# ---- Part E ----
-$PY -m authoring.generate --trace out/phase2-demo/trace/trace.json --out-dir out/phase2-demo/gen --no-llm
-$PY -m authoring.generate --trace out/phase2-demo/trace/trace.json --out-dir out/phase2-demo/gen2 --no-llm && diff out/phase2-demo/gen/flow.py out/phase2-demo/gen2/flow.py && echo IDENTICAL
+# ---- Part D2 (Terminal A; key exported per §1.7; seeded per §1.8) ----
+$PY -m authoring.explore --seed security/dast/juice-shop/seed.json --scope security/dast/juice-shop/scope.json --zap-proxy http://localhost:8080 --out-dir out/phase2-demo/explore --max-pages 12 --headed --slow-mo 500
+
+# ---- Part E (LLM live; --no-llm twin for the idempotency diff) ----
+$PY -m authoring.generate --trace out/phase2-demo/explore/trace.json --out-dir out/phase2-demo/gen
+$PY -m authoring.generate --trace out/phase2-demo/explore/trace.json --out-dir out/phase2-demo/gen-det --no-llm && $PY -m authoring.generate --trace out/phase2-demo/explore/trace.json --out-dir out/phase2-demo/gen-det2 --no-llm && diff out/phase2-demo/gen-det/flow.py out/phase2-demo/gen-det2/flow.py && echo IDENTICAL
 
 # ---- Part F ----
 $PY -m authoring.validate --plan out/phase2-demo/gen/journey.json --scope out/phase2-demo/gen/scope.json --flow out/phase2-demo/gen/flow.py --base-url http://juice:3000 --zap-proxy http://localhost:8080 --report out/phase2-demo/validation-report.json; echo exit=$?
