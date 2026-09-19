@@ -33,8 +33,15 @@ class Decision:
 
 
 def host_of(url: str) -> str | None:
-    """Return the lowercased hostname (port stripped), or None if the URL has no host."""
-    return urlparse(url).hostname  # already lowercased and port-stripped by urlparse
+    """Return the lowercased hostname (port stripped), or None if the URL has no host.
+
+    Never raises: urlparse rejects some malformed inputs (e.g. a bracket in the netloc ->
+    "Invalid IPv6 URL"); those read as "no host", which every caller treats as fail-closed.
+    """
+    try:
+        return urlparse(url).hostname  # already lowercased and port-stripped by urlparse
+    except ValueError:
+        return None
 
 
 class ScopeGuard:

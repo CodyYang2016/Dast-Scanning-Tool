@@ -38,9 +38,12 @@ class SessionDeadError(Exception):
 def prove_auth_live(page, base_url: str, seed_route: str, token_check: str | None = None) -> dict:
     """Visit a seed route and decide whether the (seeded) session is authenticated.
 
-    Dead if the app redirects to a login route, the response is 401/403, or `token_check` (a JS
-    truthy expression) is falsy. Pure w.r.t. the page object (takes any page-like) so the decision
-    logic is unit-testable with a fake page. Returns {"alive": bool, "reason": str, "url": str}.
+    Dead if the app redirects to a login route, the seed route does not answer 2xx/3xx (401/403 =
+    unauthenticated; 5xx/None = target unreachable, e.g. ZAP's 502 when the app is down — the
+    seeded localStorage token would still be present on that error page, so status must be
+    checked first), or `token_check` (a JS truthy expression) is falsy. Pure w.r.t. the page
+    object (takes any page-like) so the decision logic is unit-testable with a fake page.
+    Returns {"alive": bool, "reason": str, "url": str}.
     """
     resp = page.goto(base_url + seed_route, wait_until="networkidle")
     status = getattr(resp, "status", None)
@@ -49,7 +52,7 @@ def prove_auth_live(page, base_url: str, seed_route: str, token_check: str | Non
     current = page.url
     if any(m in current for m in _LOGIN_MARKERS):
         return {"alive": False, "reason": f"redirected to login: {current}", "url": current}
-    if status in (401, 403):
+    if status is None or not (200 <= int(status) < 400):
         return {"alive": False, "reason": f"seed route returned {status}", "url": current}
     if token_check and not page.evaluate(f"() => !!({token_check})"):
         return {"alive": False, "reason": "auth token missing (session not established)", "url": current}

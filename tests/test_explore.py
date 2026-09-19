@@ -95,3 +95,87 @@ def test_next_action_no_llm_flag_forces_fallback():
     action, source = next_action(obs, visited=set(), scope=SCOPE, use_llm=False,
                                  api_key="sk-test-would-not-be-used")
     assert source == "fallback"
+
+
+# ---- href normalization: what the SPA emits vs. what the trace/flow must contain --------
+# Angular emits hrefs like "#/contact" and "./redirect?to=..."; appended to base_url verbatim
+# they become "http://juice:3000#/contact" (works by accident) and "http://juice:3000./redirect"
+# (an invalid URL that crashed the generated flow's replay). Normalize before proposing/recording.
+
+from authoring.explore import normalize_href
+
+
+def test_normalize_hash_route_gets_leading_slash():
+    assert normalize_href("#/contact") == "/#/contact"
+
+
+def test_normalize_dot_relative_becomes_root_relative():
+    assert normalize_href("./redirect?to=x") == "/redirect?to=x"
+
+
+def test_normalize_leaves_root_relative_and_absolute_alone():
+    assert normalize_href("/#/basket") == "/#/basket"
+    assert normalize_href("http://juice:3000/#/basket") == "http://juice:3000/#/basket"
+
+
+def test_normalize_drops_non_navigable_hrefs():
+    assert normalize_href("javascript:void(0)") is None
+    assert normalize_href("mailto:a@b.c") is None
+    assert normalize_href("") is None
+
+
+def test_fallback_skips_open_redirect_link():
+    obs = {"url": "/#/", "links": ["/redirect?to=https://github.com/x", "/#/about"],
+           "forms": [], "api": []}
+    action = propose_fallback(obs, visited=set(), scope=SCOPE)
+    assert action["target"]["path"] == "/#/about"
+
+
+# ---- LLM proposals get the same normalization as scraped links ---------------------------
+# The model may answer with "#/about" or "rest/languages" (no leading slash). Appended to
+# base_url those form invalid URLs ("http://juice:3000#/about", "http://juice:3000rest/...") and
+# one of them crashed a live run. Normalize before validating/executing.
+
+def test_next_action_normalizes_llm_path(monkeypatch):
+    monkeypatch.setattr("authoring.explore.propose_llm",
+                        lambda obs, model, api_key: {"action": "follow_link",
+                                                     "target": {"method": "GET", "path": "#/about"}})
+    action, src = next_action({"url": "/#/", "links": [], "forms": [], "api": []}, set(), SCOPE,
+                              api_key="k")
+    assert src == "llm" and action["target"]["path"] == "/#/about"
+
+
+def test_next_action_rejects_non_navigable_llm_path(monkeypatch):
+    monkeypatch.setattr("authoring.explore.propose_llm",
+                        lambda obs, model, api_key: {"action": "follow_link",
+                                                     "target": {"path": "javascript:void(0)"}})
+    action, src = next_action({"url": "/#/", "links": [], "forms": [], "api": []}, set(), SCOPE,
+                              api_key="k")
+    assert src == "fallback"   # rejected -> deterministic fallback (here: stop)
+
+
+# ---- dispatch: path actions navigate, selector actions click ------------------------------
+# expand_nav / submit_form carry a CSS selector (per action.schema.json). A live LLM run
+# proposed expand_nav selectors and the loop navigated to base_url + "<selector>" 12 times.
+
+from authoring.explore import dispatch
+
+
+def test_dispatch_follow_link_and_visit_api_navigate():
+    assert dispatch({"action": "follow_link", "target": {"path": "/#/about"}}) == ("goto", "/#/about")
+    assert dispatch({"action": "visit_api", "target": {"method": "GET", "path": "/rest/languages"}}) \
+        == ("goto", "/rest/languages")
+
+
+def test_dispatch_expand_nav_and_submit_form_click_selector():
+    assert dispatch({"action": "expand_nav", "target": {"selector": "button#navbarAccount"}}) \
+        == ("click", "button#navbarAccount")
+    assert dispatch({"action": "submit_form", "target": {"selector": "#searchForm"}}) \
+        == ("click", "#searchForm")
+
+
+def test_dispatch_selector_action_never_navigates_and_path_action_never_clicks():
+    # a selector on a navigation action, or a path on a click action, is not executable
+    assert dispatch({"action": "expand_nav", "target": {"path": "/#/about"}}) is None
+    assert dispatch({"action": "follow_link", "target": {"selector": "nav a"}}) is None
+    assert dispatch({"action": "stop"}) is None

@@ -109,6 +109,24 @@ def test_prove_auth_live_dead_on_401():
     assert res["alive"] is False and "401" in res["reason"]
 
 
+def test_prove_auth_live_dead_when_target_unreachable():
+    # ZAP answers 502 when it cannot reach the target (app down). The seeded localStorage token
+    # is still present on that error page, so the token check alone would say "alive". Any
+    # non-2xx/3xx on the seed route is dead — fail closed, never "explore" a dead app.
+    page = FakePage(landed_url=BASE + "/#/basket", status=502, token="jwt")
+    res = prove_auth_live(page, BASE, "/#/basket", token_check="window.localStorage.getItem('token')")
+    assert res["alive"] is False and "502" in res["reason"]
+
+
+def test_prove_auth_live_dead_when_no_response():
+    class NoResp(FakePage):
+        def goto(self, url, wait_until=None):
+            return None
+    page = NoResp(landed_url=BASE + "/#/basket", token="jwt")
+    res = prove_auth_live(page, BASE, "/#/basket", token_check="window.localStorage.getItem('token')")
+    assert res["alive"] is False
+
+
 def test_prove_auth_live_dead_when_token_missing():
     page = FakePage(landed_url=BASE + "/#/basket", status=200, token="")
     res = prove_auth_live(page, BASE, "/#/basket", token_check="window.localStorage.getItem('token')")

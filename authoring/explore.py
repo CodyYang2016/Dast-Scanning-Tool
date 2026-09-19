@@ -48,8 +48,63 @@ def validate_proposal(action: dict, scope: dict, deny_actions=None, safe_forms=N
         return False, f"schema: {exc.message}"
     if action.get("action") == "stop":
         return True, "stop"
+    target = action.get("target") or {}
+    if not (target.get("path") or target.get("selector")):
+        return False, "no navigable target (empty path/selector)"
     decision = validate_action(action, scope, deny_actions=deny_actions, safe_forms=safe_forms)
     return decision.allowed, decision.reason
+
+
+# ---- href normalization (pure) -----------------------------------------------------------
+
+_NON_NAVIGABLE = ("javascript:", "mailto:", "tel:", "data:", "blob:")
+
+
+def normalize_href(href: str | None) -> str | None:
+    """Turn an href as the SPA emits it into a path the trace/flow can append to base_url.
+
+    Angular emits "#/contact" and "./redirect?to=..."; appended verbatim to base_url those become
+    "http://juice:3000#/contact" (works by accident) and "http://juice:3000./redirect?..." (an
+    invalid URL that crashes the generated flow). Returns None for non-navigable hrefs.
+    """
+    if not href:
+        return None
+    h = href.strip()
+    if not h or h.lower().startswith(_NON_NAVIGABLE):
+        return None
+    if h.startswith("http://") or h.startswith("https://") or h.startswith("/"):
+        return h
+    if h.startswith("./"):
+        return "/" + h[2:]
+    if h.startswith("#"):
+        return "/" + h
+    return "/" + h
+
+
+def _normalize_action(action: dict) -> dict:
+    """Apply normalize_href to an LLM-proposed path so it gets the same treatment as scraped
+    links. A non-navigable path is blanked so schema validation (minLength) rejects it."""
+    if not isinstance(action, dict):
+        return action
+    target = action.get("target")
+    if isinstance(target, dict) and isinstance(target.get("path"), str):
+        target = dict(target)
+        target["path"] = normalize_href(target["path"]) or ""
+        action = dict(action, target=target)
+    return action
+
+
+def dispatch(action: dict) -> tuple[str, str] | None:
+    """Map a validated action to what the browser does: ("goto", path) for follow_link /
+    visit_api, ("click", selector) for expand_nav / submit_form. None = nothing executable
+    (e.g. stop, or a selector on a navigation action). Pure."""
+    kind = action.get("action")
+    target = action.get("target") or {}
+    if kind in ("follow_link", "visit_api"):
+        return ("goto", target["path"]) if target.get("path") else None
+    if kind in ("expand_nav", "submit_form"):
+        return ("click", target["selector"]) if target.get("selector") else None
+    return None
 
 
 # ---- deterministic fallback proposer (pure) ---------------------------------------------
@@ -97,7 +152,9 @@ def propose_llm(observation: dict, model: str, api_key: str) -> dict:
         "coverage of the authenticated surface. Output ONLY a JSON object — no prose, no code "
         "fences — validating against this JSON Schema:\n" + schema +
         "\nNever propose destructive actions (logout, delete, purchase, admin mutations). Prefer "
-        "unexplored in-scope authenticated routes. Emit {\"action\":\"stop\"} when nothing useful "
+        "follow_link / visit_api on paths that appear in the observation's `links` / `api` and are "
+        "NOT in `visited`. Use expand_nav / submit_form (with a CSS `selector`) only when no "
+        "unvisited link or API path remains. Emit {\"action\":\"stop\"} when nothing useful "
         "remains."
     )
     user = "Redacted observation:\n" + json.dumps(observation, indent=2)
@@ -119,11 +176,14 @@ def next_action(observation: dict, visited, scope: dict, *, deny_actions=None, s
     api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
     if use_llm and api_key:
         try:
-            action = propose_llm(observation, model, api_key)
+            action = _normalize_action(propose_llm(observation, model, api_key))
             ok, reason = validate_proposal(action, scope, deny_actions, safe_forms)
             if ok:
                 return action, "llm"
-            print(f"explore: LLM action rejected ({reason}); using fallback", file=sys.stderr)
+            t = action.get("target") or {}
+            print(f"explore: LLM action rejected ({reason}): {action.get('action')} "
+                  f"{t.get('method', '')} {t.get('path') or t.get('selector') or ''}; using fallback",
+                  file=sys.stderr)
         except Exception as exc:
             print(f"explore: LLM path failed ({exc}); using fallback", file=sys.stderr)
     return propose_fallback(observation, visited, scope, deny_actions, safe_forms), "fallback"
@@ -148,16 +208,25 @@ def _observe(page, base_url: str, api_events: list[dict]) -> dict:
         " ? '#' + f.getAttribute('id') : 'form', fields: Array.from(f.querySelectorAll('input,select,"
         "textarea')).map(i => i.getAttribute('name')).filter(Boolean)}))",
         [])
-    return {"url": page.url, "links": [l for l in links if l],
-            "forms": forms, "api": list(api_events)}
+    seen: set[str] = set()
+    clean: list[str] = []
+    for l in links:
+        n = normalize_href(l)
+        if n and n not in seen:
+            seen.add(n)
+            clean.append(n)
+    return {"url": page.url, "links": clean, "forms": forms, "api": list(api_events)}
 
 
 def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[str], scope: dict, *,
             deny_actions=None, safe_forms=None, max_pages: int = 50, use_llm: bool = True,
             model: str = _DEFAULT_MODEL, api_key: str | None = None, zap_proxy: str | None = None,
-            headless: bool = True) -> tuple[dict, ScopeGuard]:
+            headless: bool = True, slow_mo: int = 0) -> tuple[dict, ScopeGuard]:
     """Run the seeded, LLM-driven exploration loop and return (trace, guard). The trace matches
-    record's output (build_trace), so generate/validate/runner consume it unchanged."""
+    record's output (build_trace), so generate/validate/runner consume it unchanged.
+
+    slow_mo (ms) delays each Playwright action so a headed run is watchable in a live demo (same
+    knob as record); 0 (default) is full speed and does not affect the captured trace."""
     from playwright.sync_api import sync_playwright
 
     if not seed_routes:
@@ -172,6 +241,8 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
         launch = {"headless": headless, "args": launch_args}
         if zap_proxy:
             launch["proxy"] = {"server": zap_proxy}
+        if slow_mo:
+            launch["slow_mo"] = slow_mo
         browser = pw.chromium.launch(**launch)
         context = browser.new_context(ignore_https_errors=True, storage_state=storage_state)
         page = context.new_page()
@@ -202,26 +273,28 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
         steps = 0
         while steps < max_pages:
             observation = redact(_observe(page, base_url, api_events))  # redact BEFORE the LLM
+            observation["visited"] = sorted(visited)  # coverage so far, so the model doesn't repeat
             action, _src = next_action(observation, visited, scope, deny_actions=deny_actions,
                                        safe_forms=safe_forms, use_llm=use_llm, model=model,
                                        api_key=api_key)
-            kind = action.get("action")
-            if kind == "stop":
+            if action.get("action") == "stop":
                 break
             ok, _reason = validate_proposal(action, scope, deny_actions, safe_forms)
             if not ok:  # fail-closed: never execute an action that didn't pass validation
                 break
-            target = action.get("target", {})
-            path = target.get("path") or target.get("selector") or ""
-            if kind in ("follow_link", "visit_api", "expand_nav") and path:
-                _goto(path)
-            elif kind == "submit_form" and path:
-                events.append({"type": "click", "selector": path})
+            todo = dispatch(action)
+            if todo is None:
+                break  # nothing executable (fail closed rather than guess)
+            op, arg = todo
+            if op == "goto":
+                _goto(arg)
+            else:  # click a selector (expand_nav / submit_form); never a navigation
+                events.append({"type": "click", "selector": arg})
                 try:
-                    page.click(path, timeout=3000)
+                    page.click(arg, timeout=3000)
                 except Exception:
                     pass
-                visited.add(path)
+                visited.add(arg)
             for f in observation.get("forms", []):
                 events.append({"type": "form", "url": observation.get("url"),
                                "fields": f.get("fields", [])})
@@ -248,6 +321,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-llm", action="store_true", help="Force the deterministic fallback proposer")
     p.add_argument("--max-pages", type=int, default=50)
     p.add_argument("--headed", action="store_true")
+    p.add_argument("--slow-mo", type=int, default=0, metavar="MS",
+                   help="Delay each browser action by MS milliseconds (for headed demos/recordings)")
     args = p.parse_args(argv)
 
     scope = preflight(args.scope, args.schema)  # safety layer 1 before any traffic
@@ -259,7 +334,7 @@ def main(argv: list[str] | None = None) -> int:
             app_id, base_url, seed["session"]["storage_state"], seed["seed_routes"], scope,
             deny_actions=seed.get("deny_actions"), max_pages=args.max_pages,
             use_llm=not args.no_llm, model=args.model, zap_proxy=args.zap_proxy,
-            headless=not args.headed,
+            headless=not args.headed, slow_mo=args.slow_mo,
         )
     except SessionDeadError as exc:
         print(f"EXPLORE ABORT: seeded session dead ({exc}); re-seed and retry", file=sys.stderr)
