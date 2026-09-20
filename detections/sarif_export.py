@@ -102,6 +102,12 @@ def to_sarif(records: Iterable[dict], driver_version: str | None = None) -> dict
     results: list[dict] = []
 
     for rec in records:
+        # Coverage-aware publishing (R2): GitHub auto-closes any alert absent from the newest
+        # upload. Only a `resolved` record (its route x rule was exercised and the finding is
+        # gone) may be omitted; `not_scanned` is carried forward so a route this scan did not
+        # reach never shows as "fixed". Raw normalizer records carry status "open" and pass.
+        if rec.get("status") == "resolved":
+            continue
         rid = rec["rule_id"]
         if rid not in rule_index:
             rule_index[rid] = len(rules)

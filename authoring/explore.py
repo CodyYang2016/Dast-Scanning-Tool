@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -163,11 +164,27 @@ def propose_llm(observation: dict, model: str, api_key: str) -> dict:
         model=model, max_tokens=1024, system=system,
         messages=[{"role": "user", "content": user}],
     )
-    text = "".join(getattr(b, "text", "") for b in msg.content).strip()
-    if text.startswith("```"):
-        text = text.strip("`")
-        text = text[text.find("{"):text.rfind("}") + 1]
-    return json.loads(text)
+    text = "".join(getattr(b, "text", "") for b in msg.content)
+    return parse_action_text(text)
+
+
+def parse_action_text(text: str) -> dict:
+    """Extract the first JSON object from raw LLM text (strips ``` fences, ignores trailing
+    prose or a second object). Raises ValueError. Mirrors generate.parse_plan_text."""
+    t = text.strip()
+    fence = re.search(r"```(?:json)?\s*(.*?)```", t, re.DOTALL)
+    if fence:
+        t = fence.group(1).strip()
+    start = t.find("{")
+    if start == -1:
+        raise ValueError("no JSON object found in text")
+    try:
+        obj, _end = json.JSONDecoder().raw_decode(t[start:])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid JSON: {exc}") from exc
+    if not isinstance(obj, dict):
+        raise ValueError("JSON is not an object")
+    return obj
 
 
 def next_action(observation: dict, visited, scope: dict, *, deny_actions=None, safe_forms=None,

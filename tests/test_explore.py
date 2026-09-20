@@ -179,3 +179,30 @@ def test_dispatch_selector_action_never_navigates_and_path_action_never_clicks()
     assert dispatch({"action": "expand_nav", "target": {"path": "/#/about"}}) is None
     assert dispatch({"action": "follow_link", "target": {"selector": "nav a"}}) is None
     assert dispatch({"action": "stop"}) is None
+
+
+# ---- parse_action_text: tolerate prose / fences / trailing text around the JSON ------------
+# A live run had the model return a valid object followed by extra text ("Extra data: line 3");
+# strict json.loads threw the whole step to the fallback. Mirror generate.parse_plan_text.
+
+from authoring.explore import parse_action_text
+
+
+def test_parse_action_text_plain():
+    assert parse_action_text('{"action": "stop"}') == {"action": "stop"}
+
+
+def test_parse_action_text_strips_fences_and_trailing_prose():
+    text = '```json\n{"action":"follow_link","target":{"path":"/#/about"}}\n```\nI chose this because...'
+    assert parse_action_text(text)["target"]["path"] == "/#/about"
+
+
+def test_parse_action_text_takes_first_object_when_two_are_emitted():
+    text = '{"action":"visit_api","target":{"method":"GET","path":"/rest/x"}}\n{"action":"stop"}'
+    assert parse_action_text(text)["action"] == "visit_api"
+
+
+def test_parse_action_text_rejects_no_json():
+    import pytest
+    with pytest.raises(ValueError):
+        parse_action_text("no json here")

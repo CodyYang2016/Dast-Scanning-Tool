@@ -131,3 +131,31 @@ def test_evidence_path_becomes_attachment():
     schema = json.loads(SARIF_SCHEMA.read_text())
     Validator = validator_for(schema)
     assert not list(Validator(schema).iter_errors(sarif))
+
+
+# ---- Coverage-aware publishing: never let GitHub close a finding we did not test for -------
+# GitHub auto-closes ("fixed") any alert absent from the newest upload. Feeding it labeled
+# records from lifecycle_diff, the export must DROP only `resolved` (pair exercised, finding
+# gone = real fix) and CARRY FORWARD `not_scanned` (pair not exercised this scan), alongside
+# new/open. Observed live 2026-09-19: an LLM-explored journey that skipped /rest/continue-code
+# made GitHub mark 13 real findings there "fixed".
+
+def _labeled(records):
+    a, b, c, d = records[0], records[1], records[2], records[3]
+    return [dict(a, status="new"), dict(b, status="open"),
+            dict(c, status="resolved"), dict(d, status="not_scanned")]
+
+
+def test_export_drops_resolved_but_keeps_not_scanned(records):
+    labeled = _labeled(records)
+    out = to_sarif(labeled)
+    fps = {r["partialFingerprints"][FINGERPRINT_KEY] for r in _results(out)}
+    assert labeled[0]["fingerprint"] in fps          # new
+    assert labeled[1]["fingerprint"] in fps          # open
+    assert labeled[2]["fingerprint"] not in fps      # resolved -> let GitHub close it
+    assert labeled[3]["fingerprint"] in fps          # not_scanned -> carried forward
+
+
+def test_export_keeps_unlabeled_records(records):
+    # Raw normalizer output (status "open") is unaffected.
+    assert len(_results(to_sarif(records))) == len(records)
