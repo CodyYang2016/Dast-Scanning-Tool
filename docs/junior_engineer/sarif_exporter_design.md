@@ -106,6 +106,17 @@ GitHub buckets by number: ≥9.0 critical, 7.0–8.9 high, 4.0–6.9 medium, 0.1
 | low | "3.0" |
 | info | "0.0" |
 
+## 5c. Coverage-aware publishing (what gets exported)
+
+GitHub closes any alert absent from the newest upload as **fixed** — it has no notion of whether
+the scan looked. So the exporter is fed the **labeled** records from `lifecycle_diff` (run with
+`--coverage`) and applies one rule: a record with `status == "resolved"` is omitted (route × rule
+exercised, finding gone → let GitHub close it); `new`, `open` and **`not_scanned`** are exported,
+so a finding on a route this scan did not reach is carried forward and never shows as fixed.
+Raw normalizer output (`status: "open"`) is unaffected. Observed live 2026-09-19: two
+coverage-blind uploads in a row marked 13 real `/rest/continue-code` findings "fixed" because one
+LLM exploration skipped that route. Tests: `test_export_drops_resolved_but_keeps_not_scanned`.
+
 ## 6. Why these choices
 
 - **`partialFingerprints`, not `fingerprints`.** GitHub uses partialFingerprints to correlate

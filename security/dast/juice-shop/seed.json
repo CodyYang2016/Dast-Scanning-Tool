@@ -9,7 +9,9 @@
   "seed_routes": [
     "/#/basket",
     "/#/order-history",
-    "/#/privacy-security/privacy-policy"
+    "/#/search?q=apple",
+    "/#/privacy-security/privacy-policy",
+    "/rest/products/1/reviews"
   ],
   "deny_actions": [
     "logout",

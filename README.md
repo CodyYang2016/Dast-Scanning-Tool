@@ -6,7 +6,7 @@ normalize the findings with stable fingerprints, and publish them to the GitHub 
 with lifecycle tracking across scans.
 
 **Status: the full loop works end-to-end on real data**, including the Phase 2 authoring CLIs
-(`record → generate → validate`). 188 automated tests pass; the containerized single-command
+(`record → generate → validate`). 213 automated tests pass; the containerized single-command
 run is verified; and the **auto-generated `flow.py` drives a passing scan** end-to-end
 (Week-2 checkpoint). The LLM path in `generate` runs with an `ANTHROPIC_API_KEY`; without one
 it uses a deterministic fallback (verified here).
@@ -90,12 +90,15 @@ python -m runner.main \
   --base-url http://juice:3000 --records-out out/records.json
 #   -> gate: {authenticated, scope_ok, has_high_or_medium, passed: true}  (exit 0)
 
-# 3. Publish to the GitHub Security tab (SARIF)
-python -m detections.sarif_export out/records.json -o out.sarif
-python -m detections.github_upload out.sarif --owner <owner> --repo <repo>
+# 3. Lifecycle across two scans, coverage-aware (fix a finding → "resolved"; unreached → "not_scanned")
+python -m detections.lifecycle_diff out/records.json --app-id juice-shop --state out/state.json \
+  --coverage out/coverage.json -o out/labeled.json        # coverage from `runner.main --coverage-out`
 
-# 4. Lifecycle across two scans (fix a finding → it flips to "resolved")
-python -m detections.lifecycle_diff out/records.json --app-id juice-shop --state out/state.json
+# 4. Publish to the GitHub Security tab (SARIF) from the LABELED set: the export drops only
+#    `resolved` and carries `not_scanned` forward, so GitHub never auto-closes a finding the scan
+#    did not reach (it marks anything absent from the newest upload "fixed").
+python -m detections.sarif_export out/labeled.json -o out.sarif
+python -m detections.github_upload out.sarif --owner <owner> --repo <repo>
 ```
 
 The results pipeline also runs standalone against the committed fixture (no scanner needed):
@@ -134,7 +137,7 @@ python -m detections.lifecycle_diff out/records.json --app-id juice-shop \
 
 ```bash
 pip install -r requirements-dev.txt
-pytest -q          # 188 tests
+pytest -q          # 213 tests
 ```
 
 Testing philosophy is **objective / test-first**: expectations are anchored to independent

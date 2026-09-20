@@ -70,7 +70,7 @@ ZAP_IMG=ntr.nwie.net/docker.io/zaproxy/zap-stable
 | Fact | Detail | Why it matters |
 |---|---|---|
 | Python | `$PY` = the repo venv (mac: 3.12.14; win: 3.11+) with playwright 1.62.0, anthropic, jsonschema, pytest | bare `python`/`python3` is the wrong interpreter on both machines (mac ships 3.9; Windows may pick the Store stub) — **always** use `$PY` |
-| Tests | `$PY -m pytest -q` → **188 passed** in <1s | your fallback evidence (§9) |
+| Tests | `$PY -m pytest -q` → **213 passed** in <1s | your fallback evidence (§9) |
 | Container tool (mac) | Docker Desktop is at `/Applications/Docker.app`, **but** `/usr/local/bin/docker` is a broken symlink (→ `/Volumes/Docker 1/…`), so `docker` is **not on PATH** in a fresh shell | fix once, see below |
 | Container tool (win) | Podman runs in a WSL VM; the VM ships a dead `127.0.0.1:8888` proxy that breaks pulls | one-time fix: `dast_poc_day1_runbook.md` Appendix A2; pull images the day before |
 | Compose file | `compose.yaml` (project `ssd-dast-poc`) does **not publish ports** for `juice`/`zap` — it's for the all-in-container runner | for a host-side demo you need `localhost:3000` / `localhost:8080`, so start juice+zap with `$CT run -p …` (README "Option B"), not compose |
@@ -169,7 +169,7 @@ which is exactly what `wait_ready()` in `runner/main.py` checks before scanning.
 
 ```bash
 $PY -c "from playwright.sync_api import sync_playwright as s; b=s().start().chromium.launch(); b.close(); print('chromium ok')"
-$PY -m pytest -q          # SEE: 188 passed
+$PY -m pytest -q          # SEE: 213 passed
 ```
 
 ### 1.5 RUN — clean scratch dir + pick demo credentials
@@ -198,7 +198,7 @@ $PY -m authoring.record --app-id juice-shop \
 ```
 
 **SEE** a Chromium window open, log in, land on the basket, close; Terminal prints
-`recorded: 6 interactions, 22 api calls, hosts=['juice'] -> out/phase2-demo/warmup/trace.json`.
+`recorded: 6 interactions, 22–24 api calls, hosts=['juice'] -> out/phase2-demo/warmup/trace.json` (24 on a freshly started Juice Shop, 22 on a warm one).
 
 > **`hosts=['juice']` is required.** If you record with `--base-url http://localhost:3000` and
 > no `--zap-proxy` (as the Playwright-only runbook does), the trace says `hosts=['localhost']`,
@@ -384,7 +384,7 @@ $PY -m authoring.record \
 banner) → navigates to **#/login** → **email/password fields fill themselves** → Login click →
 lands on **#/basket** → window closes. Terminal prints:
 ```
-recorded: 6 interactions, 22 api calls, hosts=['juice'] -> out/phase2-demo/trace/trace.json
+recorded: 6 interactions, 22–24 api calls, hosts=['juice'] -> out/phase2-demo/trace/trace.json
 ```
 
 **SAY** (while it runs) "This is the same Playwright runtime the scanner uses, proxied through
@@ -429,7 +429,7 @@ trivial, so the win here is *breadth*, not auth; the seeding value shows on ente
 
 **RUN** (Terminal A)
 ```bash
-cat security/dast/juice-shop/seed.json         # the whole human input: 3 seed routes + a deny-list + a page budget
+cat security/dast/juice-shop/seed.json         # the whole human input: 5 seed routes + a deny-list + a page budget
 
 $PY -m authoring.explore \
   --seed  security/dast/juice-shop/seed.json \
@@ -672,24 +672,52 @@ gate, driven by a generated bundle. That's the Week-2 checkpoint."
 
 ---
 
-## Part H — Close the loop: live records → SARIF (→ GitHub) (1 min, Terminal A)
+## Part H — Close the loop: live records → lifecycle diff → SARIF (→ GitHub) (2 min, Terminal A)
 
-**RUN**
+**RUN** — label this scan against the previous one, **coverage-aware**:
 ```bash
-$PY -m detections.sarif_export out/phase2-demo/live-records.json --app-id juice-shop \
+$PY -m detections.lifecycle_diff out/phase2-demo/live-records.json --app-id juice-shop \
+  --state out/state.json --coverage out/phase2-demo/live-coverage.json \
+  -o out/phase2-demo/live-labeled.json
+$PY -c "import json,collections;print(collections.Counter(x['status'] for x in json.load(open('out/phase2-demo/live-labeled.json'))))"
+```
+**SEE** `Counter({'open': …, 'new': …, 'not_scanned': …})` — on the very first run everything is
+`new`; on later runs the previous scan's findings that this journey did not reach come back as
+`not_scanned`, never `resolved`. (`out/state.json` lives *outside* the per-take scratch dir on
+purpose, so §10 resets don't erase the history. Delete it to start a clean lifecycle.)
+
+**SAY** "This is the coverage-aware diff. `resolved` is only claimed when the finding's route was
+scanned with its rule enabled and the finding is gone. If this run simply didn't reach a route —
+a different exploration, a disabled rule — the finding is `not_scanned`, and it stays reported."
+
+**RUN** — export from the *labeled* records:
+```bash
+$PY -m detections.sarif_export out/phase2-demo/live-labeled.json --app-id juice-shop \
   --driver-version "ZAP 2.17.0" -o out/phase2-demo/live-results.sarif
 $PY -c "import json;s=json.load(open('out/phase2-demo/live-results.sarif'));print(len(s['runs'][0]['results']),'SARIF results')"
 ```
-**SEE** `1490 SARIF results` (or whatever the gate printed under `detections`).
-**SAY** "`record → generate → validate → runner → normalizer → SARIF`, end to end. The only
-difference from Phase 1's output is that everything upstream of the runner was generated."
+**SEE** a count = `open + new + not_scanned` (e.g. `1470 SARIF results` = 1351 open + 119
+carried forward, verified 2026-09-19).
+**SAY** "The export drops only `resolved` and carries `not_scanned` forward. That matters because
+GitHub closes any alert missing from the newest upload as *fixed* — with no idea whether we
+looked. Feeding it the coverage-aware set means the Security tab only ever closes what we
+actually proved gone. `record → explore → generate → validate → runner → diff → SARIF`, end to
+end; everything upstream of the runner was generated."
 
-*Optional live upload* (same one-way-door caveat as Part B; HEAD must be pushed):
+*Live upload* (one-way door, same caveat as Part B; HEAD must be pushed):
 ```bash
 $PY -m detections.github_upload out/phase2-demo/live-results.sarif \
   --owner CodyYang2016 --repo Dast-Scanning-Tool --ref refs/heads/main
 ```
-Then **OPEN** Browser tab 2 and **CLICK** refresh after ~60 s.
+Then **OPEN** Browser tab 2 and **CLICK** refresh after ~60 s. **CLICK** *Closed* — anything there
+is either a real fix or predates coverage-aware publishing.
+
+> **Why this changed (2026-09-19, live):** two coverage-blind uploads in a row made GitHub mark
+> 13 real findings on `/rest/continue-code` "fixed" — the second LLM exploration just hadn't
+> visited that route. Same run also proved a `/rest/products/{id}` error-disclosure finding
+> "fixed" for the same reason. The 24 alerts from those uploads are still *Closed* in the tab
+> and will reopen the first time a scan covers those routes; everything since is coverage-aware.
+> Use it in the demo: it's the concrete case for R2.
 
 ---
 
@@ -700,7 +728,7 @@ Then **OPEN** Browser tab 2 and **CLICK** refresh after ~60 s.
 - `record → generate → validate` yields a bundle that satisfies the exact same contract as the
   hand-authored flow — the **unchanged runner** is the proof.
 - `seed → explore` removes the human walk as the coverage ceiling (KI4): an LLM-driven loop
-  found 4× the pages from three seed routes with zero out-of-scope requests — every action
+  found 3–4× the pages from five seed routes with zero out-of-scope requests — every action
   schema-checked and policy-checked by code before the browser moved, and only at authoring time
   (R1), so monitoring scans stay deterministic.
 - The LLM only emits a schema-validated JSON **plan**; deterministic code renders and
@@ -718,7 +746,7 @@ Q&A cheat-sheet: bottom of `docs/dast_poc_phase2_demo_script.md`.
 today, and the suite that backs every piece." Then:
 
 ```bash
-$PY -m pytest -q                          # 188 passed
+$PY -m pytest -q                          # 213 passed
 sed -n '/## Verification/,/## Out of scope/p' docs/junior_engineer/authoring_clis_design.md
 ls out/phase2-demo/warmup/                             # the trace you recorded in §1.6
 ```
@@ -742,7 +770,8 @@ $PY -m authoring.seed --base-url http://juice:3000 --zap-proxy http://localhost:
 restarts.)
 
 Keep `out/phase2-demo/records.json` / `results.sarif` (Part B) — they're fixture-derived and
-regenerate identically anyway. Everything under `out/` is gitignored.
+regenerate identically anyway. Keep `out/state.json` unless you want the lifecycle history
+reset. Everything under `out/` is gitignored.
 
 Full teardown at the end of the day: `$CT rm -f juice zap; $CT network rm dast`
 (Windows: then `podman machine stop` if you like).
@@ -814,6 +843,8 @@ $PY -m authoring.validate --plan out/phase2-demo/gen/journey.json --scope out/ph
 # ---- Part G ----
 time $PY -m runner.main --flow out/phase2-demo/gen/flow.py --scope out/phase2-demo/gen/scope.json --base-url http://juice:3000 --zap-api http://localhost:8080 --zap-proxy http://localhost:8080 --records-out out/phase2-demo/live-records.json --coverage-out out/phase2-demo/live-coverage.json; echo exit=$?
 
-# ---- Part H ----
-$PY -m detections.sarif_export out/phase2-demo/live-records.json --app-id juice-shop --driver-version "ZAP 2.17.0" -o out/phase2-demo/live-results.sarif
+# ---- Part H (coverage-aware: diff first, export the labeled set) ----
+$PY -m detections.lifecycle_diff out/phase2-demo/live-records.json --app-id juice-shop --state out/state.json --coverage out/phase2-demo/live-coverage.json -o out/phase2-demo/live-labeled.json
+$PY -m detections.sarif_export out/phase2-demo/live-labeled.json --app-id juice-shop --driver-version "ZAP 2.17.0" -o out/phase2-demo/live-results.sarif
+# (optional) $PY -m detections.github_upload out/phase2-demo/live-results.sarif --owner CodyYang2016 --repo Dast-Scanning-Tool --ref refs/heads/main
 ```
