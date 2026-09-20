@@ -508,7 +508,7 @@ deterministic plan built straight from the trace, so this step never blocks on t
 (If you see `generate: LLM path failed (…); using deterministic fallback` and
 `"plan_source": "fallback"`, that *is* the resilience story — say so and keep going.)
 
-**RUN** (Terminal B) — show the plan and all six artifacts:
+**RUN** (Terminal B) — show the plan and all seven artifacts:
 ```bash
 cat out/phase2-demo/gen/journey.json
 ls out/phase2-demo/gen/            # SEE: auth.json flow.py journey.json lock manifest.json scope.json zap-policy.yaml
@@ -519,7 +519,7 @@ cat out/phase2-demo/gen/manifest.json
 ```
 **SEE** `scope.json` → `"fqdn_allow_list": ["juice"]`, `"environment_class": "dev"`;
 `auth.json` → only `"email_env": "AUTH_EMAIL"`, `"password_env": "AUTH_PASSWORD"`.
-**SAY** "Six artifacts from one trace: the plan, the rendered `flow.py`, a `scope.json` whose
+**SAY** "Seven artifacts from one trace: the plan, the rendered `flow.py`, a `scope.json` whose
 allow-list is seeded from hosts *actually seen* in the trace, `auth.json` holding only env-var
 **names**, a ZAP policy, a manifest and a lock."
 

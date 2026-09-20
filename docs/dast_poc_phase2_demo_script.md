@@ -1,23 +1,24 @@
-# Phase 2 Live Demo Script — Deterministic Results Pipeline + Generated Artifacts
+# Phase 2 Live Demo Script — AI Discovery, Generated Artifacts, and ZAP
 
 Follow top to bottom. Each step has: the command, what to say while it runs, and what
 "success" looks like on screen. Total run time budget: ~15-18 minutes. See
 `dast_poc_demo_plan.md` (Phase 2) for the underlying gate definition, and
 `docs/dast_poc_phase1_demo_script.md` for the Phase 1 gate this demo builds on. Reference
-design doc: `docs/junior_engineer/authoring_clis_design.md`.
+design docs: `docs/junior_engineer/authoring_clis_design.md` and
+`docs/junior_engineer/seeded_session_exploration_design.md`.
 
 ---
 
 ## Big picture — where Phase 2 sits (start here, before any commands)
 
-Re-anchor the audience: Phase 1 proved the scanner is safe. Phase 2 proves the artifacts that
-drive that scanner can be **generated instead of hand-authored**, without weakening any of the
-Phase 1 guarantees.
+Re-anchor the audience: Phase 1 proved the scanner is safe. Phase 2 proves that an authenticated
+surface can be explored with AI at authoring time, converted into deterministic scan artifacts,
+and sent through the unchanged ZAP runner without weakening the Phase 1 guarantees.
 
 ```mermaid
 flowchart LR
   P1["Phase 1<br/>Safe deterministic scanner<br/>(already proven)"]
-  P2["Phase 2<br/>Generated artifacts +<br/>results pipeline<br/>Record, generate,<br/>validate, normalize, SARIF"]
+  P2["Phase 2<br/>AI discovery +<br/>generated artifacts<br/>Explore, generate,<br/>validate, scan, SARIF"]
   P3["Phase 3<br/>Lifecycle + hardening<br/>Re-scan, resolve,<br/>evidence, final demo"]
 
   P1 -->|"Scanner gate is trusted"| P2
@@ -31,40 +32,60 @@ findings out of our own JSON and into a format the rest of the org already consu
 GitHub's Security tab? And critically: does adding an LLM into that loop compromise the safety
 guarantees from Phase 1? The answer has to be no, by construction, not by promise."
 
-Now show the full Phase 2 chain end to end before running anything:
+Now show the full Phase 2 chain end to end before running anything. Every component names its
+real input and output so the audience can see where AI stops and deterministic scanning begins:
 
 ```mermaid
 flowchart LR
-  Human["App owner<br/>Input: app URL +<br/>test creds<br/>Output: demo intent"]
+  Human["Operator<br/>Input: target, test creds,<br/>seed routes, deny-list<br/>Output: seed.json"]
+  Seed["authoring.seed<br/>Input: base URL, creds,<br/>optional ZAP proxy<br/>Output: storageState.json"]
+  Explore["authoring.explore<br/>Input: seed.json, storageState,<br/>scope.json, observations<br/>Output: expanded trace.json,<br/>index.json"]
+  ActionLLM["Anthropic Claude<br/>Input: redacted page links,<br/>forms, API calls + action schema<br/>Output: one JSON action"]
+  Policy["Scope + action policy<br/>Input: proposed action, scope,<br/>deny-list<br/>Output: allow/block decision"]
   Record["record CLI<br/>authoring/record.py<br/>Input: app URL,<br/>creds via env<br/>Output: trace.json,<br/>index.json"]
   Generate["generate CLI<br/>authoring/generate.py<br/>Input: trace.json<br/>Output: journey.json,<br/>flow.py, scope.json,<br/>auth.json, zap-policy.yaml,<br/>manifest.json, lock"]
   Validate["validate CLI<br/>authoring/validate.py<br/>Input: journey.json,<br/>scope.json, flow.py<br/>Output:<br/>validation-report.json"]
-  LLM["Anthropic Claude<br/>(optional, ANTHROPIC_API_KEY)<br/>Input: trace.json (no secrets)<br/>+ journey schema<br/>Output: JSON journey plan"]
-  Fallback["Deterministic fallback<br/>journey_from_trace()<br/>used if no API key or<br/>LLM output invalid"]
+  PlanLLM["Anthropic Claude<br/>Input: trace.json + journey schema<br/>Output: JSON journey plan"]
+  Fallback["Deterministic fallback<br/>Input: trace.json<br/>Output: journey.json"]
 
-  Runner["Phase 1 runner<br/>(unchanged)<br/>Input: generated flow.py<br/>+ scope.json<br/>Output: gate result +<br/>out/records.json"]
-  Normalize["normalizer<br/>Input: raw ZAP alerts<br/>Output: stable<br/>detection records"]
-  Sarif["SARIF export<br/>Input: detection records<br/>Output: SARIF 2.1.0 file"]
-  Github["GitHub code scanning<br/>Input: SARIF upload<br/>Output: security alerts"]
+  Replay["Playwright replay<br/>Input: generated flow.py<br/>Output: authenticated traffic<br/>through ZAP"]
+  ZAP["OWASP ZAP<br/>Input: proxied traffic + target<br/>Output: raw alerts JSON"]
+  Runner["runner.main<br/>Input: flow.py, scope.json,<br/>ZAP API/proxy<br/>Output: gate, records.json,<br/>coverage.json, evidence"]
+  Normalize["detections.normalizer<br/>Input: raw ZAP alerts<br/>Output: normalized records"]
+  Sarif["detections.sarif_export<br/>Input: records.json<br/>Output: SARIF 2.1.0"]
+  Github["GitHub Code Scanning<br/>Input: SARIF upload<br/>Output: security alerts"]
 
-  Human --> Record --> Generate
-  Generate <-.->|"constrained JSON<br/>plan request"| LLM
-  Generate -.->|"if no key / invalid"| Fallback
-  Generate --> Validate --> Runner --> Normalize --> Sarif --> Github
+  Human -->|"seed routes + policy"| Seed
+  Human -->|"seed.json"| Explore
+  Seed -->|"storageState.json"| Explore
+  Explore <-.->|"redacted observation / JSON action"| ActionLLM
+  ActionLLM --> Policy
+  Policy -->|"approved action"| Explore
+  Policy -.->|"blocked action"| Explore
+  Record -.->|"optional baseline"| Generate
+  Explore -->|"expanded trace"| Generate
+  Generate <-.->|"trace + schema / plan"| PlanLLM
+  Generate -.->|"no key or invalid plan"| Fallback
+  Generate --> Validate --> Runner
+  Runner --> Replay --> ZAP --> Normalize --> Sarif --> Github
+  Runner -->|"scan target + scope"| ZAP
 
   classDef safety fill:#fff3cd,stroke:#9a6700,stroke-width:2px,color:#402e00
   classDef phase1 fill:#e6f4ff,stroke:#0969da,stroke-width:2px,color:#0a3069
-  class LLM,Fallback safety
-  class Runner phase1
+  class ActionLLM,PlanLLM,Fallback safety
+  class Policy,Validate,Runner,Replay,ZAP,Normalize,Sarif,Github phase1
 ```
 
-**Say:** "The yellow boxes are the only new risk surface: the LLM. Everything downstream of
+**Say:** "The yellow boxes are the LLM calls. During exploration, Claude proposes one JSON
+action from a redacted observation; deterministic policy code decides whether it can execute.
+Everything downstream of
 `validate` — the runner, the scope guard, the normalizer, SARIF export — is the exact Phase 1
 code, completely unchanged. The safety argument for today is narrow: the LLM only ever emits
 **data** — a constrained JSON journey plan — never executable code. A deterministic renderer
 turns that plan into `flow.py`. If the LLM is unavailable or produces something invalid, a
 deterministic fallback builds a valid plan directly from the recorded trace, so the pipeline
-never depends on the model being available."
+never depends on the model being available. The direct output of exploration is an expanded
+trace; that trace must pass through `generate` before it can drive the scan."
 
 ---
 
@@ -81,10 +102,9 @@ never depends on the model being available."
   `tests/test_record.py`, `tests/test_generate.py`, `tests/test_validate.py` — check the actual
   count printed rather than quoting a fixed number, since it drifts as tests are added.
 - [ ] Decide up front whether you are demoing the **LLM path** or the **fallback path**:
-  - LLM path: export `ANTHROPIC_API_KEY` in the shell you'll run `generate` from.
-  - Fallback path (no external dependency, safer for a live demo): don't set the key, or pass
-    `--no-llm` explicitly. This is the recommended default for a live audience — no network
-    dependency on an external LLM API mid-demo.
+  - LLM path: export `ANTHROPIC_API_KEY` before `explore` and `generate`.
+  - Fallback path: use `--no-llm` on both commands. It still produces the same artifact shape,
+    but route selection follows the deterministic proposer instead of Claude.
 - [ ] Have a clean scratch directory ready, e.g. `out/phase2-demo/`, and remove it if it exists
   from a previous run so the "identical output twice" idempotency proof is convincing:
 
@@ -93,7 +113,7 @@ rm -rf out/phase2-demo && mkdir -p out/phase2-demo
 ```
 
 - [ ] Have two terminal tabs ready:
-  - Terminal A: `record` → `generate` → `validate` → runner chain.
+  - Terminal A: `record` → `seed` → `explore` → `generate` → `validate` → runner chain.
   - Terminal B: inspection commands (cat generated files, diff runs, query ZAP/GitHub).
 
 ---
@@ -184,17 +204,17 @@ entire vocabulary the LLM is allowed to use."
 
 ---
 
-## 4. Run `record` — capture a real trace of the pilot app
+## 4. Run `record` — capture the deterministic baseline trace
 
 ```bash
 cd /c/Users/yangq4/playground/Warbler-Tech/Dast-Scanning-Tool
-podman-compose -f compose.yaml -f compose.demo.yaml up --build -d juice zap
-```
+export AUTH_EMAIL="dast-demo-$(date +%H%M%S)@juice-sh.op"
+export AUTH_PASSWORD="Dast-Demo-passw0rd!"
 
-```bash
-AUTH_EMAIL="dast-poc@juice-sh.op" AUTH_PASSWORD="Passw0rd!" \
-python -m authoring.record --app-id juice-shop --base-url http://localhost:3000 \
-  --out-dir out/phase2-demo/trace
+rm -rf out/phase2-demo/trace
+$PY -m authoring.record --app-id juice-shop \
+  --base-url http://juice:3000 --zap-proxy http://localhost:8080 \
+  --out-dir out/phase2-demo/trace --headed --slow-mo 700
 ```
 
 **Say:** "This launches a real Chromium session — the same Playwright runtime the runner uses —
@@ -205,7 +225,7 @@ function — turns into a schema-valid trace."
 **Expect:** `out/phase2-demo/trace/trace.json` and `index.json` written; no errors.
 
 ```bash
-cat out/phase2-demo/trace/trace.json | head -40
+$PY -m json.tool out/phase2-demo/trace/trace.json | sed -n '1,40p'
 ```
 
 **Say:** "This is `trace.json` — hosts, the page index, interactions, forms, and captured API
@@ -214,20 +234,71 @@ variables at record/replay time, never from the trace itself."
 
 ---
 
-## 5. Run `generate` — trace to journey plan to `flow.py` + scan config
+## 4a. Run `seed` + `explore` — discover authenticated routes with AI
+
+First create an authenticated browser state. On enterprise applications, the human can complete
+SSO/MFA/CAPTCHA in this step; Juice Shop uses the exported test credentials instead:
+
+```bash
+$PY -m authoring.seed --base-url http://juice:3000 --zap-proxy http://localhost:8080 \
+  --assisted --storage-state .secrets/storageState.json
+```
+
+**Output:** `.secrets/storageState.json` containing cookies and local storage for the `juice:3000`
+origin. It is gitignored and must not be committed.
+
+Create or inspect the reviewed seed configuration:
+
+```bash
+cat security/dast/juice-shop/seed.json
+cat contracts/seed.schema.json
+cat contracts/action.schema.json
+```
+
+Then run the AI exploration loop:
+
+```bash
+rm -rf out/phase2-demo/explore
+$PY -m authoring.explore \
+  --seed security/dast/juice-shop/seed.json \
+  --scope security/dast/juice-shop/scope.json \
+  --zap-proxy http://localhost:8080 \
+  --out-dir out/phase2-demo/explore \
+  --max-pages 12 --headed --slow-mo 500
+```
+
+**Input:** `seed.json`, `storageState.json`, `scope.json`, and redacted page observations.
+**Output:** `out/phase2-demo/explore/trace.json` and `index.json`, plus a terminal summary with
+pages, API calls, hosts, and blocked requests. Claude proposes one JSON action at a time;
+deterministic scope and action policy code approves or blocks it before Playwright acts.
+
+Compare the deterministic baseline with the AI-authored trace:
+
+```bash
+echo "record:"; $PY -m json.tool out/phase2-demo/trace/index.json
+echo "explore:"; $PY -m json.tool out/phase2-demo/explore/index.json
+grep -c '"url"' out/phase2-demo/trace/trace.json out/phase2-demo/explore/trace.json
+```
+
+The remainder of the demo uses `out/phase2-demo/explore/trace.json`. Use the baseline trace only
+when demonstrating the fallback without exploration.
+
+---
+
+## 5. Run `generate` — explored trace to journey plan to `flow.py` + scan config
 
 Recommended: run the **fallback path** live (no external network dependency), then show the LLM
 path already-run evidence if you have it, or run it live only if you're confident in the network.
 
 ```bash
-python -m authoring.generate --trace out/phase2-demo/trace/trace.json \
-  --out-dir out/phase2-demo/gen --no-llm
+$PY -m authoring.generate --trace out/phase2-demo/explore/trace.json \
+  --out-dir out/phase2-demo/gen
 cat out/phase2-demo/gen/journey.json
 ```
 
-**Say:** "With `--no-llm`, this uses the deterministic fallback — `journey_from_trace` — which
-builds a valid plan directly from the trace's recorded routes and GET calls. This is what keeps
-the whole pipeline runnable even with zero external dependencies."
+**Say:** "Claude receives the explored trace and returns a constrained JSON journey plan. If the
+key or network is unavailable, `generate` falls back to `journey_from_trace`, which builds the
+same artifact shape deterministically from the trace's recorded routes and GET calls."
 
 Show every artifact `generate` produced — call out that this is more than just `flow.py`:
 
@@ -239,12 +310,12 @@ cat out/phase2-demo/gen/zap-policy.yaml
 cat out/phase2-demo/gen/manifest.json
 ```
 
-**Say:** "Six artifacts from one trace: the journey plan, the rendered `flow.py`, a `scope.json`
+**Say:** "Seven artifacts from one trace: the journey plan, the rendered `flow.py`, a `scope.json`
 with the allow-list seeded from hosts actually seen in the trace, `auth.json` — which holds only
 environment variable *names*, never secret values — a ZAP scan policy, and a manifest tying it
 all together."
 
-**Say (known gap — call this out explicitly, don't gloss over it):** "Only two of these six
+**Say (known gap — call this out explicitly, don't gloss over it):** "Only two of these seven
 files actually drive the scan today: `flow.py` and `scope.json`. `runner/scan.py`'s
 `configure_policy()` only takes a time budget — it does not yet read `zap-policy.yaml`'s
 `intensity` / `attack_strength` / `disabled_scanners`. `auth.json`, `manifest.json`, and `lock`
@@ -264,7 +335,7 @@ typed by a person."
 ### 5a. Prove idempotency (FR-G4) — same trace in, byte-identical flow out
 
 ```bash
-python -m authoring.generate --trace out/phase2-demo/trace/trace.json \
+$PY -m authoring.generate --trace out/phase2-demo/explore/trace.json \
   --out-dir out/phase2-demo/gen2 --no-llm
 diff out/phase2-demo/gen/flow.py out/phase2-demo/gen2/flow.py && echo "IDENTICAL"
 ```
@@ -278,7 +349,7 @@ trustworthy later: the artifact doesn't drift between runs unless the underlying
 Only run this if `ANTHROPIC_API_KEY` is set and you're comfortable with the live network call:
 
 ```bash
-python -m authoring.generate --trace out/phase2-demo/trace/trace.json \
+$PY -m authoring.generate --trace out/phase2-demo/explore/trace.json \
   --out-dir out/phase2-demo/gen-llm
 cat out/phase2-demo/gen-llm/journey.json
 ```
@@ -294,8 +365,7 @@ hard-fails because a model call had a bad day."
 ## 6. Run `validate` — check the bundle before it drives a scan
 
 ```bash
-AUTH_EMAIL="dast-poc@juice-sh.op" AUTH_PASSWORD="Passw0rd!" \
-python -m authoring.validate --plan out/phase2-demo/gen/journey.json \
+$PY -m authoring.validate --plan out/phase2-demo/gen/journey.json \
   --scope out/phase2-demo/gen/scope.json --flow out/phase2-demo/gen/flow.py \
   --base-url http://juice:3000 --zap-proxy http://localhost:8080 \
   --report out/phase2-demo/validation-report.json
@@ -354,8 +424,9 @@ This is the moment that proves Phase 2 doesn't bypass Phase 1's guarantees — i
 runner, same scope guard, same gate, just fed a generated `flow.py` instead of a hand-authored
 one. Run it the same way `authoring/validate.py` just did its live replay: as a host Python
 process (same venv as `record`/`generate`/`validate`), talking to Juice Shop/ZAP through the
-ports `compose.demo.yaml` already exposes. This avoids guessing container/network names, and
-`runner/main.py` is plain Python — it doesn't require running inside the built image.
+ports published by the host-side container commands in the runbook. This avoids guessing
+container/network names, and `runner/main.py` is plain Python — it doesn't require running
+inside the built image.
 
 ```bash
 python -m runner.main \
