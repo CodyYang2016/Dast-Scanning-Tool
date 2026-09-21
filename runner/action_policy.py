@@ -1,13 +1,16 @@
 """Deterministic action policy (Phase B safety — open question 1).
 
 The LLM only *suggests* actions; whether an action is safe to execute is decided here, by code —
-never by the model's own "non-destructive" label. Two independent rules, both fail-closed:
+never by the model's own "non-destructive" label. Three independent rules, all fail-closed:
 
   1. Deny-list: if the action's target matches any `avoid_action_list` / `deny_actions` term
      (logout, delete, purchase, admin-mutation, ...), reject it.
   2. Default-deny state-changing verbs: any POST/PUT/PATCH/DELETE is rejected unless its target is
      on an explicit safe-form allow-list. GET-like navigation (follow_link/goto/expand_nav) is
      allowed subject to scope.
+  3. Embedded off-scope URLs: an in-scope *path* whose query embeds an absolute URL to a host
+     outside the allow-list (open-redirect style, e.g. `/redirect?to=https://github.com/...`) is
+     rejected — following it would carry the browser off-scope on the app's 302.
 
 Scope (host allow-list) is still enforced independently at the request boundary by ScopeGuard
 (D2/D6) — this module is the *action* layer, kept separate so both must pass. See
@@ -16,9 +19,13 @@ docs/junior_engineer/seeded_session_exploration_design.md.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from urllib.parse import unquote
 
 from runner.scope_guard import host_of
+
+_EMBEDDED_URL = re.compile(r"https?://[^\s&\"'<>]+", re.IGNORECASE)
 
 STATE_CHANGING = {"POST", "PUT", "PATCH", "DELETE"}
 
@@ -72,9 +79,15 @@ def validate_action(action: dict, scope: dict, deny_actions=None, safe_forms=Non
         return ActionDecision(False, f"state-changing {verb} not on the safe-form allow-list")
 
     # Absolute targets must be in-scope by host; relative paths inherit the (in-scope) base host.
+    allow = {h.strip().lower() for h in scope.get("fqdn_allow_list", [])}
     if target.startswith("http://") or target.startswith("https://"):
-        allow = {h.strip().lower() for h in scope.get("fqdn_allow_list", [])}
         if host_of(target) not in allow:
             return ActionDecision(False, "target host not in allow-list")
+
+    # Any absolute URL embedded in the target (query/fragment, possibly percent-encoded) must be
+    # in-scope too — otherwise the app can redirect the browser off-scope.
+    for embedded in _EMBEDDED_URL.findall(unquote(target)):
+        if host_of(embedded) not in allow:
+            return ActionDecision(False, f"embedded off-scope URL in target: {host_of(embedded)}")
 
     return ActionDecision(True, "allowed")

@@ -7,9 +7,7 @@ WORKDIR /app
 # Runtime deps. Playwright is pinned to the base image's version (1.62.0), so its bundled
 # Chromium already matches — no browser re-download needed.
 COPY requirements.txt .
-ARG PIP_INDEX_URL=https://art.nwie.net/artifactory/api/pypi/pypi/simple
-ARG PIP_TRUSTED_HOST=art.nwie.net
-RUN pip install --no-cache-dir --index-url "$PIP_INDEX_URL" --trusted-host "$PIP_TRUSTED_HOST" -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Application code + contracts + the pilot flow/scope.
 COPY pyproject.toml .

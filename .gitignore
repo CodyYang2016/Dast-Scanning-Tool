@@ -5,15 +5,19 @@ __pycache__/
 venv/
 .env
 
+# Seeded sessions (live auth secrets: cookies + tokens) — never commit
+.secrets/
+
 # Scan outputs / evidence (do NOT commit secrets or raw evidence)
 *.har
 evidence/
 *.zap
 zap-report.*
-out/
 
 # OS / editor
 .DS_Store
 .idea/
 .vscode/
 
+# Runner output
+out/

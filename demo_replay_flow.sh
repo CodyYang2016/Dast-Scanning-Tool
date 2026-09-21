@@ -24,7 +24,7 @@ run_runner_python() {
 for required_file in Containerfile security/dast/juice-shop/flow.py security/dast/juice-shop/scope.json; do
   if [ ! -f "$required_file" ]; then
     echo "Missing required file: $required_file" >&2
-    echo "This script must live at the DAST POC repo root." >&2
+    echo "This script must live at the Dast-Scanning-Tool repo root." >&2
     exit 1
   fi
 done

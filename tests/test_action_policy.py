@@ -75,3 +75,26 @@ def test_is_denied_is_case_insensitive():
 def test_deny_actions_defaults_to_scope_avoid_list():
     # no explicit deny_actions -> uses scope.avoid_action_list
     assert not validate_action(_a("follow_link", "/#/logout"), SCOPE).allowed
+
+
+# ---- embedded off-scope URLs (open-redirect style targets) ------------------------------
+# An in-scope *path* can still carry the browser off-scope when it embeds an absolute URL the
+# app redirects to (Juice Shop's /redirect?to=...). The action layer must reject that up front,
+# not rely on the request-boundary guard to catch the follow-up request mid-scan.
+
+def test_embedded_off_scope_url_rejected():
+    d = validate_action({"action": "follow_link", "target": {
+        "path": "/redirect?to=https://github.com/juice-shop/juice-shop"}}, SCOPE)
+    assert not d.allowed and "embedded" in d.reason
+
+
+def test_embedded_in_scope_url_allowed():
+    d = validate_action({"action": "follow_link", "target": {
+        "path": "/redirect?to=http://juice:3000/#/basket"}}, SCOPE)
+    assert d.allowed
+
+
+def test_embedded_url_check_is_case_insensitive_and_query_encoded():
+    d = validate_action({"action": "follow_link", "target": {
+        "path": "/go?next=HTTPS://Evil.Example.com/x&x=1"}}, SCOPE)
+    assert not d.allowed

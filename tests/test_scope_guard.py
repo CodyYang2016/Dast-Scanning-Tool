@@ -185,3 +185,15 @@ def test_enforce_finalize_clean_does_not_raise():
     g = ScopeGuard(SCOPE, mode="enforce")
     g.check("http://localhost/")
     g.finalize()  # no violations -> no raise
+
+
+def test_host_of_never_raises_on_malformed_url():
+    # urlparse raises ValueError("Invalid IPv6 URL") on a bracket in the netloc. A malformed URL
+    # must read as "no host" (-> blocked, fail closed), never crash the guard or the action policy.
+    assert host_of("http://juice:3000[/#/about]") is None
+    assert host_of("http://[::1") is None
+
+
+def test_malformed_url_is_blocked_not_crashed():
+    d = guard().check("http://juice:3000[/#/about]")
+    assert d.allowed is False and d.host is None

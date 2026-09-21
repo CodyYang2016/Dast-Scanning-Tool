@@ -1,3 +1,4 @@
 # Runtime dependencies for the DAST POC.
 jsonschema>=4          # scope/detection schema validation (preflight, contracts)
 playwright==1.62.0     # pinned to match the Containerfile base image's bundled Chromium (NFR-1)
+anthropic>=0.40        # generate CLI's LLM path (trace -> journey plan); lazy-imported

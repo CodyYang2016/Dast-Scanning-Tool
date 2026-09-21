@@ -21,6 +21,9 @@ Run the image and Podman-machine preparation from **Git Bash**. The supplied
 proxy configuration from the Podman VM, restarts the machine, and verifies that the
 Playwright and Nationwide ZAP images are cached.
 
+Use Git Bash only for the following block. After it completes, switch to a PowerShell
+terminal for the remaining commands; do not paste the PowerShell commands into Git Bash.
+
 ```bash
 cd /c/Users/yangq4/poc-work/ssd-dast-tool-poc
 bash ./prepull_playwright_podman_nationwide.sh
@@ -34,10 +37,41 @@ install the actual runtime requirements separately:
 
 ```powershell
 cd C:\Users\yangq4\poc-work\ssd-dast-tool-poc
-py -3.12 -m venv .venv
+
+# Create the venv only when it does not already exist. Do not delete an active .venv;
+# VS Code's Python language server may have its interpreter open.
+if (-not (Test-Path .venv\Scripts\python.exe)) { py -3.12 -m venv .venv }
+
+# Clear stale proxy variables for this process; do not use --trusted-host.
+Remove-Item Env:HTTP_PROXY,Env:HTTPS_PROXY,Env:http_proxy,Env:https_proxy,Env:ALL_PROXY,Env:all_proxy,Env:SOCKS_PROXY,Env:socks_proxy -ErrorAction SilentlyContinue
+
+# Use the approved public PyPI fallback when the configured Artifactory index reports
+# SSLEOF/TLS errors. Certificate verification remains enabled.
 .venv\Scripts\python.exe -m pip install -r requirements.txt
+
+# Playwright's Node-based browser downloader needs the Nationwide CA bundle when the
+# corporate TLS inspection chain is not in Node's default trust store. The bundle must
+# be PEM text containing the corporate CA certificates (not a Java/.NET truststore).
+# Obtain nw-ca-all.pem through the approved internal certificate process first.
+$env:NODE_EXTRA_CA_CERTS = $null
+$env:NODE_EXTRA_CA_CERTS = "C:\Users\yangq4\nw-ca-all.pem"
+if (-not (Test-Path $env:NODE_EXTRA_CA_CERTS)) { throw "Missing PEM bundle: $env:NODE_EXTRA_CA_CERTS" }
+if ((Select-String -Path $env:NODE_EXTRA_CA_CERTS -Pattern "BEGIN CERTIFICATE" | Measure-Object).Count -lt 1) {
+  throw "NODE_EXTRA_CA_CERTS must point to a PEM bundle containing certificates"
+}
 .venv\Scripts\python.exe -m playwright install chromium
 ```
+
+The explicit `--index-url` is needed when the user-level pip configuration points to
+`https://art.nwie.net/artifactory/api/pypi/pypi/simple` but that endpoint cannot complete
+TLS. It leaves pip certificate verification enabled and does not modify the user-level pip
+configuration. `NODE_EXTRA_CA_CERTS` applies to the current PowerShell process and fixes the
+Playwright download; it must be set **before** the install command. A malformed value, such as
+a path copied with literal quote characters or a non-PEM truststore, produces warnings like
+`Ignoring extra certs ... no protocol option` and the download falls back to
+`UNABLE_TO_GET_ISSUER_CERT_LOCALLY`. If a previous failed setup left `.venv` locked, reload the
+VS Code window or close the Python language server before recreating the environment; never
+remove an active `.venv` from a running workspace.
 
 After image preparation finishes, start Juice Shop and ZAP with **Podman Compose**:
 

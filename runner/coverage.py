@@ -5,7 +5,7 @@ a scan we record what the active scan actually exercised:
 
   - the routes ZAP accessed under the target, canonicalized with the SAME endpoint_pattern used
     for detection fingerprints (so routes are directly comparable), and
-  - the active-scan rule ids (ZAP pluginIds) that were ENABLED for this scan.
+  - the rule ids (ZAP pluginIds, active AND passive) that were ENABLED for this scan.
 
 A previously-open finding is only labeled `resolved` if its (endpoint_pattern, rule_id) pair is in
 this coverage; otherwise it is `not_scanned`. This is what stops a disabled rule (or a re-authored
@@ -49,18 +49,27 @@ def accessed_routes(zap_api: str, target: str) -> set[str]:
 
 
 def enabled_rule_ids(zap_api: str) -> set[str]:
-    """Active-scan plugin ids currently enabled (matches record rule_id = ZAP pluginId).
+    """Plugin ids currently enabled, active AND passive (matches record rule_id = ZAP pluginId).
 
     Reflects the policy AFTER runner.scan.configure_policy() has disabled slow/unwanted scanners,
-    so a rule disabled for this scan is correctly excluded from coverage.
+    so a rule disabled for this scan is correctly excluded from coverage. Passive scanners are
+    included because they fire on every route the scan touches (e.g. 90022 error disclosure,
+    10098 CORS); without them a passive finding could never honestly be `resolved`. If the pscan
+    view is unavailable, fall back to active-only (conservative: more `not_scanned`).
     """
-    data = _api(zap_api, "/JSON/ascan/view/scanners/")
     out: set[str] = set()
-    for scanner in data.get("scanners", []):
-        if str(scanner.get("enabled")).lower() == "true":
-            rid = str(scanner.get("id", "")).strip()
-            if rid:
-                out.add(rid)
+    for view in ("/JSON/ascan/view/scanners/", "/JSON/pscan/view/scanners/"):
+        try:
+            data = _api(zap_api, view)
+        except Exception:
+            if view.startswith("/JSON/ascan/"):
+                raise
+            continue
+        for scanner in data.get("scanners", []):
+            if str(scanner.get("enabled")).lower() == "true":
+                rid = str(scanner.get("id", "")).strip()
+                if rid:
+                    out.add(rid)
     return out
 
 
