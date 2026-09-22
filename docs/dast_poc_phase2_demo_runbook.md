@@ -93,7 +93,7 @@ ZAP_IMG=ntr.nwie.net/docker.io/zaproxy/zap-stable
 | Container tool (mac) | Docker Desktop is at `/Applications/Docker.app`, **but** `/usr/local/bin/docker` is a broken symlink (→ `/Volumes/Docker 1/…`), so `docker` is **not on PATH** in a fresh shell | fix once, see below |
 | Container tool (win) | Podman runs in a WSL VM; the VM may ship a dead `127.0.0.1:8888` proxy that breaks pulls | run `bash ./prepull_playwright_podman_nationwide.sh`; it repairs the VM, restarts it, and verifies cached Playwright/ZAP images |
 | Compose file | `compose.yaml` (project `ssd-dast-poc`) does **not publish ports** for `juice`/`zap` — it's for the all-in-container runner | for a host-side demo you need `localhost:3000` / `localhost:8080`, so start juice+zap with `$CT run -p …` (README "Option B"), not compose |
-| GitHub | mac: `gh` is logged in as `CodyYang2016`; remote = `github.com/CodyYang2016/Dast-Scanning-Tool`; Security tab already has 38 alerts from the fixture upload on 2026-09-12. win: run `gh auth status` the day before | live SARIF upload works from the mac; on Windows only if `gh` is authenticated and the enterprise repo has code scanning enabled |
+| GitHub | `gh` must be authenticated against the account/token that has write access to `Nationwide/ssd-dast-tool-poc`; run `gh auth status` the day before. The **current HEAD commit must be pushed to that remote** (`git push` to `Nationwide/ssd-dast-tool-poc`, not just a personal fork), and the repo must have code scanning / GitHub Advanced Security enabled. | live SARIF upload only works once these are true; otherwise narrate the command instead of running it |
 | LLM backend | `explore`/`generate` pick the backend via `LLM_PROVIDER` (`copilot` — Nationwide-approved, or `anthropic` — blocked on the corporate network). Copilot uses `COPILOT_GITHUB_TOKEN`; Anthropic uses `ANTHROPIC_API_KEY`. Keep tokens in gitignored `.secrets/`. | this demo runs the LLM live (Part D2 + Part E); export per §1.7 in both terminals. Without a backend, `--no-llm` gives the same artifact shape |
 | Legacy helper scripts | This checkout includes `compose.demo.yaml`, `cleanup_demo_ports.sh`, `demo_full_scan.sh`, and `demo_replay_flow.sh`, but this Phase 2 demo uses the explicit host-side commands below. | Use the commands in this runbook unless you are intentionally rehearsing one of those helper scripts. |
 
@@ -350,8 +350,8 @@ can't be sunk by a login hiccup.
 |---|---|---|
 | **Terminal A** (mac: Terminal/iTerm; win: **Git Bash**; large font, platform card pasted, `AUTH_EMAIL`/`AUTH_PASSWORD` exported) | left half | the pipeline: record → generate → validate → runner |
 | **Terminal B** (same kind of shell, platform card pasted, same two exports) | right half, or a second tab | inspection: `cat`/`diff`/`curl` ZAP, fixture pipeline |
-| **Browser tab 1** — the Phase 2 script rendered with its Mermaid diagrams: open `docs/dast_poc_phase2_demo_script.md` in VS Code and press **⇧⌘V** (mac) / **Ctrl+Shift+V** (win) for Markdown preview, or use `https://github.com/CodyYang2016/Dast-Scanning-Tool/blob/main/docs/dast_poc_phase2_demo_script.md` | full-screen for Part A, then hidden | Part A |
-| **Browser tab 2** — `https://github.com/CodyYang2016/Dast-Scanning-Tool/security/code-scanning` | hidden until Part B / H | Part B, H |
+| **Browser tab 1** — the Phase 2 script rendered with its Mermaid diagrams: open `docs/dast_poc_phase2_demo_script.md` in VS Code and press **⇧⌘V** (mac) / **Ctrl+Shift+V** (win) for Markdown preview, or use `https://github.com/Nationwide/ssd-dast-tool-poc/blob/main/docs/dast_poc_phase2_demo_script.md` | full-screen for Part A, then hidden | Part A |
+| **Browser tab 2** — `https://github.com/Nationwide/ssd-dast-tool-poc/security/code-scanning` | hidden until Part B / H | Part B, H |
 | **Browser tab 3** — `http://localhost:3000` (Juice Shop, just to show "the target") | shown once, then **closed** so it isn't confused with Playwright's window | Part D opener |
 | **Playwright's own Chromium window** | pops up center-screen during `record --headed`; **do not open Chrome yourself for this** | Part D |
 
@@ -428,7 +428,7 @@ sed -n '1,25p' out/phase2-demo/results.sarif
 - *Narrate only (safest):* show the command, don't run it:
   ```bash
   $PY -m detections.github_upload out/phase2-demo/results.sarif \
-    --owner CodyYang2016 --repo Dast-Scanning-Tool --ref refs/heads/main
+    --owner Nationwide --repo ssd-dast-tool-poc --ref refs/heads/main
   ```
   **SAY** "This is a one-way door — it publishes to a real Security tab — so today I'm showing
   the already-uploaded result rather than re-uploading."
@@ -820,7 +820,7 @@ end; everything upstream of the runner was generated."
 *Live upload* (one-way door, same caveat as Part B; HEAD must be pushed):
 ```bash
 $PY -m detections.github_upload out/phase2-demo/live-results.sarif \
-  --owner CodyYang2016 --repo Dast-Scanning-Tool --ref refs/heads/main
+  --owner Nationwide --repo ssd-dast-tool-poc --ref refs/heads/main
 ```
 Then **OPEN** Browser tab 2 and **CLICK** refresh after ~60 s. **CLICK** *Closed* — anything there
 is either a real fix or predates coverage-aware publishing.
@@ -944,7 +944,7 @@ $PY -m authoring.seed --base-url http://juice:3000 --zap-proxy http://localhost:
 # ---- Part B (Terminal B) ----
 $PY -m detections.normalizer contracts/sample_zap_output.json --app-id juice-shop --scan-id demo-fixture-1 -o out/phase2-demo/records.json
 $PY -m detections.sarif_export out/phase2-demo/records.json --app-id juice-shop --driver-version "ZAP 2.17.0" -o out/phase2-demo/results.sarif
-# (optional) $PY -m detections.github_upload out/phase2-demo/results.sarif --owner CodyYang2016 --repo Dast-Scanning-Tool --ref refs/heads/main
+# (optional) $PY -m detections.github_upload out/phase2-demo/results.sarif --owner Nationwide --repo ssd-dast-tool-poc --ref refs/heads/main
 
 # ---- Part D (Terminal A) ----
 $PY -m authoring.record --app-id juice-shop --base-url http://juice:3000 --zap-proxy http://localhost:8080 --out-dir out/phase2-demo/trace --headed --slow-mo 700
@@ -965,5 +965,5 @@ time $PY -m runner.main --flow out/phase2-demo/gen/flow.py --scope out/phase2-de
 # ---- Part H (coverage-aware: diff first, export the labeled set) ----
 $PY -m detections.lifecycle_diff out/phase2-demo/live-records.json --app-id juice-shop --state out/state.json --coverage out/phase2-demo/live-coverage.json -o out/phase2-demo/live-labeled.json
 $PY -m detections.sarif_export out/phase2-demo/live-labeled.json --app-id juice-shop --driver-version "ZAP 2.17.0" -o out/phase2-demo/live-results.sarif
-# (optional) $PY -m detections.github_upload out/phase2-demo/live-results.sarif --owner CodyYang2016 --repo Dast-Scanning-Tool --ref refs/heads/main
+# (optional) $PY -m detections.github_upload out/phase2-demo/live-results.sarif --owner Nationwide --repo ssd-dast-tool-poc --ref refs/heads/main
 ```

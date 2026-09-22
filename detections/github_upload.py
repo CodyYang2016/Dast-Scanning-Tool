@@ -33,9 +33,13 @@ def build_payload(sarif_bytes: bytes, commit_sha: str, ref: str,
 
 
 def _gh_api(args: list[str], stdin: bytes | None = None) -> bytes:
-    return subprocess.run(
-        ["gh", "api", *args], input=stdin, capture_output=True, check=True
-    ).stdout
+    proc = subprocess.run(["gh", "api", *args], input=stdin, capture_output=True)
+    if proc.returncode != 0:
+        # check=True alone hides gh's actual error text; surface it so failures are diagnosable.
+        raise RuntimeError(
+            f"gh api {' '.join(args)} failed (exit {proc.returncode}): "
+            f"{proc.stderr.decode(errors='replace').strip()}")
+    return proc.stdout
 
 
 def _git_head() -> str:
