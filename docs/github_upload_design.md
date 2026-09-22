@@ -31,17 +31,19 @@ No network.
 ```bash
 python -m detections.normalizer contracts/sample_zap_output.json --app-id juice-shop \
   | python -m detections.sarif_export --driver-version 2.17.0 -o out.sarif
-python -m detections.github_upload out.sarif --owner CodyYang2016 --repo Dast-Scanning-Tool
+python -m detections.github_upload out.sarif --owner Nationwide --repo ssd-dast-tool-poc
 # then poll the returned status url until "complete"
 ```
 
 ## Verified (2026-09-12)
-Uploaded the fixture-derived SARIF to `CodyYang2016/Dast-Scanning-Tool`:
+Uploaded the fixture-derived SARIF to `CodyYang2016/Dast-Scanning-Tool` (the original prototype
+repo used before this checkout moved to `Nationwide/ssd-dast-tool-poc`):
 - processing_status: **complete**, no errors
 - **38 alerts** rendered in the Security tab
 - severity distribution matched the SARIF exactly: **1 high** (SQL Injection, alert #38),
   14 medium, 11 low, 12 note — confirming the `security-severity` mapping.
 - Security tab: https://github.com/CodyYang2016/Dast-Scanning-Tool/security/code-scanning
+  (historical; re-verify against `Nationwide/ssd-dast-tool-poc` before relying on this again)
 
 ## Requirements / gotchas
 - Token needs `security_events` (private repos) or `public_repo`/`repo` (public). Ours has `repo`.
