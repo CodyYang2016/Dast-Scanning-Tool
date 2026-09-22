@@ -94,7 +94,7 @@ ZAP_IMG=ntr.nwie.net/docker.io/zaproxy/zap-stable
 | Container tool (win) | Podman runs in a WSL VM; the VM may ship a dead `127.0.0.1:8888` proxy that breaks pulls | run `bash ./prepull_playwright_podman_nationwide.sh`; it repairs the VM, restarts it, and verifies cached Playwright/ZAP images |
 | Compose file | `compose.yaml` (project `ssd-dast-poc`) does **not publish ports** for `juice`/`zap` — it's for the all-in-container runner | for a host-side demo you need `localhost:3000` / `localhost:8080`, so start juice+zap with `$CT run -p …` (README "Option B"), not compose |
 | GitHub | mac: `gh` is logged in as `CodyYang2016`; remote = `github.com/CodyYang2016/Dast-Scanning-Tool`; Security tab already has 38 alerts from the fixture upload on 2026-09-12. win: run `gh auth status` the day before | live SARIF upload works from the mac; on Windows only if `gh` is authenticated and the enterprise repo has code scanning enabled |
-| LLM key | `ANTHROPIC_API_KEY` is **not** set in a fresh shell; keep it in gitignored `.secrets/anthropic.key` | this demo runs the LLM live (Part D2 + §5); export per §1.7 in both terminals |
+| LLM backend | `explore`/`generate` pick the backend via `LLM_PROVIDER` (`copilot` — Nationwide-approved, or `anthropic` — blocked on the corporate network). Copilot uses `COPILOT_GITHUB_TOKEN`; Anthropic uses `ANTHROPIC_API_KEY`. Keep tokens in gitignored `.secrets/`. | this demo runs the LLM live (Part D2 + Part E); export per §1.7 in both terminals. Without a backend, `--no-llm` gives the same artifact shape |
 | Legacy helper scripts | This checkout includes `compose.demo.yaml`, `cleanup_demo_ports.sh`, `demo_full_scan.sh`, and `demo_replay_flow.sh`, but this Phase 2 demo uses the explicit host-side commands below. | Use the commands in this runbook unless you are intentionally rehearsing one of those helper scripts. |
 
 ### macOS only — fix the `docker` command once
@@ -141,23 +141,28 @@ all WSL distributions; run it before the demo. The helper's default Playwright i
 to warm/cache the container toolchain; the host-side authoring commands below use Chromium from
 the Windows `.venv`.
 
-For the host-side Playwright download, obtain the approved Nationwide CA bundle as PEM text
-(for example `C:\Users\yangq4\nw-ca-all.pem`) through the internal certificate process. In
-Git Bash, set it before installing Chromium:
+For the host-side Playwright download and Python HTTPS clients, obtain the approved Nationwide CA
+bundle as PEM text (for example `C:\Users\yangq4\nw-ca-all.pem`) through the internal certificate
+process. In Git Bash, set it before installing Chromium or running the Anthropic smoke test:
 
 ```bash
-export NODE_EXTRA_CA_CERTS="$(cygpath -w "$HOME/nw-ca-all.pem")"
-test -f "$HOME/nw-ca-all.pem" || { echo "Missing $HOME/nw-ca-all.pem" >&2; exit 1; }
-test "$(grep -c 'BEGIN CERTIFICATE' "$HOME/nw-ca-all.pem")" -ge 1 || {
+NW_CA_PEM="$HOME/nw-ca-all.pem"
+test -f "$NW_CA_PEM" || { echo "Missing $NW_CA_PEM" >&2; exit 1; }
+test "$(grep -c 'BEGIN CERTIFICATE' "$NW_CA_PEM")" -ge 1 || {
   echo "The CA bundle must be PEM text containing certificates" >&2; exit 1;
 }
+
+export NODE_EXTRA_CA_CERTS="$(cygpath -w "$NW_CA_PEM")"   # Node / Playwright downloader
+export SSL_CERT_FILE="$NODE_EXTRA_CA_CERTS"                # Python ssl/httpx/Anthropic
+export REQUESTS_CA_BUNDLE="$NODE_EXTRA_CA_CERTS"           # requests-compatible tools
 $PY -m playwright install chromium
 ```
 
 Do not use a Java/.NET truststore, a path containing literal quote characters, or
 `NODE_TLS_REJECT_UNAUTHORIZED=0`. A malformed `NODE_EXTRA_CA_CERTS` value produces
 `Ignoring extra certs ... no protocol option`; without the corporate PEM bundle the download may
-fail with `UNABLE_TO_GET_ISSUER_CERT_LOCALLY`.
+fail with `UNABLE_TO_GET_ISSUER_CERT_LOCALLY`. If the Anthropic live smoke test fails with
+`CERTIFICATE_VERIFY_FAILED`, re-check `SSL_CERT_FILE` points to the same PEM bundle.
 
 ### Both — pull images ahead of time (slow on a cold network — don't do this live)
 
@@ -265,17 +270,64 @@ $PY -m authoring.record --app-id juice-shop \
 > (which go through ZAP to `juice:3000`) get **blocked by the scope guard**. The Phase 2 demo
 > must record *through ZAP* so the generated scope matches the runner topology.
 
-### 1.7 LLM key (this demo runs the LLM live in Part D2 `explore` and Part E `generate`)
+### 1.7 LLM backend (this demo runs the LLM live in Part D2 `explore` and Part E `generate`)
+
+`explore` and `generate` select the LLM backend with `LLM_PROVIDER`:
+
+- `LLM_PROVIDER=copilot` — GitHub Copilot CLI, authenticated with `COPILOT_GITHUB_TOKEN`. This is
+  the **Nationwide-approved path**; the direct Anthropic API is policy-blocked (Aurascape).
+- `LLM_PROVIDER=anthropic` (default) — direct Anthropic SDK with `ANTHROPIC_API_KEY`. Works only
+  where the Anthropic API is reachable (not on the corporate network today).
+
+Either way, if the backend is unavailable or errors, the code falls back to the deterministic
+proposer/planner, so the demo degrades rather than stops.
+
+**Option A — Copilot backend (recommended on the Nationwide workstation)**
 
 ```bash
-export ANTHROPIC_API_KEY="$(cat .secrets/anthropic.key)"     # .secrets/ is gitignored; never paste the key on camera
-$PY -c "import anthropic,os; print(anthropic.Anthropic().models.list(limit=1).data[0].id)"   # SEE: a model id => key + network OK
+# One-time: install the Copilot CLI from the Nationwide npm mirror (see §0 Windows block for the
+# registry). The container/pen-test path installs it the same way.
+npm config set registry https://art.nwie.net/artifactory/api/npm/npm/
+npm install -g @github/copilot
+
+export LLM_PROVIDER=copilot
+export COPILOT_GITHUB_TOKEN="$(cat .secrets/copilot.token)"   # .secrets/ is gitignored; never show it on camera
+export COPILOT_MODEL="${COPILOT_MODEL:-gpt-5.5}"              # optional; this is the default
+
+command -v copilot >/dev/null && echo "copilot on PATH" || echo "install @github/copilot first"
+$PY -c "from authoring import llm_backend; print('provider=', llm_backend.provider(), 'available=', llm_backend.available())"
+# SEE: provider= copilot available= True
+```
+
+**Option B — Anthropic backend (only if the API is reachable)**
+
+```bash
+if [ -f .secrets/anthropic.key ]; then
+  export LLM_PROVIDER=anthropic
+  export ANTHROPIC_API_KEY="$(cat .secrets/anthropic.key)"
+else
+  echo "No .secrets/anthropic.key; use Option A (copilot) or --no-llm."
+fi
+
+# Optional live smoke test (needs SSL_CERT_FILE set to the corporate PEM, per §0). A Nationwide
+# "Access Blocked by Policy" / Aurascape HTML response here means the Anthropic API is blocked —
+# switch to Option A or run --no-llm.
+if [ "${LLM_PROVIDER:-}" = "anthropic" ] && [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+  $PY - <<'EOF'
+import anthropic, os
+client = anthropic.Anthropic(api_key=os.environ['ANTHROPIC_API_KEY'])
+msg = client.messages.create(model="claude-opus-4-8", max_tokens=16,
+                             messages=[{"role": "user", "content": "Reply with OK."}])
+print("llm_ok=", "".join(getattr(b, "text", "") for b in msg.content).strip())
+EOF
+fi
 ```
 
 Do this in **both** terminals. Then do a full dry run of D2 → E → F **now** (≈3 min) so a bad
-network or a rate limit is discovered off camera. If the key/network is dead on the day, every
-LLM command below has a `--no-llm` twin that produces the same artifact shape — the demo
-degrades, it doesn't stop (see §9).
+token, policy block, or rate limit is discovered off camera. If no backend is available, run the
+documented `--no-llm` path for `explore` and `generate`; it produces the same artifact shape, so
+the demo degrades rather than stopping (see §9).
+
 
 ### 1.8 RUN — seed the authenticated session once (needed by Part D2)
 
@@ -399,7 +451,7 @@ Switch back to the Terminals.
 
 **RUN**
 ```bash
-sed -n '1,30p' docs/junior_engineer/authoring_clis_design.md
+sed -n '1,30p' docs/authoring_clis_design.md
 ```
 **SAY** "The one design decision that matters most today: `generate` asks the LLM for a
 constrained **JSON journey plan**, not Python. The plan is validated against
@@ -519,8 +571,9 @@ GET /rest/admin/…` are the **policy doing its job** — point at them, don't a
 `explore: LLM path failed … using fallback` means the loop continued deterministically; say so.)
 
 **SAY** (while it runs) "Every step: Playwright snapshots the page — links, forms, API calls
-seen — that snapshot is **redacted** (`runner/redact.py`) before it goes anywhere, then Claude
-is asked for exactly *one* next action as JSON against `action.schema.json`: follow a link,
+seen — that snapshot is **redacted** (`runner/redact.py`) before it goes anywhere, then the model
+(Copilot or Anthropic, per `LLM_PROVIDER`) is asked for exactly *one* next action as JSON against
+`action.schema.json`: follow a link,
 visit an API route, submit a form, or stop. Deterministic code then checks that action against
 the scope allow-list and the action policy — POST/PUT/PATCH/DELETE are denied by default, the
 deny-list (`logout`, `delete-account`, `purchase`…) is a code check, and a path that embeds an
@@ -548,7 +601,7 @@ identical.)
 
 ## Part E — `generate`: trace → plan → `flow.py` + scan config (3 min, Terminal A/B)
 
-### 5. LLM path (live) — Claude turns the explored trace into a journey plan
+### 5. LLM path (live) — the model turns the explored trace into a journey plan
 
 **RUN** (Terminal A)
 ```bash
@@ -560,10 +613,10 @@ $PY -m authoring.generate --trace out/phase2-demo/explore/trace.json \
 { "plan_source": "llm", "journey_steps": 12, "out_dir": "out/phase2-demo/gen" }
 ```
 (Verified 2026-09-19: the plan was 3 `goto` + 9 `api_get`, `validate` passed with live replay.)
-**SAY** "Claude gets the redacted trace plus `journey.schema.json` and returns a plan: a login
+**SAY** "The model gets the redacted trace plus `journey.schema.json` and returns a plan: a login
 block of selectors and an ordered list of `goto` / `api_get` steps. It's validated against the
 schema, then a deterministic renderer writes `flow.py` and AST-compiles it. If the model's
-output doesn't validate — or the API is down — `generate` warns on stderr and falls back to a
+output doesn't validate — or the backend is down — `generate` warns on stderr and falls back to a
 deterministic plan built straight from the trace, so this step never blocks on the model."
 (If you see `generate: LLM path failed (…); using deterministic fallback` and
 `"plan_source": "fallback"`, that *is* the resilience story — say so and keep going.)
@@ -807,7 +860,7 @@ today, and the suite that backs every piece." Then:
 
 ```bash
 $PY -m pytest -q                          # 213 passed
-sed -n '/## Verification/,/## Out of scope/p' docs/junior_engineer/authoring_clis_design.md
+sed -n '/## Verification/,/## Out of scope/p' docs/authoring_clis_design.md
 ls out/phase2-demo/warmup/                             # the trace you recorded in §1.6
 ```
 
@@ -856,6 +909,9 @@ Full teardown at the end of the day: `$CT rm -f juice zap; $CT network rm dast`
 | `curl: (52) Empty reply` from ZAP API | ZAP started without `api.addrs.addr.name=.*` | restart ZAP with the exact §1.2 command (note the quotes) |
 | `github_upload` rejected | HEAD commit not on the remote, or token lacks `security_events`/`repo` | `git push` first; `gh auth status` |
 | Bare `python` → `ModuleNotFoundError` | wrong interpreter (mac 3.9 / Windows Store stub) | `$PY` everywhere |
+| Anthropic smoke test fails with `CERTIFICATE_VERIFY_FAILED` | Python/httpx does not trust the corporate TLS inspection CA yet; `NODE_EXTRA_CA_CERTS` only fixes Node/Playwright | export `SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE` to the same PEM bundle as `NODE_EXTRA_CA_CERTS`, then rerun the smoke test |
+| Anthropic smoke test returns an HTML `Access Blocked by Policy` / Aurascape page | Nationwide policy blocks direct Anthropic API access; TLS and the key may already be fine | switch to the Copilot backend (`export LLM_PROVIDER=copilot` + `COPILOT_GITHUB_TOKEN`, §1.7 Option A), or use `--no-llm` |
+| `explore`/`generate` print `plan_source: fallback` / `LLM path failed` under `LLM_PROVIDER=copilot` | `copilot` not on PATH, `COPILOT_GITHUB_TOKEN` unset, or `LLM_PROVIDER` not exported in this terminal | `command -v copilot`; re-export `LLM_PROVIDER`/`COPILOT_GITHUB_TOKEN`; confirm with `$PY -c "from authoring import llm_backend; print(llm_backend.available())"` |
 | Chromium window never appears in Part D | forgot `--headed`, or running inside a container | add `--headed`; run on the host |
 | `generate`/`explore` prints `LLM path failed … using deterministic fallback` | no/invalid key, network, or off-schema output | that's the designed behavior — say so; or add `--no-llm` to avoid the wait |
 | `EXPLORE ABORT: seeded session dead` | storageState is stale (Juice Shop restarted → users gone), belongs to a different `AUTH_EMAIL`, or was seeded at `localhost:3000` instead of `juice:3000` | re-run Part D `record` (registers the user) then §1.8 `seed` through ZAP at `juice:3000` |
@@ -880,7 +936,9 @@ $PY -m pytest -q
 rm -rf out/phase2-demo && mkdir -p out/phase2-demo
 export AUTH_EMAIL="dast-demo-$(date +%H%M%S)@juice-sh.op" AUTH_PASSWORD="Dast-Demo-passw0rd!"; echo $AUTH_EMAIL
 $PY -m authoring.record --app-id juice-shop --base-url http://juice:3000 --zap-proxy http://localhost:8080 --out-dir out/phase2-demo/warmup --headed --slow-mo 300
-export ANTHROPIC_API_KEY="$(cat .secrets/anthropic.key)"
+if [ -f "$HOME/nw-ca-all.pem" ]; then export NODE_EXTRA_CA_CERTS="$(cygpath -w "$HOME/nw-ca-all.pem")"; export SSL_CERT_FILE="$NODE_EXTRA_CA_CERTS" REQUESTS_CA_BUNDLE="$NODE_EXTRA_CA_CERTS"; fi
+# LLM backend: prefer Copilot (Nationwide-approved). Falls back to --no-llm if neither is set.
+if command -v copilot >/dev/null && [ -f .secrets/copilot.token ]; then export LLM_PROVIDER=copilot COPILOT_GITHUB_TOKEN="$(cat .secrets/copilot.token)"; elif [ -f .secrets/anthropic.key ]; then export LLM_PROVIDER=anthropic ANTHROPIC_API_KEY="$(cat .secrets/anthropic.key)"; else echo "No LLM backend; add --no-llm to explore/generate."; fi
 $PY -m authoring.seed --base-url http://juice:3000 --zap-proxy http://localhost:8080 --assisted --storage-state .secrets/storageState.json
 
 # ---- Part B (Terminal B) ----

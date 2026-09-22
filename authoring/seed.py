@@ -3,7 +3,7 @@
 The unreliable part of DAST automation is login (SSO/MFA/CAPTCHA). We solve it once, by hand:
 a human logs in through a real browser and Playwright saves the resulting `storageState`
 (cookies + localStorage) to a gitignored file. Scans then start already authenticated by loading
-that state — no autonomous login. See docs/junior_engineer/seeded_session_exploration_design.md.
+that state — no autonomous login. See docs/seeded_session_exploration_design.md.
 
 `load_seed` (pure) parses + schema-validates the seed config and is unit-tested. `capture_session`
 drives a real browser and is validated by running it.

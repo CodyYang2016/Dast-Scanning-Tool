@@ -2,7 +2,7 @@
 
 Refuses to scan an unsafe configuration BEFORE any network traffic is sent. This is the
 single most important guardrail: never scan production, never scan an unbounded target.
-Conforms to the frozen spec in docs/junior_engineer/runner_design.md §7 and the test-first
+Conforms to the frozen spec in docs/runner_design.md §7 and the test-first
 suite tests/test_preflight.py.
 
 Fails closed: any doubt raises PreflightError (CLI: non-zero exit), which a scan wrapper

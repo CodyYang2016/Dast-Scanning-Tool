@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://nationwide.com/ssd-dast-poc/contracts/seed.schema.json",
   "title": "Seed config",
-  "description": "The once-per-target human seed for the Seeded-Session + LLM Exploration Loop (Phase A). The human logs in once (handling SSO/MFA/CAPTCHA) so Playwright can save a storageState; scans then start already authenticated and replay the seed routes. deny_actions/exploration are consumed by the Phase B exploration loop. File contents are JSON (a valid YAML subset), matching the repo's zap-policy convention. See docs/junior_engineer/seeded_session_exploration_design.md.",
+  "description": "The once-per-target human seed for the Seeded-Session + LLM Exploration Loop (Phase A). The human logs in once (handling SSO/MFA/CAPTCHA) so Playwright can save a storageState; scans then start already authenticated and replay the seed routes. deny_actions/exploration are consumed by the Phase B exploration loop. File contents are JSON (a valid YAML subset), matching the repo's zap-policy convention. See docs/seeded_session_exploration_design.md.",
   "type": "object",
   "additionalProperties": false,
   "required": ["target", "session", "seed_routes"],

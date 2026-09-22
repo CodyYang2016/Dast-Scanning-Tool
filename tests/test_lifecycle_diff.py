@@ -4,7 +4,7 @@ Written and frozen BEFORE detections/lifecycle_diff.py exists, so the implementa
 conform to these — not the other way around. Oracle: hand-built fingerprint sets with
 known-correct labels (set theory), plus round-trip state persistence.
 
-See docs/junior_engineer/lifecycle_diff_design.md for the frozen API and criteria.
+See docs/lifecycle_diff_design.md for the frozen API and criteria.
 """
 
 import json

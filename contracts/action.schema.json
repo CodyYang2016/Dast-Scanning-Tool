@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://nationwide.com/ssd-dast-poc/contracts/action.schema.json",
   "title": "Exploration action",
-  "description": "One constrained action the LLM proposes during the Phase B exploration loop. The model emits DATA validated against this schema; deterministic code validates it against scope + the action deny-list and only then executes it (LLM safety boundary, D8). The model never emits code. See docs/junior_engineer/seeded_session_exploration_design.md.",
+  "description": "One constrained action the LLM proposes during the Phase B exploration loop. The model emits DATA validated against this schema; deterministic code validates it against scope + the action deny-list and only then executes it (LLM safety boundary, D8). The model never emits code. See docs/seeded_session_exploration_design.md.",
   "type": "object",
   "additionalProperties": false,
   "required": ["action"],

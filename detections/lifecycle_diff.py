@@ -3,7 +3,7 @@
 Given this scan's detection records and the previous scan's, label each new / open / resolved
 by comparing fingerprints, and persist state so the next scan can diff against this one.
 
-Conforms to the frozen spec in docs/junior_engineer/lifecycle_diff_design.md and the
+Conforms to the frozen spec in docs/lifecycle_diff_design.md and the
 test-first suite tests/test_lifecycle_diff.py. Identity is the fingerprint:
   new         = fingerprint in current only
   open        = fingerprint in both
@@ -14,7 +14,7 @@ The resolved/not_scanned split is coverage-aware (R2): a finding that vanished o
 real fix if this scan actually exercised its route with its rule enabled. `covered` describes what
 the current scan exercised; when it is None the diff is coverage-blind and every previous-only
 finding is `resolved` (legacy behavior, preserved for existing callers). See R2 in
-docs/junior_engineer/seeded_session_exploration_design.md.
+docs/seeded_session_exploration_design.md.
 """
 
 from __future__ import annotations

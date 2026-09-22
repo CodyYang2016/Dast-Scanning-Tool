@@ -12,7 +12,7 @@ this coverage; otherwise it is `not_scanned`. This is what stops a disabled rule
 flow that dropped a route) from being mis-reported as a fix. Coverage is represented compactly as
 {"routes": [...], "rules": [...]} and consumed by detections.lifecycle_diff.diff(..., covered=).
 
-See R2 in docs/junior_engineer/seeded_session_exploration_design.md.
+See R2 in docs/seeded_session_exploration_design.md.
 """
 
 from __future__ import annotations

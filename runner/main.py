@@ -7,7 +7,7 @@ Chains the whole safe-scan loop into one command:
     (FR-S1/S2) -> normalize into detection records (FR-N1).
 
 Exit code is the gate: 0 only if the scan authenticated, stayed in scope, and produced at
-least one high/medium detection. See docs/junior_engineer/runner_design.md and the demo
+least one high/medium detection. See docs/runner_design.md and the demo
 plan's Phase 1 gate.
 """
 

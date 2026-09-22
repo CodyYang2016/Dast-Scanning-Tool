@@ -4,7 +4,7 @@ Launches Chromium with its proxy pointed at the ZAP daemon and runs a hand-autho
 ZAP observes the authenticated traffic it could never reach on its own. Both safety layers are
 active: preflight (FR-S3) runs before the browser launches, and the scope guard (FR-S4) is
 attached as a page.route interceptor so any out-of-allow-list request is blocked and fails the
-scan. See docs/junior_engineer/runner_design.md.
+scan. See docs/runner_design.md.
 
 Topology note: the browser is proxied through ZAP, so ZAP (not the browser) resolves the
 target host. With the containerized ZAP, the reachable target is http://juice:3000, so the

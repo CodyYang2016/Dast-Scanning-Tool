@@ -15,7 +15,7 @@ An optional **seeded-session + LLM exploration** authoring path is also built an
 human seeds an authenticated session once (`seed`), an LLM-driven loop explores the authenticated
 surface behind the same safety boundary (`explore`), and the lifecycle diff is **coverage-aware**
 — it only labels a finding `resolved` if the scan actually exercised its route with its rule
-enabled, else `not_scanned`. See `docs/junior_engineer/seeded_session_exploration_design.md`.
+enabled, else `not_scanned`. See `docs/seeded_session_exploration_design.md`.
 
 ## The four proof points (definition of done)
 
@@ -53,7 +53,7 @@ scope.json ─▶ preflight ─▶ replay (Chromium ─▶ ZAP proxy) ─▶ sco
   `detection.schema.json`, the fingerprint formula (`README.md`), the vendored SARIF schema,
   and the real ZAP fixture `sample_zap_output.json`.
 - **`security/dast/<app>/`** — per-app flow + scope (+ gitignored `evidence/`).
-- **`docs/junior_engineer/`** — design + decision docs (see below).
+- **`docs/`** — design + decision docs (see below).
 
 ## Prerequisites
 
@@ -143,7 +143,7 @@ pytest -q          # 213 tests
 Testing philosophy is **objective / test-first**: expectations are anchored to independent
 oracles (an external SHA tool, the official OASIS SARIF schema, published CWE facts, the raw
 fixture, sensitivity checks), and the safety-critical modules were written test-first (tests
-committed red, then implemented to green). See `docs/junior_engineer/validation_and_testing.md`.
+committed red, then implemented to green). See `docs/validation_and_testing.md`.
 
 ## Safety (NFR-2 — the top guardrail)
 
@@ -160,11 +160,9 @@ and a **redactor** that scrubs DOM/XHR bodies before anything reaches the model.
 
 ## Docs
 
-| Doc (`docs/junior_engineer/`) | What |
+| Doc (`docs/`) | What |
 |---|---|
 | `architecture_overview.md` | **Start here** — front-to-back: how every part fits, the LLM's role, diagrams |
-| `remaining_work_plan.md` | The 3-week scope + component inventory |
-| `testing_and_running_roadmap.md` | How to run/test (both paths), verification checklist, containerization issues + fixes |
 | `validation_and_testing.md` | Objective-testing method, catalogue, acceptance checklist |
 | `reproducing_the_sample.md` | Regenerate the ZAP fixture from scratch |
 | `sarif_exporter_design.md`, `github_upload_design.md`, `lifecycle_diff_design.md` | Results-pipeline component designs |

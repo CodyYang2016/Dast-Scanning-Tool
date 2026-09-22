@@ -4,7 +4,7 @@ Where preflight validates config before any traffic, the scope guard enforces th
 every in-flight request during the scan: block any host not in fqdn_allow_list (or matching
 fqdn_deny_list), log the decision (NFR-4), and fail the scan if any violation occurred (D4).
 
-Conforms to the frozen spec in docs/junior_engineer/runner_design.md §8 and the test-first
+Conforms to the frozen spec in docs/runner_design.md §8 and the test-first
 suite tests/test_scope_guard.py. Matching is host-based (D5/D6): scheme and port are ignored;
 allow-list is exact host (case-insensitive); deny-list is wildcard (fnmatch); deny wins.
 Fails closed — a request with no parseable host is blocked.

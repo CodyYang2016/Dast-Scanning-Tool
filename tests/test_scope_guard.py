@@ -5,7 +5,7 @@ second, independent safety layer (D2), so it's tested adversarially. Oracle: han
 scope + URLs with known allow/block outcomes (host/set logic), plus fake Playwright route
 objects for the interceptor wiring.
 
-See docs/junior_engineer/runner_design.md §8 for the frozen API and criteria.
+See docs/runner_design.md §8 for the frozen API and criteria.
 """
 
 import pytest

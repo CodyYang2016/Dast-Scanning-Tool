@@ -5,7 +5,7 @@ these. This is the single most important guardrail (never scan prod / never scan
 so it is tested adversarially. Oracle: the safety rules stated independently here + the
 committed contracts/scope.json and scope.schema.json.
 
-See docs/junior_engineer/runner_design.md §7 for the frozen API and criteria.
+See docs/runner_design.md §7 for the frozen API and criteria.
 """
 
 import json

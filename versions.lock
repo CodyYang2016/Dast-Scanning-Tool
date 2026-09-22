@@ -1,0 +1,13 @@
+# Pinned versions for reproducible scans (NFR-1). Change deliberately, via reviewed PR.
+# Digests captured 2026-09-13 from the images used to build and validate the POC.
+
+# Pilot app + scanner (pinned by digest, not tag — tags move, digests don't).
+juice_shop_image: bkimminich/juice-shop@sha256:73c53fbf442e8337b3ea3d98c7e8550308854701ebdfce4cc39768f36b75430e
+zap_image:        zaproxy/zap-stable@sha256:781a2bdaea47324e7bab583e2263f21d257b0aee61ed51521a5be45f5f5081ef
+zap_version:      2.17.0
+
+# Runner image + toolchain.
+runner_base_image: mcr.microsoft.com/playwright/python:v1.62.0-jammy
+python_version:    3.12
+playwright_version: 1.62.0
+chromium:          bundled with the Playwright base image (build 1234)

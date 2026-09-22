@@ -1,0 +1,138 @@
+"""LLM backend adapter: Anthropic SDK (direct) or GitHub Copilot CLI.
+
+The provider is selected by the ``LLM_PROVIDER`` env var (``anthropic`` default, or ``copilot``).
+Both providers return raw model text for one (system, user) turn; the callers in
+``authoring/explore.py`` and ``authoring/generate.py`` parse the constrained JSON themselves and
+validate it against the frozen schemas — the LLM never emits executable code (the D8 boundary).
+
+The ``copilot`` path shells out to the ``copilot`` CLI (``@github/copilot``), which authenticates
+with ``COPILOT_GITHUB_TOKEN`` and routes through the GitHub Copilot API. That is the approved path
+inside Nationwide, where the direct Anthropic API is policy-blocked. The CLI is agentic and streams
+status to stdout, so the copilot path asks the model to WRITE the JSON to a temp file and reads that
+back; stdout is only a fallback.
+
+Pure helpers (provider/command/prompt/output parsing) are unit-tested; the live CLI call is verified
+by running it with a token.
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+
+ANTHROPIC = "anthropic"
+COPILOT = "copilot"
+
+_DEFAULT_ANTHROPIC_MODEL = "claude-opus-4-8"
+_DEFAULT_COPILOT_MODEL = "gpt-5.5"
+# Mirrors the non-interactive flags the Nationwide pen-test-loop uses; override via COPILOT_FLAGS.
+_DEFAULT_COPILOT_FLAGS = "--allow-all-tools --excluded-tools=web_fetch --disable-builtin-mcps -s"
+
+
+def provider() -> str:
+    """The selected LLM provider (lower-case). Defaults to Anthropic."""
+    return (os.environ.get("LLM_PROVIDER") or ANTHROPIC).strip().lower() or ANTHROPIC
+
+
+def default_model() -> str:
+    """Provider-appropriate default model, so callers need not hard-code an Anthropic id."""
+    if provider() == COPILOT:
+        return os.environ.get("COPILOT_MODEL") or _DEFAULT_COPILOT_MODEL
+    return os.environ.get("ANTHROPIC_MODEL") or _DEFAULT_ANTHROPIC_MODEL
+
+
+def _copilot_bin() -> str:
+    return os.environ.get("COPILOT_CLI") or "copilot"
+
+
+def _copilot_flags() -> list[str]:
+    raw = os.environ.get("COPILOT_FLAGS")
+    return (raw if raw is not None else _DEFAULT_COPILOT_FLAGS).split()
+
+
+def _copilot_timeout(default: float) -> float:
+    raw = os.environ.get("COPILOT_TIMEOUT_SECONDS")
+    if raw and raw.strip().replace(".", "", 1).isdigit():
+        return float(raw)
+    return default
+
+
+def available(api_key: str | None = None) -> bool:
+    """Whether the selected provider can be attempted now. Never raises; callers fall back.
+
+    Copilot is available when the CLI is on PATH; Anthropic when a key is present.
+    """
+    if provider() == COPILOT:
+        return shutil.which(_copilot_bin()) is not None
+    return bool(api_key or os.environ.get("ANTHROPIC_API_KEY"))
+
+
+def complete(system: str, user: str, model: str, *, api_key: str | None = None,
+             max_tokens: int = 4096, timeout: float = 180.0) -> str:
+    """Return raw model text for one (system, user) turn. Raises on failure so callers fall back."""
+    if provider() == COPILOT:
+        return _complete_copilot(system, user, model, timeout=_copilot_timeout(timeout))
+    return _complete_anthropic(system, user, model, api_key=api_key, max_tokens=max_tokens)
+
+
+# ---- Anthropic (direct SDK) --------------------------------------------------------------
+
+def _complete_anthropic(system: str, user: str, model: str, *, api_key: str | None,
+                        max_tokens: int) -> str:
+    import anthropic  # lazy: keeps the copilot path and tests import-free
+
+    client = anthropic.Anthropic(api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"))
+    # Latest models (Opus 4.8, Sonnet 5, ...) reject temperature/top_p/top_k; omit them.
+    msg = client.messages.create(
+        model=model, max_tokens=max_tokens, system=system,
+        messages=[{"role": "user", "content": user}],
+    )
+    return "".join(getattr(b, "text", "") for b in msg.content)
+
+
+# ---- Copilot CLI (Nationwide-approved path) ----------------------------------------------
+
+def _copilot_prompt(system: str, user: str, out_ref: str) -> str:
+    """Build the single-shot prompt. The model must write ONLY the JSON to `out_ref`."""
+    return (
+        f"{system}\n\n{user}\n\n"
+        f"Write ONLY the resulting JSON object to the file {out_ref} using your file-write tool. "
+        "Do not print the JSON to the console, do not add prose or code fences, and create no "
+        "other file."
+    )
+
+
+def _copilot_cmd(prompt: str, model: str) -> list[str]:
+    return [_copilot_bin(), f"--model={model}", *_copilot_flags(), "--prompt", prompt]
+
+
+def _run_copilot(prompt: str, model: str, timeout: float) -> subprocess.CompletedProcess:
+    return subprocess.run(_copilot_cmd(prompt, model), capture_output=True, text=True,
+                          timeout=timeout)
+
+
+def _read_copilot_output(out_path: Path, proc: subprocess.CompletedProcess) -> str:
+    """Prefer the JSON file the model wrote; fall back to stdout. Raise if there is nothing."""
+    text = ""
+    try:
+        text = out_path.read_text(encoding="utf-8")
+    except OSError:
+        text = proc.stdout or ""
+    if not text.strip():
+        text = proc.stdout or ""
+    if not text.strip():
+        raise RuntimeError(
+            f"copilot CLI produced no JSON (exit {proc.returncode}): "
+            f"{(proc.stderr or '').strip()[:400]}")
+    return text
+
+
+def _complete_copilot(system: str, user: str, model: str, *, timeout: float) -> str:
+    with tempfile.TemporaryDirectory() as td:
+        out_path = Path(td) / "llm_output.json"
+        prompt = _copilot_prompt(system, user, out_path.as_posix())
+        proc = _run_copilot(prompt, model, timeout)
+        return _read_copilot_output(out_path, proc)
