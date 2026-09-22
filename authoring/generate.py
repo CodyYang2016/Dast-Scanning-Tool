@@ -21,6 +21,7 @@ from pathlib import Path
 
 import jsonschema
 
+from authoring import llm_backend
 from runner.scope_guard import host_of
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -199,11 +200,9 @@ def emit_auth() -> dict:
 
 # ---- Step A (primary): LLM plan ---------------------------------------------------------
 
-def plan_from_llm(trace: dict, model: str, api_key: str) -> dict:
-    """Ask the LLM for a journey plan (validated). Raises on any failure so callers can fall
-    back. anthropic is imported lazily so the fallback/tests don't need it."""
-    import anthropic  # lazy
-
+def plan_from_llm(trace: dict, model: str, api_key: str | None = None) -> dict:
+    """Ask the configured LLM backend for a journey plan (validated). Raises on any failure so
+    callers can fall back."""
     schema = _JOURNEY_SCHEMA.read_text()
     system = (
         "You convert a web-app crawl trace into a STRICT JSON 'journey plan' for an "
@@ -216,13 +215,7 @@ def plan_from_llm(trace: dict, model: str, api_key: str) -> dict:
         "journey (goto authenticated routes, api_get authenticated GET endpoints). "
         "Do not include credentials."
     )
-    client = anthropic.Anthropic(api_key=api_key)
-    # Latest models (Opus 4.8, Sonnet 5, ...) reject temperature/top_p/top_k; omit them.
-    msg = client.messages.create(
-        model=model, max_tokens=4096,
-        system=system, messages=[{"role": "user", "content": user}],
-    )
-    text = "".join(getattr(b, "text", "") for b in msg.content)
+    text = llm_backend.complete(system, user, model, api_key=api_key, max_tokens=4096)
     plan = parse_plan_text(text)
     validate_plan(plan)  # raise if the model produced something off-contract
     return plan
@@ -232,7 +225,7 @@ def make_plan(trace: dict, use_llm: bool = True, model: str = _DEFAULT_MODEL,
               api_key: str | None = None) -> tuple[dict, str]:
     """Return (plan, source) where source is 'llm' or 'fallback'."""
     api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-    if use_llm and api_key:
+    if use_llm and llm_backend.available(api_key):
         try:
             return plan_from_llm(trace, model, api_key), "llm"
         except Exception as exc:  # network/parse/validation — fall back deterministically
@@ -267,12 +260,14 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Generate flow.py + scan config from a trace (FR-G1-4).")
     p.add_argument("--trace", required=True, help="Path to trace.json from record")
     p.add_argument("--out-dir", required=True)
-    p.add_argument("--model", default=_DEFAULT_MODEL)
+    p.add_argument("--model", default=None,
+                   help="LLM model id; defaults to the LLM_PROVIDER's default (Anthropic or Copilot)")
     p.add_argument("--no-llm", action="store_true", help="Force the deterministic fallback plan")
     args = p.parse_args(argv)
 
     trace = json.loads(Path(args.trace).read_text())
-    summary = generate(trace, args.out_dir, use_llm=not args.no_llm, model=args.model)
+    model = args.model or llm_backend.default_model()
+    summary = generate(trace, args.out_dir, use_llm=not args.no_llm, model=model)
     print(json.dumps(summary, indent=2))
     return 0
 

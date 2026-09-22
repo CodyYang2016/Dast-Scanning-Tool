@@ -9,7 +9,7 @@ pass means the code is right — not merely self-consistent. The five independen
   4. A third-party schema validator (jsonschema) — neither we nor our code is the judge.
   5. Sensitivity / negative checks — mutate one input, require the output to change.
 
-See docs/junior_engineer/validation_and_testing.md for the methodology behind this file.
+See docs/validation_and_testing.md for the methodology behind this file.
 """
 
 import hashlib

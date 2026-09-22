@@ -1,0 +1,26 @@
+{
+  "target": {
+    "base_url": "http://juice:3000",
+    "scope_file": "security/dast/juice-shop/scope.json"
+  },
+  "session": {
+    "storage_state": ".secrets/storageState.json"
+  },
+  "seed_routes": [
+    "/#/basket",
+    "/#/order-history",
+    "/#/search?q=apple",
+    "/#/privacy-security/privacy-policy",
+    "/rest/products/1/reviews"
+  ],
+  "deny_actions": [
+    "logout",
+    "delete-account",
+    "purchase",
+    "change-password",
+    "administration"
+  ],
+  "exploration": {
+    "max_pages": 12
+  }
+}

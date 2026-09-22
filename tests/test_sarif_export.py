@@ -1,6 +1,6 @@
 """Objective acceptance suite for the SARIF exporter (FR-X1).
 
-Oracles independent of our code (see docs/junior_engineer/validation_and_testing.md):
+Oracles independent of our code (see docs/validation_and_testing.md):
   - the VENDORED OFFICIAL OASIS SARIF 2.1.0 schema (third-party validator),
   - published facts (SQL Injection is CWE-89; GitHub's security-severity bands),
   - the input records themselves (conservation, fingerprint carry-through),

@@ -14,7 +14,7 @@ never by the model's own "non-destructive" label. Three independent rules, all f
 
 Scope (host allow-list) is still enforced independently at the request boundary by ScopeGuard
 (D2/D6) — this module is the *action* layer, kept separate so both must pass. See
-docs/junior_engineer/seeded_session_exploration_design.md.
+docs/seeded_session_exploration_design.md.
 """
 
 from __future__ import annotations

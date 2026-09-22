@@ -3,7 +3,7 @@
 Pure format translation: detection records in (contracts/detection.schema.json) → one SARIF
 2.1.0 document out, which GitHub's Security tab ingests natively. Our stable fingerprint is
 carried in `partialFingerprints` so GitHub tracks a finding across scans in agreement with our
-lifecycle diff (FR-L2). See docs/junior_engineer/sarif_exporter_design.md.
+lifecycle diff (FR-L2). See docs/sarif_exporter_design.md.
 """
 
 from __future__ import annotations

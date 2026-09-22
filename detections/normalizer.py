@@ -7,7 +7,7 @@ Scalability convention (project-wide): **stream by default.** The core `normaliz
 iterable of alerts and *yields* records, so no stage needs the whole set in memory. The only
 place that currently reads a whole file is `iter_alerts()`, deliberately isolated so it can be
 swapped for an incremental parser (e.g. ijson) without touching anything downstream. See
-docs/junior_engineer/decisions_and_known_issues.md.
+docs/decisions_and_known_issues.md.
 """
 
 from __future__ import annotations

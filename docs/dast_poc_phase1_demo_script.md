@@ -4,7 +4,7 @@ Follow top to bottom. Each step has: the command, what to say while it runs, and
 "success" looks like on screen. Total run time budget: ~15 minutes when showing the app,
 ZAP, Playwright, proxy wiring, and scan result visibly (scan itself ~4 min).
 See `dast_poc_demo_plan.md` (Phase 1) for the underlying gate definition and
-`docs/junior_engineer/testing_and_running_roadmap.md` for troubleshooting detail.
+`docs/validation_and_testing.md` for the testing methodology and troubleshooting detail.
 
 ---
 
@@ -476,8 +476,8 @@ Don't debug live. Say the line and pivot:
 pytest -q
 ```
 
-**Expect:** `107 passed`. Then show `docs/junior_engineer/testing_and_running_roadmap.md`
-§2 for the last known-good containerized run output as backup evidence.
+**Expect:** the full suite passing (see the Phase 2 runbook §1.4 for the current count via
+`$PY -m pytest -q`, verified 2026-09-19) as backup evidence.
 
 ---
 
