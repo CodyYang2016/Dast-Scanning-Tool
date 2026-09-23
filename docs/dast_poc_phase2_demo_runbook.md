@@ -93,7 +93,7 @@ ZAP_IMG=ntr.nwie.net/docker.io/zaproxy/zap-stable
 | Container tool (mac) | Docker Desktop is at `/Applications/Docker.app`, **but** `/usr/local/bin/docker` is a broken symlink (→ `/Volumes/Docker 1/…`), so `docker` is **not on PATH** in a fresh shell | fix once, see below |
 | Container tool (win) | Podman runs in a WSL VM; the VM may ship a dead `127.0.0.1:8888` proxy that breaks pulls | run `bash ./prepull_playwright_podman_nationwide.sh`; it repairs the VM, restarts it, and verifies cached Playwright/ZAP images |
 | Compose file | `compose.yaml` (project `ssd-dast-poc`) does **not publish ports** for `juice`/`zap` — it's for the all-in-container runner | for a host-side demo you need `localhost:3000` / `localhost:8080`, so start juice+zap with `$CT run -p …` (README "Option B"), not compose |
-| GitHub | `gh` must be authenticated against the account/token that has write access to `Nationwide/ssd-dast-tool-poc`; run `gh auth status` the day before. The **current HEAD commit must be pushed to that remote** (`git push` to `Nationwide/ssd-dast-tool-poc`, not just a personal fork), and the repo must have code scanning / GitHub Advanced Security enabled. | live SARIF upload only works once these are true; otherwise narrate the command instead of running it |
+| GitHub | `gh` must be authenticated against the account/token that has write access to `Nationwide/ssd-dast-tool-poc`; run `gh auth status` the day before. The **current HEAD commit must be pushed to that remote** (`git push` to `Nationwide/ssd-dast-tool-poc`, not just a personal fork), and the repo must have code scanning / GitHub Advanced Security enabled. | live SARIF upload only works once these are true; running it live is the default for this demo. If they are not met, show a previous live upload's result and state that the command was not run |
 | LLM backend | `explore`/`generate` pick the backend via `LLM_PROVIDER` (`copilot` — Nationwide-approved, or `anthropic` — blocked on the corporate network). Copilot uses `COPILOT_GITHUB_TOKEN`; Anthropic uses `ANTHROPIC_API_KEY`. Keep tokens in gitignored `.secrets/`. | this demo runs the LLM live (Part D2 + Part E); export per §1.7 in both terminals. Without a backend, `--no-llm` gives the same artifact shape |
 | Legacy helper scripts | This checkout includes `compose.demo.yaml`, `cleanup_demo_ports.sh`, `demo_full_scan.sh`, and `demo_replay_flow.sh`, but this Phase 2 demo uses the explicit host-side commands below. | Use the commands in this runbook unless you are intentionally rehearsing one of those helper scripts. |
 
@@ -423,18 +423,20 @@ sed -n '1,25p' out/phase2-demo/results.sarif
 **SEE** `"version": "2.1.0"`, `"$schema": …sarif-schema-2.1.0…`, a `tool.driver` block.
 **SAY** "SARIF 2.1.0 — the standard GitHub Code Scanning consumes."
 
-**Upload — choose one:**
+**Upload — live is the default:**
 
-- *Narrate only (safest):* show the command, don't run it:
+- *Live (this repo, `gh` is authenticated):* run the command below. It uses `git rev-parse
+  HEAD` as the commit, which **must already be pushed** (`git status` clean, `git push` done).
+  **SEE** `uploaded: id=…` and `status url: …`. Processing takes ~30–60 s.
   ```bash
   $PY -m detections.github_upload out/phase2-demo/results.sarif \
     --owner Nationwide --repo ssd-dast-tool-poc --ref refs/heads/main
   ```
-  **SAY** "This is a one-way door — it publishes to a real Security tab — so today I'm showing
-  the already-uploaded result rather than re-uploading."
-- *Live (this repo, `gh` is authenticated):* run the command above. It uses `git rev-parse
-  HEAD` as the commit, which **must already be pushed** (`git status` clean, `git push` done).
-  **SEE** `uploaded: id=…` and `status url: …`. Processing takes ~30–60 s.
+  This has been run live against the real Security tab; the second such upload is what produced
+  the false-"fixed" evidence.
+- *Fallback (preconditions not met):* show the command without running it and say so plainly —
+  "`gh` auth, GHAS or an unpushed HEAD blocks the live upload today, so I'm showing the result
+  of a previous live run." Do not present the fallback as the preferred option.
 
 **OPEN** Browser tab 2 (Security tab). **CLICK** *Code scanning* in the left rail if not
 already there. **SEE** the alert list; **CLICK** the **High** "SQL Injection" alert to show
