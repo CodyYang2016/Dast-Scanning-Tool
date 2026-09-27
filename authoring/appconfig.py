@@ -170,6 +170,26 @@ def max_pages(cfg: dict, default: int = 50) -> int:
     return int(cfg.get("explore", {}).get("budgets", {}).get("max_pages", default))
 
 
+_DEFAULT_POLICY = {"attack_strength": "medium", "alert_threshold": "medium",
+                   "disabled_rules": ["40026"]}   # DOM-XSS is browser-driven and slow
+_DEFAULT_BUDGETS = {"max_scan_min": 4, "max_rule_min": 1}
+
+
+def scan_policy(cfg: dict) -> dict:
+    """Attack strength, alert threshold and disabled rules for this application (W2-4).
+
+    Defaults to the historical posture so nothing changes for an app that says nothing — but
+    every value here is a deliberate choice, and each disabled rule is a detection gap to
+    disclose when results are compared with another tool (SP-3).
+    """
+    return {**_DEFAULT_POLICY, **cfg.get("scan", {}).get("policy", {})}
+
+
+def scan_budgets(cfg: dict) -> dict:
+    """Wall-clock bounds for the active scan. A truncated scan is not a clean bill of health."""
+    return {**_DEFAULT_BUDGETS, **cfg.get("scan", {}).get("budgets", {})}
+
+
 def self_registers(cfg: dict) -> bool:
     """True only when the application permits the tool to create its own account."""
     return cfg["auth"].get("identity", "provisioned") == "self-register"

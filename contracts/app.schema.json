@@ -353,6 +353,61 @@
           }
         }
       }
+    },
+    "scan": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Scan posture for this application. These are deliberate choices, not defaults to inherit: attack strength and alert threshold govern depth and noise, and every exclusion here is a detection gap that must be disclosed when results are compared with another tool (readiness SP-1..SP-5).",
+      "properties": {
+        "policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "attack_strength": {
+              "type": "string",
+              "enum": [
+                "low",
+                "medium",
+                "high",
+                "insane",
+                "default"
+              ]
+            },
+            "alert_threshold": {
+              "type": "string",
+              "enum": [
+                "off",
+                "low",
+                "medium",
+                "high",
+                "default"
+              ]
+            },
+            "disabled_rules": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": "ZAP plugin ids to switch off, each one a disclosed gap."
+            }
+          }
+        },
+        "budgets": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_scan_min": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "max_rule_min": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      }
     }
   }
 }

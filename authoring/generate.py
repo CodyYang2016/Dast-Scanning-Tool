@@ -240,12 +240,24 @@ def render_flow(plan: dict, config: dict) -> str:
 
 # ---- FR-G3: policy / manifest / lock / auth ---------------------------------------------
 
-def emit_zap_policy(intensity: str = "medium") -> dict:
+def emit_zap_policy(config: dict | None = None, intensity: str = "medium") -> dict:
+    """The scan posture the runner will apply, taken from the application's config (W2-4).
+
+    Emitted into the bundle so the policy that produced a set of findings is committed
+    alongside them, and read back by runner/scan.py — it is no longer a file nobody consumes.
+    """
+    if config is None:  # legacy callers: the historical posture
+        return {"intensity": intensity, "attack_strength": intensity,
+                "alert_threshold": "medium", "disabled_scanners": ["40026"]}
+    policy = appconfig.scan_policy(config)
+    budgets = appconfig.scan_budgets(config)
     return {
-        "intensity": intensity,
-        "attack_strength": intensity,
-        "alert_threshold": "medium",
-        "disabled_scanners": ["40026"],  # DOM-XSS (browser-based) — too heavy, see runner
+        "intensity": policy["attack_strength"],
+        "attack_strength": policy["attack_strength"],
+        "alert_threshold": policy["alert_threshold"],
+        "disabled_scanners": list(policy["disabled_rules"]),
+        "max_scan_min": budgets["max_scan_min"],
+        "max_rule_min": budgets["max_rule_min"],
     }
 
 
@@ -346,7 +358,7 @@ def generate(trace: dict, out_dir: str, config: dict, use_llm: bool = True,
     (d / "scope.json").write_text(json.dumps(emit_scope(trace, config), indent=2) + "\n")
     (d / "auth.json").write_text(json.dumps(emit_auth(config), indent=2) + "\n")
     # json.dumps is valid YAML, so no PyYAML dependency is needed for the .yaml file.
-    (d / "zap-policy.yaml").write_text(json.dumps(emit_zap_policy(), indent=2) + "\n")
+    (d / "zap-policy.yaml").write_text(json.dumps(emit_zap_policy(config), indent=2) + "\n")
     (d / "manifest.json").write_text(json.dumps(emit_manifest(trace), indent=2) + "\n")
     (d / "lock").write_text(json.dumps(emit_lock(), indent=2) + "\n")
     return {"plan_source": source, "journey_steps": len(plan["journey"]), "out_dir": str(d)}

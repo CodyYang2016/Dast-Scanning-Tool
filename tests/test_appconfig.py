@@ -222,3 +222,30 @@ def test_proof_js_still_raises_for_non_js_modes():
     cfg["auth"]["proof"] = {"selector": ".logout"}
     with pytest.raises(ValueError):
         appconfig.proof_js(cfg)
+
+
+# ---- W2-4: scan posture is configuration, not a constant in the code --------------------
+
+def test_scan_policy_defaults_are_conservative_and_explicit():
+    # An app that says nothing gets the historical posture, and says so out loud.
+    assert appconfig.scan_policy(MINIMAL) == {
+        "attack_strength": "medium", "alert_threshold": "medium", "disabled_rules": ["40026"]}
+    assert appconfig.scan_budgets(MINIMAL) == {"max_scan_min": 4, "max_rule_min": 1}
+
+
+def test_an_app_can_raise_the_posture_and_re_enable_a_rule(tmp_path):
+    cfg = json.loads(json.dumps(MINIMAL))
+    cfg["scan"] = {"policy": {"attack_strength": "high", "alert_threshold": "low",
+                              "disabled_rules": []},
+                   "budgets": {"max_scan_min": 15}}
+    loaded = appconfig.load_app_config(_write(tmp_path, cfg))
+    assert appconfig.scan_policy(loaded)["disabled_rules"] == []       # nothing excluded
+    assert appconfig.scan_budgets(loaded)["max_scan_min"] == 15
+    assert appconfig.scan_budgets(loaded)["max_rule_min"] == 1         # untouched default
+
+
+def test_an_unknown_posture_value_is_rejected(tmp_path):
+    cfg = json.loads(json.dumps(MINIMAL))
+    cfg["scan"] = {"policy": {"attack_strength": "ludicrous"}}
+    with pytest.raises(jsonschema.ValidationError):
+        appconfig.load_app_config(_write(tmp_path, cfg))

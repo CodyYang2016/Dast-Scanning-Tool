@@ -42,9 +42,15 @@ auth:
   storage_state: .secrets/dvwa-storageState.json
 
 record:
+  # Routes visited after login. The query strings matter as much as the paths: ZAP can only
+  # attack parameters it has SEEN, and visiting /vulnerabilities/sqli/ with no `id` leaves the
+  # injection point invisible (readiness SP-4). These are GETs, so the read-only posture in
+  # `explore.safe_forms` is unaffected.
   authenticated_routes:
-    - /vulnerabilities/sqli/
-    - /vulnerabilities/brute/
+    - /vulnerabilities/sqli/?id=1&Submit=Submit
+    - /vulnerabilities/xss_r/?name=test
+    - /vulnerabilities/exec/
+    - /vulnerabilities/brute/?username=admin&password=test&Login=Login
     - /security.php
 
 # No `api:` block on purpose — DVWA is server-rendered and exposes no XHR API, so nothing
@@ -58,3 +64,18 @@ explore:
   safe_forms: []                 # read-only: DVWA's forms are the injection points (SP-1)
   budgets:
     max_pages: 10
+
+scan:
+  # Posture is a choice, not a default (readiness SP-1..SP-5), and every exclusion here is a
+  # detection gap to disclose when these results are compared with another tool.
+  #
+  # DOM-XSS (40026) stays disabled, now with evidence rather than folklore: enabling it at
+  # attack_strength high drove Selenium browsers until the ZAP container was OOM-killed
+  # (exit 137) six minutes into a scan, taking the target down with it. Re-enabling it is a
+  # provisioning question — more memory for the daemon — not a flag (SP-3).
+  policy:
+    attack_strength: high
+    alert_threshold: low
+    disabled_rules: ["40026"]
+  budgets:
+    max_scan_min: 6

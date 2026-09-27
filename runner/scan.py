@@ -18,12 +18,24 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+from pathlib import Path
+
+import yaml
 
 from runner.preflight import preflight
 from runner.scope_guard import host_of
 
 _DEFAULT_SCHEMA = "contracts/scope.schema.json"
-_SLOW_SCANNERS = "40026"  # DOM-XSS (browser-based) — wedges the API; disabled for bounded runs
+_SLOW_SCANNERS = "40026"  # DOM-XSS (browser-based) — wedges the API; the historical default
+
+
+class ZapUnavailableError(Exception):
+    """Raised when the ZAP daemon stops answering mid-scan.
+
+    Distinct from a scan that merely takes a long time: a run should not end in a raw socket
+    traceback when the daemon has died (observed: the container OOM-killed by a browser-driven
+    rule), because the operator cannot tell those apart from the stack alone.
+    """
 
 
 class ScanScopeError(Exception):
@@ -46,16 +58,88 @@ def new_session(zap_api: str, name: str = "") -> None:
     _api(zap_api, "/JSON/core/action/newSession/", params)
 
 
-def configure_policy(zap_api: str, max_scan_min: int = 4, max_rule_min: int = 1) -> None:
-    """Bound + lighten the active scan (matches the capture script)."""
+def load_policy(path: str) -> dict | None:
+    """Read a generated `zap-policy.yaml`, or None when the bundle has none.
+
+    `generate` writes JSON, which is valid YAML, so either form loads.
+    """
+    p = Path(path)
+    if not p.is_file():
+        return None
+    loaded = yaml.safe_load(p.read_text())
+    return loaded if isinstance(loaded, dict) else None
+
+
+def resolved_policy(policy: dict | None, max_scan_min: int, max_rule_min: int) -> dict:
+    """What this scan was actually configured to do, for the coverage artifact (R2).
+
+    Recording it is what lets two scans of the same application be compared honestly: a
+    finding that vanished because a rule was switched off is not a fix, and without this the
+    difference is invisible.
+    """
+    policy = policy or {}
+    return {
+        "attack_strength": policy.get("attack_strength", "default"),
+        "alert_threshold": policy.get("alert_threshold", "default"),
+        "disabled_scanners": list(policy.get("disabled_scanners", [_SLOW_SCANNERS])),
+        "max_scan_min": max_scan_min,
+        "max_rule_min": max_rule_min,
+    }
+
+
+def configure_policy(zap_api: str, max_scan_min: int = 4, max_rule_min: int = 1,
+                     policy: dict | None = None) -> None:
+    """Bound the active scan, and apply the bundle's `zap-policy.yaml` when there is one.
+
+    Without a policy this behaves as it always did (time budgets + the historically disabled
+    DOM-XSS scanner), so compose and hand-run scans are unaffected.
+
+    With one, attack strength and alert threshold — the two knobs that actually govern DAST
+    depth and noise — are applied to every scanner category, and the rule set is reset with
+    `enableAllScanners` before the policy's exclusions are applied. That reset matters: ZAP's
+    scanner state is daemon-global and outlives a session, so without it a rule switched off
+    by an earlier run stays off and this scan silently covers less than its policy claims.
+    """
     _api(zap_api, "/JSON/ascan/action/setOptionMaxScanDurationInMins/", {"Integer": max_scan_min})
     _api(zap_api, "/JSON/ascan/action/setOptionMaxRuleDurationInMins/", {"Integer": max_rule_min})
-    _api(zap_api, "/JSON/ascan/action/disableScanners/", {"ids": _SLOW_SCANNERS})
+
+    if policy:
+        categories = [p["id"] for p in _api(zap_api, "/JSON/ascan/view/policies/").get("policies", [])]
+        strength = str(policy.get("attack_strength", "medium")).upper()
+        threshold = str(policy.get("alert_threshold", "medium")).upper()
+        for cid in categories:
+            _api(zap_api, "/JSON/ascan/action/setPolicyAttackStrength/",
+                 {"id": cid, "attackStrength": strength})
+            _api(zap_api, "/JSON/ascan/action/setPolicyAlertThreshold/",
+                 {"id": cid, "alertThreshold": threshold})
+
+    _api(zap_api, "/JSON/ascan/action/enableAllScanners/")   # deterministic starting point
+    disabled = list(policy.get("disabled_scanners", [])) if policy else [_SLOW_SCANNERS]
+    if disabled:
+        _api(zap_api, "/JSON/ascan/action/disableScanners/", {"ids": ",".join(map(str, disabled))})
+
+
+_MAX_CONSECUTIVE_API_FAILURES = 3
 
 
 def _poll(zap_api: str, view_path: str, scan_id: str, poll_s: float, max_polls: int) -> None:
+    """Poll a ZAP scan to completion, tolerating a slow answer but not a dead daemon."""
+    failures = 0
     for _ in range(max_polls):
-        status = _api(zap_api, view_path, {"scanId": scan_id}).get("status")
+        try:
+            status = _api(zap_api, view_path, {"scanId": scan_id}).get("status")
+            failures = 0
+        except Exception as exc:        # a busy daemon can miss a poll; a dead one misses all
+            failures += 1
+            if failures >= _MAX_CONSECUTIVE_API_FAILURES:
+                raise ZapUnavailableError(
+                    f"ZAP stopped responding after {failures} consecutive failed polls "
+                    f"({exc}). The daemon may have been killed — check `docker logs zap` for "
+                    f"an OOM (exit 137); browser-driven rules such as DOM-XSS (40026) at high "
+                    f"attack strength are the usual cause."
+                ) from exc
+            time.sleep(poll_s)
+            continue
         if status == "100":
             return
         time.sleep(poll_s)
@@ -79,7 +163,7 @@ def export_alerts(zap_api: str, target: str) -> dict:
 
 
 def scan(zap_api: str, target: str, allow_hosts, do_spider: bool = True,
-         max_scan_min: int = 4) -> dict:
+         max_scan_min: int = 4, policy: dict | None = None) -> dict:
     """Spider + bounded active-scan `target`, return raw ZAP alerts. Refuses out-of-scope
     targets before touching ZAP (safety pre-check)."""
     host = host_of(target)
@@ -88,7 +172,7 @@ def scan(zap_api: str, target: str, allow_hosts, do_spider: bool = True,
         raise ScanScopeError(
             f"refusing to scan {target!r}: host {host!r} not in allow-list {sorted(allow)} (NFR-2)."
         )
-    configure_policy(zap_api, max_scan_min=max_scan_min)
+    configure_policy(zap_api, max_scan_min=max_scan_min, policy=policy)
     _api(zap_api, "/JSON/core/action/accessUrl/", {"url": target, "followRedirects": "true"})
     if do_spider:
         spider(zap_api, target)

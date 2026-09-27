@@ -315,12 +315,18 @@ with the allow-list seeded from hosts actually seen in the trace, `auth.json` �
 environment variable *names*, never secret values — a ZAP scan policy, and a manifest tying it
 all together."
 
-**Say (known gap — call this out explicitly, don't gloss over it):** "Only two of these seven
-files actually drive the scan today: `flow.py` and `scope.json`. `runner/scan.py`'s
-`configure_policy()` only takes a time budget — it does not yet read `zap-policy.yaml`'s
-`intensity` / `attack_strength` / `disabled_scanners`. `auth.json`, `manifest.json`, and `lock`
-are informational scaffolding for a future runner change, not consumed yet. That's a real,
-tracked gap, not a demo simplification."
+**Say:** "Four of these drive the scan: `flow.py`, `scope.json`, and — since W2-4 —
+`zap-policy.yaml`, whose attack strength, alert threshold and disabled-rule list the runner
+applies to every scanner category before scanning, and whose resolved form is pinned into the
+coverage artifact so two scans can be compared honestly. `manifest.json` and `lock` remain
+informational; `auth.json` names the credential environment variables. Those last three are
+still not read by the runner — a smaller gap than it was, and still worth saying out loud."
+
+**Say (the reason this matters, with a number):** "Scan depth used to be an accident of a
+wall-clock budget and of whatever the daemon happened to have enabled from a previous run.
+On DVWA, moving posture into config and widening the recorded surface by four parameterised
+GETs took the same scan from **0 high-severity findings to 5** — reflected XSS and MySQL
+injection on `id`, `name` and `username` — with no code change at all."
 
 Now show the generated flow itself:
 
@@ -505,7 +511,8 @@ for the last known-good fallback-path run as backup evidence.
 
 | Likely question | Answer |
 | --- | --- |
-| "Does the generated `zap-policy.yaml` actually control scan intensity?" | Not yet — `runner/scan.py`'s `configure_policy()` only takes a time budget today. `zap-policy.yaml`, `auth.json`, `manifest.json`, and `lock` are generated but not wired into the runner. Tracked gap, not a demo simplification. |
+| "Does the generated `zap-policy.yaml` actually control scan intensity?" | Yes, since W2-4. `configure_policy()` applies its attack strength and alert threshold to every scanner category, resets the rule set with `enableAllScanners` first so a previous run cannot silently narrow this one, then applies the policy's exclusions; the resolved policy is pinned into the coverage artifact. `auth.json`, `manifest.json` and `lock` are still informational. |
+| "Where does scan posture come from?" | `security/dast/<app>/app.yaml` → `scan.policy` / `scan.budgets`. Each disabled rule is a disclosed detection gap — DVWA disables DOM-XSS (40026) because enabling it at high strength OOM-killed the ZAP container mid-scan, which is a provisioning question, not a flag. |
 | "Can the LLM write arbitrary Python that gets executed?" | No — it only emits JSON validated against `journey.schema.json`. `flow.py` is templated by deterministic code and AST-compiled before use. |
 | "What happens if the model is down or returns garbage?" | `make_plan` catches the failure, logs a warning, and falls back to `journey_from_trace` — the pipeline never blocks on the LLM being available. |
 | "Does this bypass the Phase 1 scope guard or preflight?" | No — the generated bundle is run through the exact same unchanged `runner/` code, including `scope_guard.py` and `preflight.py`. |

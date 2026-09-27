@@ -58,3 +58,26 @@ def test_explicit_evidence_dir_wins(tmp_path):
     run_dir = tmp_path / "out" / "app" / "scans" / "20260101T000000Z"
     got = resolve_evidence_dir(str(scope), str(run_dir), "20260101T000000Z")
     assert got == run_dir / "evidence"
+
+
+# ---- the bundle's policy reaches the scan, and the coverage says which one ---------------
+
+def test_runner_finds_the_policy_next_to_the_scope(tmp_path):
+    from runner.main import bundle_policy
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "zap-policy.yaml").write_text('{"attack_strength": "high", "disabled_scanners": []}')
+    assert bundle_policy(str(bundle / "scope.json"))["attack_strength"] == "high"
+
+
+def test_runner_tolerates_a_bundle_without_a_policy(tmp_path):
+    from runner.main import bundle_policy
+    assert bundle_policy(str(tmp_path / "scope.json")) is None
+
+
+def test_scan_budget_comes_from_the_policy_when_the_caller_does_not_say(tmp_path):
+    from runner.main import resolve_max_scan_min
+    policy = {"max_scan_min": 12}
+    assert resolve_max_scan_min(None, policy) == 12       # the bundle decides
+    assert resolve_max_scan_min(3, policy) == 3           # an explicit flag still wins
+    assert resolve_max_scan_min(None, None) == 4          # historical default

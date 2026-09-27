@@ -27,7 +27,8 @@ from runner import coverage as coverage_capture
 from runner import evidence
 from runner.preflight import PreflightError, preflight
 from runner.replay import SessionDeadError, load_flow, replay, replay_seeded
-from runner.scan import ScanScopeError, new_session, scan
+from runner.scan import (ScanScopeError, ZapUnavailableError, load_policy, new_session,
+                         resolved_policy, scan)
 from runner.scope_guard import ScopeViolation
 
 _DEFAULT_SCHEMA = "contracts/scope.schema.json"
@@ -77,6 +78,26 @@ def wait_ready(zap_api: str, base_url: str, timeout: float = 120.0, interval: fl
         time.sleep(interval)
 
 
+def resolve_max_scan_min(cli_value: int | None, policy: dict | None, default: int = 4) -> int:
+    """Wall-clock bound for the active scan: an explicit flag, else the bundle's policy budget,
+    else the historical default. A truncated scan is not a clean bill of health, so whichever
+    wins is recorded in the coverage artifact."""
+    if cli_value is not None:
+        return cli_value
+    if policy and policy.get("max_scan_min"):
+        return int(policy["max_scan_min"])
+    return default
+
+
+def bundle_policy(scope_path: str) -> dict | None:
+    """The `zap-policy.yaml` that `generate` emitted beside this scope, if any (W2-4).
+
+    Closing the loop the demo script used to disclose as a gap: the policy was generated and
+    consumed by nobody, so scan depth was whatever the daemon happened to be set to.
+    """
+    return load_policy(str(Path(scope_path).resolve().parent / "zap-policy.yaml"))
+
+
 def resolve_evidence_dir(scope_path: str, evidence_dir: str | None, scan_id: str) -> Path:
     """Where this scan's evidence goes: `<evidence_dir>/evidence` when given, else the app
     directory (the historical layout, kept so existing invocations are unchanged).
@@ -102,7 +123,7 @@ def evaluate_gate(authenticated: bool, scope_ok: bool, records: list[dict]) -> d
 
 
 def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
-        fresh=True, do_spider=True, max_scan_min=4, wait=True,
+        fresh=True, do_spider=True, max_scan_min=None, wait=True,
         storage_state=None, seed_routes=None, evidence_dir=None):
     """Execute the full loop. Returns (scope, replay_result, guard, records, scan_id, coverage).
 
@@ -136,8 +157,10 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
     if har.exists():
         evidence.redact_har_file(str(har))
 
+    policy = bundle_policy(scope_path)
+    max_scan_min = resolve_max_scan_min(max_scan_min, policy)
     report = scan(zap_api, base_url, scope["fqdn_allow_list"],
-                  do_spider=do_spider, max_scan_min=max_scan_min)
+                  do_spider=do_spider, max_scan_min=max_scan_min, policy=policy)
     records = list(normalize(report["alerts"], scope["app_id"], scan_id))
     # Reference the scan's evidence from each record (FR-E1).
     relpath = evidence.evidence_relpath(scan_id)
@@ -145,6 +168,9 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
         r["evidence_path"] = relpath
     # Capture the (route x rule) surface this scan exercised, for the coverage-aware diff (R2).
     coverage = coverage_capture.capture(zap_api, base_url)
+    # Pin the policy that produced this coverage, so a later diff can tell "we fixed it" from
+    # "we scanned it less hard this time" (R2).
+    coverage["policy"] = resolved_policy(policy, max_scan_min, 1)
     return scope, result, guard, records, scan_id, coverage
 
 
@@ -167,7 +193,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-spider", action="store_true")
     p.add_argument("--no-fresh", action="store_true", help="Do not reset the ZAP session first")
     p.add_argument("--no-wait", action="store_true", help="Do not wait for ZAP/target readiness")
-    p.add_argument("--max-scan-min", type=int, default=4)
+    p.add_argument("--max-scan-min", type=int, default=None,
+                   help="Override the bundle policy's scan budget (minutes)")
     args = p.parse_args(argv)
 
     storage_state = seed_routes = None
@@ -184,7 +211,7 @@ def main(argv: list[str] | None = None) -> int:
             wait=not args.no_wait, storage_state=storage_state, seed_routes=seed_routes,
             evidence_dir=args.evidence_dir,
         )
-    except (PreflightError, ScanScopeError, ScopeViolation) as exc:
+    except (PreflightError, ScanScopeError, ScopeViolation, ZapUnavailableError) as exc:
         print(f"RUNNER ABORT: {exc}", file=sys.stderr)
         return 2
 
