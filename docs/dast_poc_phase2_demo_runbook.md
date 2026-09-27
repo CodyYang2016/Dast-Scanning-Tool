@@ -256,7 +256,7 @@ a live take. A fresh timestamped email sidesteps it.
 ### 1.6 RUN — warm-up headed record (throwaway, so Chromium is snappy on camera)
 
 ```bash
-$PY -m authoring.record --app-id juice-shop \
+$PY -m authoring.record --app juice-shop \
   --base-url http://juice:3000 --zap-proxy http://localhost:8080 \
   --out-dir out/phase2-demo/warmup --headed --slow-mo 300
 ```
@@ -332,8 +332,7 @@ the demo degrades rather than stopping (see §9).
 ### 1.8 RUN — seed the authenticated session once (needed by Part D2)
 
 ```bash
-$PY -m authoring.seed --base-url http://juice:3000 --zap-proxy http://localhost:8080 \
-  --assisted --storage-state .secrets/storageState.json
+$PY -m authoring.seed --app juice-shop --zap-proxy http://localhost:8080 --assisted
 ```
 **SEE** `seeded session saved -> .secrets/storageState.json` (~2 s, headless). This is the
 "human logs in once" step; `--assisted` auto-fills the Juice Shop form with `AUTH_EMAIL` /
@@ -488,8 +487,8 @@ the target — OWASP Juice Shop, an Angular SPA," then **close that tab**.
 rm -rf out/phase2-demo/trace
 
 $PY -m authoring.record \
-  --app-id juice-shop \
-  --base-url http://juice:3000 --zap-proxy http://localhost:8080 \
+  --app juice-shop \
+  --zap-proxy http://localhost:8080 \
   --out-dir out/phase2-demo/trace \
   --headed --slow-mo 700
 ```
@@ -531,8 +530,7 @@ trace.
 
 If you seeded in §1.8 you can skip this, or re-run it headed for the visual:
 ```bash
-$PY -m authoring.seed --base-url http://juice:3000 --zap-proxy http://localhost:8080 \
-  --assisted --headed --storage-state .secrets/storageState.json
+$PY -m authoring.seed --app juice-shop --zap-proxy http://localhost:8080 --assisted --headed
 ```
 **SEE** Chromium opens on the login page, fills it, closes; `seeded session saved -> …`.
 **SAY** "On a real target this is where a person handles SSO/MFA/CAPTCHA once. Playwright saves
@@ -546,6 +544,7 @@ trivial, so the win here is *breadth*, not auth; the seeding value shows on ente
 cat security/dast/juice-shop/seed.json         # the whole human input: 5 seed routes + a deny-list + a page budget
 
 $PY -m authoring.explore \
+  --app juice-shop \
   --seed  security/dast/juice-shop/seed.json \
   --scope security/dast/juice-shop/scope.json \
   --zap-proxy http://localhost:8080 \
@@ -607,7 +606,7 @@ identical.)
 
 **RUN** (Terminal A)
 ```bash
-$PY -m authoring.generate --trace out/phase2-demo/explore/trace.json \
+$PY -m authoring.generate --app juice-shop --trace out/phase2-demo/explore/trace.json \
   --out-dir out/phase2-demo/gen
 ```
 **SEE** (~6 s)
@@ -655,8 +654,8 @@ baked in."
 
 **RUN** (Terminal A)
 ```bash
-$PY -m authoring.generate --trace out/phase2-demo/explore/trace.json --out-dir out/phase2-demo/gen-det  --no-llm
-$PY -m authoring.generate --trace out/phase2-demo/explore/trace.json --out-dir out/phase2-demo/gen-det2 --no-llm
+$PY -m authoring.generate --app juice-shop --trace out/phase2-demo/explore/trace.json --out-dir out/phase2-demo/gen-det  --no-llm
+$PY -m authoring.generate --app juice-shop --trace out/phase2-demo/explore/trace.json --out-dir out/phase2-demo/gen-det2 --no-llm
 diff out/phase2-demo/gen-det/flow.py out/phase2-demo/gen-det2/flow.py && echo "IDENTICAL"
 ```
 **SEE** no diff output, then `IDENTICAL`.
@@ -877,8 +876,7 @@ rm -rf out/phase2-demo/trace out/phase2-demo/explore out/phase2-demo/gen out/pha
        out/phase2-demo/live-* out/phase2-demo/*report.json out/phase2-demo/bad_plan.json
 export AUTH_EMAIL="dast-demo-$(date +%H%M%S)@juice-sh.op"      # fresh user => clean register beat
 # re-export the same AUTH_EMAIL in Terminal B, then RE-SEED (the storageState belongs to the old user):
-$PY -m authoring.seed --base-url http://juice:3000 --zap-proxy http://localhost:8080 \
-  --assisted --storage-state .secrets/storageState.json
+$PY -m authoring.seed --app juice-shop --zap-proxy http://localhost:8080 --assisted
 ```
 (`record` in Part D must run before `seed` — it's what registers the new user. Or keep the same
 `AUTH_EMAIL` across takes; re-registering no-ops and the seed stays valid until Juice Shop
@@ -937,11 +935,11 @@ curl -s -o /dev/null -w "juice %{http_code}\n" http://localhost:3000; curl -s -o
 $PY -m pytest -q
 rm -rf out/phase2-demo && mkdir -p out/phase2-demo
 export AUTH_EMAIL="dast-demo-$(date +%H%M%S)@juice-sh.op" AUTH_PASSWORD="Dast-Demo-passw0rd!"; echo $AUTH_EMAIL
-$PY -m authoring.record --app-id juice-shop --base-url http://juice:3000 --zap-proxy http://localhost:8080 --out-dir out/phase2-demo/warmup --headed --slow-mo 300
+$PY -m authoring.record --app juice-shop --zap-proxy http://localhost:8080 --out-dir out/phase2-demo/warmup --headed --slow-mo 300
 if [ -f "$HOME/nw-ca-all.pem" ]; then export NODE_EXTRA_CA_CERTS="$(cygpath -w "$HOME/nw-ca-all.pem")"; export SSL_CERT_FILE="$NODE_EXTRA_CA_CERTS" REQUESTS_CA_BUNDLE="$NODE_EXTRA_CA_CERTS"; fi
 # LLM backend: prefer Copilot (Nationwide-approved). Falls back to --no-llm if neither is set.
 if command -v copilot >/dev/null && [ -f .secrets/copilot.token ]; then export LLM_PROVIDER=copilot COPILOT_GITHUB_TOKEN="$(cat .secrets/copilot.token)"; elif [ -f .secrets/anthropic.key ]; then export LLM_PROVIDER=anthropic ANTHROPIC_API_KEY="$(cat .secrets/anthropic.key)"; else echo "No LLM backend; add --no-llm to explore/generate."; fi
-$PY -m authoring.seed --base-url http://juice:3000 --zap-proxy http://localhost:8080 --assisted --storage-state .secrets/storageState.json
+$PY -m authoring.seed --app juice-shop --zap-proxy http://localhost:8080 --assisted
 
 # ---- Part B (Terminal B) ----
 $PY -m detections.normalizer contracts/sample_zap_output.json --app-id juice-shop --scan-id demo-fixture-1 -o out/phase2-demo/records.json
@@ -949,14 +947,14 @@ $PY -m detections.sarif_export out/phase2-demo/records.json --app-id juice-shop 
 # (optional) $PY -m detections.github_upload out/phase2-demo/results.sarif --owner Nationwide --repo ssd-dast-tool-poc --ref refs/heads/main
 
 # ---- Part D (Terminal A) ----
-$PY -m authoring.record --app-id juice-shop --base-url http://juice:3000 --zap-proxy http://localhost:8080 --out-dir out/phase2-demo/trace --headed --slow-mo 700
+$PY -m authoring.record --app juice-shop --zap-proxy http://localhost:8080 --out-dir out/phase2-demo/trace --headed --slow-mo 700
 
 # ---- Part D2 (Terminal A; key exported per §1.7; seeded per §1.8) ----
-$PY -m authoring.explore --seed security/dast/juice-shop/seed.json --scope security/dast/juice-shop/scope.json --zap-proxy http://localhost:8080 --out-dir out/phase2-demo/explore --max-pages 12 --headed --slow-mo 500
+$PY -m authoring.explore --app juice-shop --seed security/dast/juice-shop/seed.json --scope security/dast/juice-shop/scope.json --zap-proxy http://localhost:8080 --out-dir out/phase2-demo/explore --max-pages 12 --headed --slow-mo 500
 
 # ---- Part E (LLM live; --no-llm twin for the idempotency diff) ----
-$PY -m authoring.generate --trace out/phase2-demo/explore/trace.json --out-dir out/phase2-demo/gen
-$PY -m authoring.generate --trace out/phase2-demo/explore/trace.json --out-dir out/phase2-demo/gen-det --no-llm && $PY -m authoring.generate --trace out/phase2-demo/explore/trace.json --out-dir out/phase2-demo/gen-det2 --no-llm && diff out/phase2-demo/gen-det/flow.py out/phase2-demo/gen-det2/flow.py && echo IDENTICAL
+$PY -m authoring.generate --app juice-shop --trace out/phase2-demo/explore/trace.json --out-dir out/phase2-demo/gen
+$PY -m authoring.generate --app juice-shop --trace out/phase2-demo/explore/trace.json --out-dir out/phase2-demo/gen-det --no-llm && $PY -m authoring.generate --app juice-shop --trace out/phase2-demo/explore/trace.json --out-dir out/phase2-demo/gen-det2 --no-llm && diff out/phase2-demo/gen-det/flow.py out/phase2-demo/gen-det2/flow.py && echo IDENTICAL
 
 # ---- Part F ----
 $PY -m authoring.validate --plan out/phase2-demo/gen/journey.json --scope out/phase2-demo/gen/scope.json --flow out/phase2-demo/gen/flow.py --base-url http://juice:3000 --zap-proxy http://localhost:8080 --report out/phase2-demo/validation-report.json; echo exit=$?

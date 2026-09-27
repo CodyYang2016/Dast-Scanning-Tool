@@ -33,7 +33,7 @@ Do one **throwaway headed run** before you record, so Chromium is warm and the r
 
 ```bash
 export AUTH_EMAIL="warmup@juice-sh.op" AUTH_PASSWORD="Dast-Demo-passw0rd!"
-.venv/bin/python -m authoring.record --app-id juice-shop --base-url http://localhost:3000 \
+.venv/bin/python -m authoring.record --app juice-shop --base-url http://localhost:3000 \
   --out-dir out/pw-demo/warmup --headed --slow-mo 700
 ```
 
@@ -84,11 +84,16 @@ rm -rf out/pw-demo/trace
 
 # 3) THE demo command — headed + slowed down so the audience can follow each action
 .venv/bin/python -m authoring.record \
-  --app-id juice-shop \
+  --app juice-shop \
   --base-url http://localhost:3000 \
   --out-dir out/pw-demo/trace \
   --headed --slow-mo 700
 ```
+
+`--app juice-shop` loads `security/dast/juice-shop/app.yaml` — the login selectors, banners,
+proof of authentication and post-login routes all come from there, which is why this command
+works for any onboarded application by changing one word. `--base-url` here overrides the
+config's value because this runbook records directly, not through ZAP (see Gotchas).
 
 `--slow-mo 700` delays each browser action by 700 ms so the login is watchable; it does **not**
 change the captured trace. Bump to `1000`+ for an even slower walkthrough, drop it for full speed.

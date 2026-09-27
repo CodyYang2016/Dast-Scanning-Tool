@@ -212,8 +212,8 @@ export AUTH_EMAIL="dast-demo-$(date +%H%M%S)@juice-sh.op"
 export AUTH_PASSWORD="Dast-Demo-passw0rd!"
 
 rm -rf out/phase2-demo/trace
-$PY -m authoring.record --app-id juice-shop \
-  --base-url http://juice:3000 --zap-proxy http://localhost:8080 \
+$PY -m authoring.record --app juice-shop \
+  --zap-proxy http://localhost:8080 \
   --out-dir out/phase2-demo/trace --headed --slow-mo 700
 ```
 
@@ -240,8 +240,7 @@ First create an authenticated browser state. On enterprise applications, the hum
 SSO/MFA/CAPTCHA in this step; Juice Shop uses the exported test credentials instead:
 
 ```bash
-$PY -m authoring.seed --base-url http://juice:3000 --zap-proxy http://localhost:8080 \
-  --assisted --storage-state .secrets/storageState.json
+$PY -m authoring.seed --app juice-shop --zap-proxy http://localhost:8080 --assisted
 ```
 
 **Output:** `.secrets/storageState.json` containing cookies and local storage for the `juice:3000`
@@ -260,6 +259,7 @@ Then run the AI exploration loop:
 ```bash
 rm -rf out/phase2-demo/explore
 $PY -m authoring.explore \
+  --app juice-shop \
   --seed security/dast/juice-shop/seed.json \
   --scope security/dast/juice-shop/scope.json \
   --zap-proxy http://localhost:8080 \
@@ -291,7 +291,7 @@ Recommended: run the **fallback path** live (no external network dependency), th
 path already-run evidence if you have it, or run it live only if you're confident in the network.
 
 ```bash
-$PY -m authoring.generate --trace out/phase2-demo/explore/trace.json \
+$PY -m authoring.generate --app juice-shop --trace out/phase2-demo/explore/trace.json \
   --out-dir out/phase2-demo/gen
 cat out/phase2-demo/gen/journey.json
 ```
@@ -335,7 +335,7 @@ typed by a person."
 ### 5a. Prove idempotency (FR-G4) — same trace in, byte-identical flow out
 
 ```bash
-$PY -m authoring.generate --trace out/phase2-demo/explore/trace.json \
+$PY -m authoring.generate --app juice-shop --trace out/phase2-demo/explore/trace.json \
   --out-dir out/phase2-demo/gen2 --no-llm
 diff out/phase2-demo/gen/flow.py out/phase2-demo/gen2/flow.py && echo "IDENTICAL"
 ```
@@ -349,7 +349,7 @@ trustworthy later: the artifact doesn't drift between runs unless the underlying
 Only run this if `ANTHROPIC_API_KEY` is set and you're comfortable with the live network call:
 
 ```bash
-$PY -m authoring.generate --trace out/phase2-demo/explore/trace.json \
+$PY -m authoring.generate --app juice-shop --trace out/phase2-demo/explore/trace.json \
   --out-dir out/phase2-demo/gen-llm
 cat out/phase2-demo/gen-llm/journey.json
 ```

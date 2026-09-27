@@ -6,7 +6,7 @@ normalize the findings with stable fingerprints, and publish them to the GitHub 
 with lifecycle tracking across scans.
 
 **Status: the full loop works end-to-end on real data**, including the Phase 2 authoring CLIs
-(`record → generate → validate`). 213 automated tests pass; the containerized single-command
+(`record → generate → validate`). 255 automated tests pass; the containerized single-command
 run is verified; and the **auto-generated `flow.py` drives a passing scan** end-to-end
 (Week-2 checkpoint). The LLM path in `generate` runs with an `ANTHROPIC_API_KEY`; without one
 it uses a deterministic fallback (verified here).
@@ -54,6 +54,26 @@ scope.json ─▶ preflight ─▶ replay (Chromium ─▶ ZAP proxy) ─▶ sco
   and the real ZAP fixture `sample_zap_output.json`.
 - **`security/dast/<app>/`** — per-app flow + scope (+ gitignored `evidence/`).
 - **`docs/junior_engineer/`** — design + decision docs (see below).
+
+## Onboarding an application
+
+Everything application-specific lives in one file, `security/dast/<app>/app.yaml`, validated
+against `contracts/app.schema.json`: the login route and selectors, how authentication is
+**proven**, whether the tool may create its own account, cookie banners to dismiss, which URLs
+count as API calls, scope and budgets. Nothing under `authoring/` or `runner/` names an
+application — `tests/test_no_app_specifics.py` fails the build if that ever stops being true —
+so onboarding is a configuration change, never a code change.
+
+```bash
+# every authoring CLI takes --app <id> (or a path to the file)
+python -m authoring.record   --app juice-shop --zap-proxy http://localhost:8080 --out-dir rec/
+python -m authoring.generate --app juice-shop --trace rec/trace.json --out-dir gen/
+```
+
+`app.yaml` is an **input**: `generate` still emits the frozen artifacts (`scope.json`,
+`auth.json`, `zap-policy.yaml`, `manifest.json`, `lock`) from it, so preflight, the scope guard
+and the runner are unchanged. See `security/dast/juice-shop/app.yaml` for a worked example and
+`docs/dast_poc_remediation_plan.md` for where this is going.
 
 ## Prerequisites
 
@@ -116,11 +136,11 @@ is what scans replay (deterministic — protects the lifecycle diff).
 
 ```bash
 # 1. Seed a session once (human logs in; --assisted auto-logs-in the pilot). Saved gitignored.
-python -m authoring.seed --base-url http://juice:3000 --zap-proxy http://localhost:8080 \
-  --assisted --storage-state .secrets/storageState.json     # AUTH_EMAIL/AUTH_PASSWORD from env
+python -m authoring.seed --app juice-shop --zap-proxy http://localhost:8080 --assisted
+#    base_url + storage_state come from the app config; AUTH_EMAIL/AUTH_PASSWORD from env
 
 # 2. Explore from a seed config (storage_state + seed_routes); LLM primary, deterministic fallback.
-python -m authoring.explore --seed security/dast/juice-shop/seed.json \
+python -m authoring.explore --app juice-shop --seed security/dast/juice-shop/seed.json \
   --scope security/dast/juice-shop/scope.json --zap-proxy http://localhost:8080 --out-dir rec/
 #   --no-llm forces the deterministic fallback proposer
 
@@ -137,7 +157,7 @@ python -m detections.lifecycle_diff out/records.json --app-id juice-shop \
 
 ```bash
 pip install -r requirements-dev.txt
-pytest -q          # 213 tests
+pytest -q          # 255 tests
 ```
 
 Testing philosophy is **objective / test-first**: expectations are anchored to independent

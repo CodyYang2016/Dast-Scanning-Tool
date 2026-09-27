@@ -1,0 +1,66 @@
+# OWASP Juice Shop — the pilot application.
+#
+# Everything app-specific lives here; onboarding another application means adding a directory
+# with a file like this one, never editing authoring/ or runner/ (enforced by
+# tests/test_no_app_specifics.py). Validated against contracts/app.schema.json.
+
+app_id: juice-shop
+environment_class: dev            # preflight refuses prod outright (D3); no default anywhere
+base_url: http://juice:3000       # as ZAP resolves it on the compose network (D7)
+
+scope:
+  allow: [juice]                  # may be reached AND attacked
+  deny: ["*.google-analytics.com"]
+  avoid_actions: [logout, delete-account]
+
+auth:
+  mode: form
+  login_url: /#/login
+  selectors:
+    email: "#email"
+    password: "#password"
+    submit: "#loginButton"
+  # How we prove the session is real. Juice Shop is an SPA that stores a JWT in localStorage,
+  # so a JS expression is the honest check; cookie-session apps get the route/selector modes
+  # in W2-11.
+  proof:
+    js: "window.localStorage.getItem('token')"
+  # Juice Shop lets anyone register, so the recorder creates its own throwaway account. Most
+  # real applications do not — they use a provisioned test identity and omit `bootstrap`.
+  identity: self-register
+  bootstrap:
+    method: POST
+    path: /api/Users/
+    body:
+      securityQuestion: {id: 1}
+      securityAnswer: dast
+  credentials:                    # names only, never values (NFR-3)
+    email_env: AUTH_EMAIL
+    password_env: AUTH_PASSWORD
+  storage_state: .secrets/storageState.json
+
+ui:
+  # Juice Shop's welcome banner and cookie bar sit over the login form. A new application
+  # inherits none of these.
+  dismiss_selectors:
+    - "button[aria-label='Close Welcome Banner']"
+    - "a[aria-label='dismiss cookie message']"
+    - ".cc-btn"
+
+record:
+  # Visited after login so the SPA fires its authenticated XHR, which is what ZAP records.
+  authenticated_routes: ["/#/basket"]
+
+api:
+  patterns: ["/rest/", "/api/"]
+
+explore:
+  seed_routes:
+    - "/#/basket"
+    - "/#/order-history"
+    - "/#/search?q=apple"
+    - "/#/privacy-security/privacy-policy"
+    - "/rest/products/1/reviews"
+  safe_forms: []                  # read-only exploration until SP-1 is settled per app
+  budgets:
+    max_pages: 12

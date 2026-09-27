@@ -25,6 +25,7 @@ from pathlib import Path
 
 import jsonschema
 
+from authoring import appconfig
 from authoring.record import build_trace, write_trace
 from authoring.seed import load_seed
 from runner.action_policy import validate_action
@@ -236,6 +237,7 @@ def _observe(page, base_url: str, api_events: list[dict]) -> dict:
 
 
 def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[str], scope: dict, *,
+            config: dict | None = None,
             deny_actions=None, safe_forms=None, max_pages: int = 50, use_llm: bool = True,
             model: str = _DEFAULT_MODEL, api_key: str | None = None, zap_proxy: str | None = None,
             headless: bool = True, slow_mo: int = 0) -> tuple[dict, ScopeGuard]:
@@ -250,6 +252,10 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
         raise ValueError("explore requires at least one seed route")
     launch_args = ["--no-sandbox", "--disable-dev-shm-usage"] if os.environ.get(
         "RUNNER_CHROMIUM_NO_SANDBOX") else []
+    # App-specific knowledge (how auth is proven, what counts as an API call) comes from the
+    # app config; the loop itself names no application.
+    api_patterns = appconfig.api_patterns(config) if config else ("/rest/", "/api/")
+    proof = appconfig.proof_js(config) if config else None
     guard = ScopeGuard(scope, mode="discovery")  # block-and-continue during discovery (KI4)
     events: list[dict] = []
     api_events: list[dict] = []
@@ -265,10 +271,9 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
         page = context.new_page()
         page.route("**/*", lambda route: guard.route_handler(route))  # safety layer 2
         page.on("request", lambda r: api_events.append({"type": "request", "method": r.method,
-                "url": r.url}) if ("/rest/" in r.url or "/api/" in r.url) else None)
+                "url": r.url}) if any(m in r.url for m in api_patterns) else None)
 
-        liveness = prove_auth_live(page, base_url, seed_routes[0],
-                                   token_check="window.localStorage.getItem('token')")
+        liveness = prove_auth_live(page, base_url, seed_routes[0], token_check=proof)
         if not liveness["alive"]:
             context.close(); browser.close()
             raise SessionDeadError(liveness["reason"])
@@ -327,6 +332,7 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="LLM-driven authenticated exploration -> trace (Phase B).")
+    p.add_argument("--app", default=None, help="App id or path to security/dast/<app>/app.yaml")
     p.add_argument("--seed", required=True, help="Seed config (storage_state + seed_routes)")
     p.add_argument("--scope", required=True, help="App scope.json (preflight-validated first)")
     p.add_argument("--schema", default=str(_ROOT / "contracts" / "scope.schema.json"))
@@ -343,13 +349,14 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
 
     scope = preflight(args.scope, args.schema)  # safety layer 1 before any traffic
+    config = appconfig.load_app_config(args.app) if args.app else None
     seed = load_seed(args.seed)
     base_url = args.base_url or seed["target"]["base_url"]
     app_id = args.app_id or scope["app_id"]
     try:
         trace, guard = explore(
             app_id, base_url, seed["session"]["storage_state"], seed["seed_routes"], scope,
-            deny_actions=seed.get("deny_actions"), max_pages=args.max_pages,
+            config=config, deny_actions=seed.get("deny_actions"), max_pages=args.max_pages,
             use_llm=not args.no_llm, model=args.model, zap_proxy=args.zap_proxy,
             headless=not args.headed, slow_mo=args.slow_mo,
         )

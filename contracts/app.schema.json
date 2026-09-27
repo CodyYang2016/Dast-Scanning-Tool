@@ -1,0 +1,178 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nationwide.com/ssd-dast-poc/contracts/app.schema.json",
+  "title": "Per-application configuration",
+  "description": "Everything app-specific the tool needs, in one file per application (security/dast/<app_id>/app.yaml). Onboarding an application is adding one of these — never a code change (see docs/dast_poc_remediation_plan.md §1). This is an INPUT: generate still emits the frozen artifacts (scope.json, auth.json, zap-policy.yaml, manifest.json, lock) from it, so preflight and the runner are unchanged. Credentials appear only as environment variable NAMES (NFR-3). additionalProperties is false everywhere so a typo fails loudly instead of being silently ignored.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["app_id", "environment_class", "base_url", "scope", "auth"],
+  "properties": {
+    "app_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Application id; must match the directory name and the app_id on every detection record."
+    },
+    "environment_class": {
+      "type": "string",
+      "enum": ["dev", "test", "staging"],
+      "description": "Deliberately has no default: preflight refuses prod (D3), and a wrong value here is the whole safety story, so it must be stated per app rather than inherited."
+    },
+    "base_url": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The target as ZAP resolves it (D7), e.g. http://juice:3000 on the compose network."
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allow"],
+      "properties": {
+        "allow": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1},
+          "description": "Hosts that may be reached AND attacked. Exact match, case-insensitive (D6)."
+        },
+        "deny": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "description": "Wildcard deny patterns; deny takes precedence over allow (D6)."
+        },
+        "avoid_actions": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "description": "Destructive action terms refused deterministically during exploration (never by LLM judgement)."
+        }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "login_url", "selectors", "proof"],
+      "description": "How to log in and how we PROVE we are logged in. Operator-owned: the LLM never sees or influences this block.",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["form", "seeded"],
+          "description": "form = drive the login form; seeded = replay a human-seeded storageState."
+        },
+        "login_url": {"type": "string", "minLength": 1},
+        "selectors": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["email", "password", "submit"],
+          "description": "Single-step form login. A step list for multi-step and username-based logins lands with W2-10.",
+          "properties": {
+            "email": {"type": "string", "minLength": 1},
+            "password": {"type": "string", "minLength": 1},
+            "submit": {"type": "string", "minLength": 1}
+          }
+        },
+        "proof": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "maxProperties": 1,
+          "description": "Exactly one proof of authentication, and no default — an unproven session must never be scanned. Only the js mode exists today; route and selector modes land with W2-11.",
+          "properties": {
+            "js": {
+              "type": "string",
+              "minLength": 1,
+              "description": "JS expression that is truthy only when authenticated, e.g. window.localStorage.getItem('token')."
+            }
+          }
+        },
+        "identity": {
+          "type": "string",
+          "enum": ["provisioned", "self-register"],
+          "default": "provisioned",
+          "description": "provisioned (default): a test account already exists. self-register: the tool may create its own account via auth.bootstrap — most real applications forbid this."
+        },
+        "bootstrap": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["method", "path"],
+          "description": "Account-creation request, used only when identity is self-register. Credentials are injected from the environment at run time.",
+          "properties": {
+            "method": {"type": "string", "enum": ["POST", "PUT"]},
+            "path": {"type": "string", "minLength": 1},
+            "body": {
+              "type": "object",
+              "description": "Extra body fields merged with the credential fields."
+            }
+          }
+        },
+        "credentials": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["email_env", "password_env"],
+          "description": "Environment variable NAMES only — never values (NFR-3).",
+          "properties": {
+            "email_env": {"type": "string", "minLength": 1},
+            "password_env": {"type": "string", "minLength": 1}
+          }
+        },
+        "storage_state": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Where the seeded session lives (gitignored path today; a secret store reference with W5-3)."
+        }
+      }
+    },
+    "ui": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dismiss_selectors": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "description": "Cookie banners / welcome modals to click away before interacting. Empty for a new application — nothing is inherited from another app's UI."
+        }
+      }
+    },
+    "record": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "authenticated_routes": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "description": "Routes the recorded walk visits after login, chosen so the SPA fires its authenticated XHR."
+        }
+      }
+    },
+    "api": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "patterns": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1},
+          "description": "URL substrings that mark a request as an API call worth recording, e.g. /rest/ or /v1/."
+        }
+      }
+    },
+    "explore": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "seed_routes": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "safe_forms": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "description": "Targets for which a state-changing submit is permitted (SP-1). Empty = read-only exploration."
+        },
+        "budgets": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_pages": {"type": "integer", "minimum": 1},
+            "max_depth": {"type": "integer", "minimum": 1},
+            "max_minutes": {"type": "number", "exclusiveMinimum": 0}
+          }
+        }
+      }
+    }
+  }
+}

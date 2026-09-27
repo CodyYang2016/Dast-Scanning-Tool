@@ -13,13 +13,12 @@ import os
 import sys
 from pathlib import Path
 
+from authoring import appconfig
 from runner.scope_guard import host_of
 
-_API_MARKERS = ("/rest/", "/api/")
 
-
-def _is_api(url: str) -> bool:
-    return any(m in url for m in _API_MARKERS)
+def _is_api(url: str, patterns) -> bool:
+    return any(m in url for m in patterns)
 
 
 def build_trace(app_id: str, base_url: str, events: list[dict]) -> dict:
@@ -68,15 +67,27 @@ def _launch_args() -> list[str]:
         "RUNNER_CHROMIUM_NO_SANDBOX") else []
 
 
-def crawl(app_id: str, base_url: str, email: str, password: str,
+def crawl(config: dict, email: str, password: str, base_url: str | None = None,
           zap_proxy: str | None = None, headless: bool = True, slow_mo: int = 0) -> dict:
-    """Drive a real browser through register -> login -> an authenticated page, recording
-    goto/fill/click/form interactions and API/XHR requests. Returns a build_trace() result.
+    """Drive a real browser through (optional) registration -> login -> an authenticated page,
+    recording goto/fill/click/form interactions and API/XHR requests. Returns a build_trace()
+    result.
+
+    Everything application-specific — selectors, the login route, whether the tool may create
+    its own account, which banners to dismiss, how authentication is proven, which routes to
+    visit afterwards and what counts as an API call — comes from `config` (app.yaml), so this
+    function names no application.
 
     slow_mo (ms) delays each Playwright action so a headed run is watchable in a live demo /
     screen recording; 0 (default) is full speed and does not affect the captured trace."""
     from playwright.sync_api import sync_playwright
 
+    app_id = config["app_id"]
+    base_url = base_url or appconfig.base_url(config)
+    login = appconfig.login(config)
+    patterns = appconfig.api_patterns(config)
+    banners = appconfig.dismiss_selectors(config)
+    proof = appconfig.proof_js(config)
     events: list[dict] = []
     with sync_playwright() as pw:
         launch = {"headless": headless, "args": _launch_args()}
@@ -87,31 +98,50 @@ def crawl(app_id: str, base_url: str, email: str, password: str,
         browser = pw.chromium.launch(**launch)
         page = browser.new_context(ignore_https_errors=True).new_page()
         page.on("request", lambda r: events.append(
-            {"type": "request", "method": r.method, "url": r.url}) if _is_api(r.url) else None)
+            {"type": "request", "method": r.method, "url": r.url})
+            if _is_api(r.url, patterns) else None)
 
         def goto(route):
             events.append({"type": "goto", "url": base_url + route})
             page.goto(base_url + route, wait_until="networkidle")
 
-        goto("/#/")
-        # best-effort register so the login has valid creds
-        page.request.post(f"{base_url}/api/Users/", data={
-            "email": email, "password": password, "passwordRepeat": password,
-            "securityQuestion": {"id": 1}, "securityAnswer": "dast"})
-        goto("/#/login")
-        events.append({"type": "form", "url": base_url + "/#/login",
+        goto("/")
+        # Create the account only where the application permits it (auth.identity:
+        # self-register). Most real targets use a provisioned test identity instead.
+        boot = appconfig.bootstrap(config)
+        if boot:
+            page.request.fetch(
+                f"{base_url}{boot['path']}", method=boot.get("method", "POST"),
+                data={"email": email, "password": password, "passwordRepeat": password,
+                      **boot.get("body", {})})
+        goto(login["url"])
+        _dismiss(page, banners)
+        events.append({"type": "form", "url": base_url + login["url"],
                        "fields": ["email", "password"]})
-        events.append({"type": "fill", "selector": "#email", "field": "email"})
-        page.fill("#email", email)
-        events.append({"type": "fill", "selector": "#password", "field": "password"})
-        page.fill("#password", password)
-        events.append({"type": "click", "selector": "#loginButton"})
-        page.click("#loginButton")
-        page.wait_for_function("() => !!window.localStorage.getItem('token')", timeout=15000)
-        goto("/#/basket")  # authenticated page -> SPA fires /rest/* XHR (captured above)
+        events.append({"type": "fill", "selector": login["email"], "field": "email"})
+        page.fill(login["email"], email)
+        events.append({"type": "fill", "selector": login["password"], "field": "password"})
+        page.fill(login["password"], password)
+        events.append({"type": "click", "selector": login["submit"]})
+        page.click(login["submit"])
+        page.wait_for_function(f"() => !!({proof})", timeout=15000)
+        # Authenticated pages -> the app fires its authenticated XHR, captured above.
+        for route in appconfig.authenticated_routes(config):
+            goto(route)
         browser.close()
 
     return build_trace(app_id, base_url, events)
+
+
+def _dismiss(page, selectors) -> None:
+    """Click away cookie banners / welcome modals that sit over the login form (best-effort)."""
+    for sel in selectors:
+        try:
+            el = page.locator(sel)
+            if el.count() and el.first.is_visible():
+                el.first.click(timeout=2000)
+        except Exception:
+            pass
 
 
 def write_trace(trace: dict, out_dir: str) -> None:
@@ -122,9 +152,10 @@ def write_trace(trace: dict, out_dir: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(description="Record a crawl trace of the pilot app (FR-R1/R2/R3).")
-    p.add_argument("--app-id", required=True)
-    p.add_argument("--base-url", default="http://juice:3000")
+    p = argparse.ArgumentParser(description="Record a crawl trace of an application (FR-R1/R2/R3).")
+    p.add_argument("--app", required=True,
+                   help="App id or path to security/dast/<app>/app.yaml")
+    p.add_argument("--base-url", default=None, help="Override the config's base_url")
     p.add_argument("--zap-proxy", default=None, help="Proxy through ZAP so hosts match the runner (D7)")
     p.add_argument("--out-dir", required=True, help="Directory for trace.json + index.json")
     p.add_argument("--headed", action="store_true")
@@ -132,9 +163,9 @@ def main(argv: list[str] | None = None) -> int:
                    help="Delay each browser action by MS milliseconds (for headed demos/recordings)")
     args = p.parse_args(argv)
 
-    email = os.environ.get("AUTH_EMAIL", "dast-poc@juice-sh.op")
-    password = os.environ.get("AUTH_PASSWORD", "Dast-POC-passw0rd!")
-    trace = crawl(args.app_id, args.base_url, email, password,
+    config = appconfig.load_app_config(args.app)
+    email, password = appconfig.credentials(config)
+    trace = crawl(config, email, password, base_url=args.base_url,
                   zap_proxy=args.zap_proxy, headless=not args.headed, slow_mo=args.slow_mo)
     write_trace(trace, args.out_dir)
     print(f"recorded: {len(trace['interactions'])} interactions, {len(trace['api'])} api calls, "

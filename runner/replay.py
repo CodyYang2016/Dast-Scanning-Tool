@@ -161,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--scope", required=True, help="Path to the app scope.json")
     p.add_argument("--schema", default=_DEFAULT_SCHEMA)
     p.add_argument("--flow", required=True, help="Path to the hand-authored flow.py")
-    p.add_argument("--base-url", default="http://juice:3000", help="Target as ZAP resolves it")
+    p.add_argument("--base-url", required=True, help="Target as ZAP resolves it")
     p.add_argument("--zap-proxy", default="http://localhost:8080")
     p.add_argument("--evidence-dir", default=None,
                    help="Optional directory for replay HAR and screenshot evidence")

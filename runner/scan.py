@@ -100,7 +100,7 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="ZAP active-scan orchestration (FR-S1/S2).")
     p.add_argument("--scope", required=True, help="App scope.json (target host must be allow-listed)")
     p.add_argument("--schema", default=_DEFAULT_SCHEMA)
-    p.add_argument("--target", required=True, help="Target base URL, e.g. http://juice:3000")
+    p.add_argument("--target", required=True, help="Target base URL as ZAP resolves it")
     p.add_argument("--zap-api", default="http://localhost:8080")
     p.add_argument("--no-spider", action="store_true", help="Skip the spider (scan what ZAP already saw)")
     p.add_argument("--max-scan-min", type=int, default=4)

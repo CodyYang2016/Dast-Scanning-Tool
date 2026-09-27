@@ -19,6 +19,8 @@ from pathlib import Path
 
 import jsonschema
 
+from authoring import appconfig
+
 _ROOT = Path(__file__).resolve().parent.parent
 _SEED_SCHEMA = _ROOT / "contracts" / "seed.schema.json"
 
@@ -43,10 +45,10 @@ def _launch_args() -> list[str]:
         "RUNNER_CHROMIUM_NO_SANDBOX") else []
 
 
-def capture_session(base_url: str, storage_state: str, *, email: str | None = None,
-                    password: str | None = None, token_check: str | None = None,
-                    zap_proxy: str | None = None, headless: bool = False,
-                    timeout_ms: int = 180000) -> str:
+def capture_session(config: dict, storage_state: str | None = None, *,
+                    base_url: str | None = None, email: str | None = None,
+                    password: str | None = None, zap_proxy: str | None = None,
+                    headless: bool = False, timeout_ms: int = 180000) -> str:
     """Open a browser at base_url, obtain an authenticated session, and save storageState.
 
     Two modes:
@@ -55,16 +57,24 @@ def capture_session(base_url: str, storage_state: str, *, email: str | None = No
       - assisted (email+password given): auto-fill the Juice Shop login so the pilot can be seeded
         without a human — also how the seeded path is verified.
 
-    Seed through the SAME origin the scan uses: storageState keys localStorage by origin, so if the
-    runner scans http://juice:3000 (as ZAP resolves it), seed with base_url=http://juice:3000 and
-    zap_proxy set, so the browser reaches juice through ZAP and the saved origin matches (D7).
+    Seed through the SAME origin the scan uses: storageState is keyed by origin, so seed with the
+    same base_url the runner scans (as ZAP resolves it) and with zap_proxy set, or the saved
+    session is invisible to the scan (D7).
+
+    Login selectors, banners, the account-bootstrap request and the proof of authentication all
+    come from `config` (app.yaml), so this function names no application.
 
     The saved file holds live session secrets and MUST be gitignored (see .gitignore .secrets/).
     Returns the storage_state path.
     """
     from playwright.sync_api import sync_playwright
 
-    check = token_check or "window.localStorage.getItem('token')"
+    base_url = base_url or appconfig.base_url(config)
+    storage_state = storage_state or appconfig.storage_state(config)
+    if not storage_state:
+        raise ValueError("no storage_state given and none in the app config (auth.storage_state)")
+    check = appconfig.proof_js(config)
+    login = appconfig.login(config)
     Path(storage_state).parent.mkdir(parents=True, exist_ok=True)
 
     with sync_playwright() as pw:
@@ -74,23 +84,26 @@ def capture_session(base_url: str, storage_state: str, *, email: str | None = No
         browser = pw.chromium.launch(**launch)
         context = browser.new_context(ignore_https_errors=True)
         page = context.new_page()
-        page.goto(base_url + "/#/login", wait_until="networkidle")
+        page.goto(base_url + login["url"], wait_until="networkidle")
         if email and password:
-            # Assisted login (pilot). Register best-effort so creds are valid, then form-login.
-            page.request.post(f"{base_url}/api/Users/", data={
-                "email": email, "password": password, "passwordRepeat": password,
-                "securityQuestion": {"id": 1}, "securityAnswer": "dast"})
-            for sel in ("button[aria-label='Close Welcome Banner']",
-                        "a[aria-label='dismiss cookie message']", ".cc-btn"):
+            # Assisted login: create the account first where the application allows it, then
+            # drive the form. A human seeding a real target does this part themselves.
+            boot = appconfig.bootstrap(config)
+            if boot:
+                page.request.fetch(
+                    f"{base_url}{boot['path']}", method=boot.get("method", "POST"),
+                    data={"email": email, "password": password, "passwordRepeat": password,
+                          **boot.get("body", {})})
+            for sel in appconfig.dismiss_selectors(config):
                 try:
                     el = page.locator(sel)
                     if el.count() and el.first.is_visible():
                         el.first.click(timeout=2000)
                 except Exception:
                     pass
-            page.fill("#email", email)
-            page.fill("#password", password)
-            page.click("#loginButton")
+            page.fill(login["email"], email)
+            page.fill(login["password"], password)
+            page.click(login["submit"])
         # Wait for auth to be established (human finishes login, or the assisted login lands).
         page.wait_for_function(f"() => !!({check})", timeout=timeout_ms)
         context.storage_state(path=storage_state)
@@ -100,8 +113,10 @@ def capture_session(base_url: str, storage_state: str, *, email: str | None = No
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Capture a human-authenticated storageState (Phase A seed).")
-    p.add_argument("--base-url", required=True, help="Target base URL, e.g. http://localhost:3000")
-    p.add_argument("--storage-state", required=True, help="Output path (gitignored, e.g. .secrets/storageState.json)")
+    p.add_argument("--app", required=True, help="App id or path to security/dast/<app>/app.yaml")
+    p.add_argument("--base-url", default=None, help="Override the config's base_url")
+    p.add_argument("--storage-state", default=None,
+                   help="Output path; defaults to the config's auth.storage_state (gitignored)")
     p.add_argument("--assisted", action="store_true",
                    help="Auto-login with AUTH_EMAIL/AUTH_PASSWORD (pilot); default waits for a human")
     p.add_argument("--zap-proxy", default=None,
@@ -109,10 +124,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--headed", action="store_true", help="Show the browser (default for manual seed)")
     args = p.parse_args(argv)
 
-    email = os.environ.get("AUTH_EMAIL") if args.assisted else None
-    password = os.environ.get("AUTH_PASSWORD") if args.assisted else None
+    config = appconfig.load_app_config(args.app)
+    email = password = None
+    if args.assisted:
+        email, password = appconfig.credentials(config)
     headless = not (args.headed or not args.assisted)  # manual seed is headed so the human can act
-    path = capture_session(args.base_url, args.storage_state, email=email, password=password,
+    path = capture_session(config, args.storage_state, base_url=args.base_url,
+                           email=email, password=password,
                            zap_proxy=args.zap_proxy, headless=headless)
     print(f"seeded session saved -> {path}")
     return 0

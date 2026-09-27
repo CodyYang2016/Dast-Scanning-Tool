@@ -10,4 +10,5 @@ zap_version:      2.17.0
 runner_base_image: mcr.microsoft.com/playwright/python:v1.62.0-jammy
 python_version:    3.12
 playwright_version: 1.62.0
+pyyaml_version:    6.0.2
 chromium:          bundled with the Playwright base image (build 1234)
