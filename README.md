@@ -6,7 +6,7 @@ normalize the findings with stable fingerprints, and publish them to the GitHub 
 with lifecycle tracking across scans.
 
 **Status: the full loop works end-to-end on real data**, including the Phase 2 authoring CLIs
-(`record → generate → validate`). 255 automated tests pass; the containerized single-command
+(`record → generate → validate`). 300 automated tests pass; the containerized single-command
 run is verified; and the **auto-generated `flow.py` drives a passing scan** end-to-end
 (Week-2 checkpoint). The LLM path in `generate` runs with an `ANTHROPIC_API_KEY`; without one
 it uses a deterministic fallback (verified here).
@@ -65,10 +65,34 @@ application — `tests/test_no_app_specifics.py` fails the build if that ever st
 so onboarding is a configuration change, never a code change.
 
 ```bash
+python -m dast onboard my-app --base-url https://my-app.dev.example   # writes the skeleton
+$EDITOR security/dast/my-app/app.yaml                                 # fill in the TODOs
+python -m dast author  my-app      # record (or seed+explore) -> generate -> validate
+python -m dast scan    my-app      # preflight -> replay -> ZAP -> normalize -> coverage
+python -m dast report  my-app      # lifecycle diff -> SARIF  (--upload to publish)
+```
+
+Artifacts land in one predictable place per application:
+
+```
+out/<app>/authoring/        trace/ and bundle/ (flow.py, scope.json, journey.json, …)
+out/<app>/scans/<scan_id>/  records.json, coverage.json, labeled.json, results.sarif, evidence/
+out/<app>/state.json        lifecycle state across scans
+```
+
+`dast` is a thin facade: each verb composes the module entry points below, which remain the
+interface for anything unusual (a different proxy, a one-off trace, `--no-replay`).
+
+```bash
 # every authoring CLI takes --app <id> (or a path to the file)
 python -m authoring.record   --app juice-shop --zap-proxy http://localhost:8080 --out-dir rec/
 python -m authoring.generate --app juice-shop --trace rec/trace.json --out-dir gen/
 ```
+
+Two applications are onboarded today, and they deliberately differ: **juice-shop** (SPA, email
+login, JWT in `localStorage`, self-registration) and **dvwa** (server-rendered, *username*
+login, PHPSESSID cookie session proven by visiting an authenticated route, provisioned
+identity, no API surface). Between them they exercise every shape the config supports.
 
 `app.yaml` is an **input**: `generate` still emits the frozen artifacts (`scope.json`,
 `auth.json`, `zap-policy.yaml`, `manifest.json`, `lock`) from it, so preflight, the scope guard
@@ -157,7 +181,7 @@ python -m detections.lifecycle_diff out/records.json --app-id juice-shop \
 
 ```bash
 pip install -r requirements-dev.txt
-pytest -q          # 255 tests
+pytest -q          # 300 tests
 ```
 
 Testing philosophy is **objective / test-first**: expectations are anchored to independent

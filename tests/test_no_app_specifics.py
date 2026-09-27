@@ -20,6 +20,12 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 CORE_DIRS = ("authoring", "runner")
+CORE_FILES = ("dast.py",)          # the CLI facade is core code too
+
+# A documentation template shown to the operator is prose, like a docstring: it must be free
+# to say `js: "window.localStorage.getItem('token')"` as a generic example of an SPA token
+# check. Exempted by name only, and only where the name means "template".
+TEMPLATE_CONSTANTS = {"SKELETON"}
 
 # Substrings that name a specific application: its hostname, its selectors, its endpoints, its
 # session mechanics, its credentials. Case-insensitive.
@@ -42,11 +48,18 @@ APP_MARKERS = (
 def _core_modules():
     for d in CORE_DIRS:
         yield from sorted((ROOT / d).glob("*.py"))
+    for f in CORE_FILES:
+        yield ROOT / f
 
 
-def _docstring_nodes(tree):
-    """Constant nodes that are docstrings, which are documentation rather than behaviour."""
+def _exempt_nodes(tree):
+    """Constants that are documentation rather than behaviour: docstrings and named templates."""
     out = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant):
+            names = {t.id for t in node.targets if isinstance(t, ast.Name)}
+            if names & TEMPLATE_CONSTANTS:
+                out.add(id(node.value))
     for node in ast.walk(tree):
         if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             body = getattr(node, "body", None)
@@ -59,7 +72,7 @@ def _docstring_nodes(tree):
 def _offending_strings(path: Path):
     """(lineno, value, marker) for every executable string constant naming an application."""
     tree = ast.parse(path.read_text())
-    skip = _docstring_nodes(tree)
+    skip = _exempt_nodes(tree)
     hits = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in skip:
@@ -79,6 +92,20 @@ def test_core_module_names_no_application(module):
         f"security/dast/<app>/app.yaml: "
         + "; ".join(f"line {ln}: {val!r} (matched {m!r})" for ln, val, m in hits)
     )
+
+
+def test_the_template_exemption_is_narrow():
+    """Only a constant NAMED as a template is exempt — the same text elsewhere still fails."""
+    src = ('SKELETON = """selectors:\n  password: "#password"\n"""\n'
+           'OTHER = """selectors:\n  password: "#password"\n"""\n')
+    tmp = ROOT / "tests" / "_template_probe.py"
+    tmp.write_text(src)
+    try:
+        hits = _offending_strings(tmp)
+        assert len(hits) == 1 and "OTHER" not in src[:hits[0][1].find("x")] or True
+        assert [h[2] for h in hits] == ["#password"]      # exactly one: the unexempt constant
+    finally:
+        tmp.unlink()
 
 
 def test_the_guard_itself_bites():

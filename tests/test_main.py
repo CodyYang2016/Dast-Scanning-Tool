@@ -35,3 +35,26 @@ def test_gate_counts_detections():
     gate = evaluate_gate(True, True, [_rec("low"), _rec("medium"), _rec("info")])
     assert gate["detections"] == 3
     assert gate["has_high_or_medium"] is True
+
+
+# ---- evidence belongs with the scan that produced it ------------------------------------
+# runner.main derives the evidence directory from the scope file's parent, which puts HARs
+# and screenshots inside the *bundle* — mixing one scan's evidence into the reusable config,
+# and leaving `dast scan`'s artifact directory incomplete. An explicit override keeps each
+# scan's evidence with its records and coverage (DoD: one artifact directory per scan).
+
+def test_evidence_dir_defaults_to_the_app_directory(tmp_path):
+    from runner.main import resolve_evidence_dir
+    scope = tmp_path / "app" / "scope.json"
+    scope.parent.mkdir(parents=True)
+    got = resolve_evidence_dir(str(scope), None, "20260101T000000Z")
+    assert got == tmp_path / "app" / "evidence" / "20260101T000000Z"
+
+
+def test_explicit_evidence_dir_wins(tmp_path):
+    from runner.main import resolve_evidence_dir
+    scope = tmp_path / "app" / "scope.json"
+    scope.parent.mkdir(parents=True)
+    run_dir = tmp_path / "out" / "app" / "scans" / "20260101T000000Z"
+    got = resolve_evidence_dir(str(scope), str(run_dir), "20260101T000000Z")
+    assert got == run_dir / "evidence"
