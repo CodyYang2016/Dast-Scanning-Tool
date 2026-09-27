@@ -50,7 +50,7 @@ class FakePage:
         if not self._truthy:
             raise TimeoutError("no token")
 
-    def wait_for_selector(self, sel, timeout=None):
+    def wait_for_selector(self, sel, timeout=None, state=None):
         self.waited_selector = sel
         if not self._count:
             raise TimeoutError("not present")
@@ -117,3 +117,27 @@ def test_route_proof_honours_an_exact_expected_status():
 def test_an_unknown_proof_mode_fails_closed():
     with pytest.raises(AuthProofError):
         wait_for_auth(FakePage(), BASE, {"psychic": True})
+
+
+# ---- a logged-in marker counts even when it is not visible ------------------------------
+# Observed on WebGoat: its logout link is authenticated-only but sits inside a collapsed
+# dropdown, so a visibility-based wait timed out on a session that was in fact established.
+# Presence in the DOM is the honest signal for a PROOF; requiring visibility would fail every
+# app whose marker lives in a nav menu.
+
+class HiddenMarkerPage(FakePage):
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.waited_state = None
+
+    def wait_for_selector(self, sel, timeout=None, state=None):
+        self.waited_state = state
+        if state == "visible" and self._count == 0:
+            raise TimeoutError("hidden")
+        self.waited_selector = sel
+
+
+def test_selector_proof_accepts_a_marker_that_is_present_but_hidden():
+    page = HiddenMarkerPage(selector_count=0)      # present in the DOM, not visible
+    wait_for_auth(page, BASE, {"selector": "a[href*='logout']"})
+    assert page.waited_state == "attached"

@@ -161,7 +161,9 @@ def _render_auth_proof(config: dict, w) -> bool:
         w('        raise RuntimeError("login did not produce an auth token")')
         return True
     if mode == "selector":
-        w(f"    page.wait_for_selector({json.dumps(spec)}, timeout=15000)")
+        # state="attached" matches runner.replay.wait_for_auth: presence proves the session,
+        # and an authenticated-only marker is often hidden inside a nav menu.
+        w(f'    page.wait_for_selector({json.dumps(spec)}, timeout=15000, state="attached")')
         w(f"    if not page.locator({json.dumps(spec)}).count():")
         w('        raise RuntimeError("login did not reveal the authenticated marker")')
         return False

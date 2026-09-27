@@ -1,0 +1,67 @@
+# OWASP WebGoat — the third onboarded application, and the test of the "config only" claim.
+#
+# Juice Shop is an Angular SPA with a JWT in localStorage; DVWA is PHP with a PHPSESSID cookie
+# proven by visiting a route. WebGoat is a third shape again: Spring Boot, a JSESSIONID cookie,
+# and authentication proven by an element that only exists once you are logged in — the
+# `selector` proof mode, which no other application here uses.
+#
+# Environment prep (not configuration): WebGoat has no default account, so a test user is
+# registered once through its own signup form. Its passwords must be 6-10 characters.
+
+app_id: webgoat
+environment_class: dev
+base_url: http://webgoat:8083          # NOT 8080: ZAP claims proxied requests on its own
+                                       # port as API calls (api.addrs.addr.name=.*), so a
+                                       # target on 8080 never reaches the app. See §Gotchas.
+
+scope:
+  allow: [webgoat]
+  avoid_actions: [logout, reset, delete]   # WebGoat's lesson reset wipes progress
+
+auth:
+  mode: form
+  login_url: /WebGoat/login
+  steps:
+    - {action: fill, selector: "input[name=username]", value: identifier}
+    - {action: fill, selector: "input[name=password]", value: secret}
+    - {action: click, selector: "button[type=submit]"}
+  # No JS-visible token and no clean "authenticated route" to probe — a failed login returns
+  # 200 on /WebGoat/login?error, which a status check would happily accept. The honest proof
+  # is an element that only renders for a logged-in user.
+  proof:
+    # #menu-container renders only for a logged-in user and is visible. The logout link would
+    # also be authenticated-only, but it sits inside a collapsed dropdown and is hidden, which
+    # a visibility-based check cannot see.
+    selector: "#menu-container"
+  identity: provisioned
+  credentials:
+    email_env: WEBGOAT_USER
+    password_env: WEBGOAT_PASS
+  storage_state: .secrets/webgoat-storageState.json
+
+record:
+  authenticated_routes:
+    - /WebGoat/start.mvc
+    - /WebGoat/service/lessonmenu.mvc
+    - /WebGoat/service/lessonprogress.mvc
+
+api:
+  # WebGoat's JSON endpoints live under /service/ — neither /api/ nor /rest/, which is exactly
+  # why this is configuration and not a constant in the recorder.
+  patterns: ["/service/", "/WebGoat/service/"]
+
+explore:
+  seed_routes:
+    - /WebGoat/start.mvc
+    - /WebGoat/service/lessonmenu.mvc
+  safe_forms: []
+  budgets:
+    max_pages: 10
+
+scan:
+  policy:
+    attack_strength: medium
+    alert_threshold: medium
+    disabled_rules: ["40026"]   # DOM-XSS: browser-driven, OOM-killed the daemon on DVWA (SP-3)
+  budgets:
+    max_scan_min: 4

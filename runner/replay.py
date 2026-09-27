@@ -54,7 +54,9 @@ def wait_for_auth(page, base_url: str, proof: dict, timeout_ms: int = 15000) -> 
             page.wait_for_function(f"() => !!({proof['js']})", timeout=timeout_ms)
             return
         if mode == "selector":
-            page.wait_for_selector(proof["selector"], timeout=timeout_ms)
+            # "attached", not the default "visible": a logged-in marker inside a collapsed
+            # menu is still proof of a session, and requiring visibility would reject it.
+            page.wait_for_selector(proof["selector"], timeout=timeout_ms, state="attached")
             return
         if mode == "route":
             spec = proof["route"]
