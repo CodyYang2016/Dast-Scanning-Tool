@@ -94,6 +94,10 @@ login, JWT in `localStorage`, self-registration) and **dvwa** (server-rendered, 
 login, PHPSESSID cookie session proven by visiting an authenticated route, provisioned
 identity, no API surface). Between them they exercise every shape the config supports.
 
+**Step-by-step: [`docs/onboarding_a_new_application.md`](docs/onboarding_a_new_application.md)**
+— the two decisions that matter (login shape, proof of authentication), what good output looks
+like, the failure modes each onboarded app actually hit, and the three configs side by side.
+
 `app.yaml` is an **input**: `generate` still emits the frozen artifacts (`scope.json`,
 `auth.json`, `zap-policy.yaml`, `manifest.json`, `lock`) from it, so preflight, the scope guard
 and the runner are unchanged. See `security/dast/juice-shop/app.yaml` for a worked example and
@@ -216,6 +220,8 @@ and a **redactor** that scrubs DOM/XHR bodies before anything reaches the model.
 | `authoring_clis_design.md` | Phase 2 record/generate/validate design + the LLM safety architecture |
 | `seeded_session_exploration_design.md` | Seeded-session + LLM exploration loop (`seed`/`explore`), coverage-aware lifecycle (R1/R2) |
 | `chromium_and_playwright_setup.md` | All Playwright/Chromium usage + gotchas |
+| `../onboarding_a_new_application.md` | **Onboarding a new app** — the procedure, the decisions, the failure modes |
+| `../dast_poc_remediation_plan.md` | The issue register and phase plan derived from the funding review |
 | `decisions_and_known_issues.md` | Every design decision (D1–D10) + known gaps (KI1–KI4) |
 
 Background specs: `docs/dast_poc_requirements.md`, `dast_poc_3week_plan.md`,

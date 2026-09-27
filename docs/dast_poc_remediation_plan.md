@@ -153,7 +153,10 @@ governance/approver. Size in sessions.
 | W1-5 | No triage model: no dedup, no suppression, no accepted-risk state; GitHub dismissals are invisible to the diff so a dismissed finding returns as `open` forever | `detections/lifecycle_diff.py` | SEC, DEV | Per-app suppression file keyed by fingerprint; reconcile GitHub alert state on upload | 1.5 |
 | W1-6 | No scan summary — 1,400+ records with no grouping or ranking | — | SEC, GOV | One Markdown/HTML report per scan: counts by severity/rule/route, top 10, coverage, lifecycle deltas | 1 |
 
-### W2 — Configuration and onboarding (Phase 0 — the primary goal)
+### W2 — Configuration and onboarding (Phase 0 — the primary goal) — ✅ all complete
+
+*Status 2026-09-27: W2-1 … W2-13 delivered. W2-7's acceptance ran twice — DVWA (needed code, see
+§4) and WebGoat (zero code). The `dast` CLI (W2-6) and the image change (W2-8) shipped with them.*
 
 | ID | Issue | Evidence | Persona | Proposed fix | Size |
 |---|---|---|---|---|---|
@@ -251,7 +254,7 @@ Five phases. Phase 0 is the primary goal and everything else is sequenced behind
 Phase 0 or 1 requires a real target application, so both start immediately and run in parallel
 with target selection.
 
-### Phase 0 — Onboard a second application (≈ 11 sessions) — **the gate**
+### Phase 0 — Onboard a second application (≈ 11 sessions) — ✅ **COMPLETE 2026-09-27**
 **W2-1 … W2-13**: move every app-specific input to `app.yaml` (selectors, bootstrap, token check,
 API patterns, environment class, deny-list, banner selectors), generalise the two contracts that
 assume Juice Shop's login shape (W2-10 step list, W2-11 pluggable auth proof), default to a
@@ -271,6 +274,37 @@ rather than a code problem.
    test enforces it from then on.
 3. A CI job runs `dast onboard → author → scan → report` against a DVWA container end to end.
 4. The elapsed wall-clock time for a first-time operator is measured and published.
+
+#### What happened (all items delivered; commits `622650c`, `e9c41c5`, `1a02492`, `27f4d8f`, `dda5427`, `2e0c082`)
+
+| Criterion | Result |
+|---|---|
+| App directory is configuration only | ✅ `security/dast/dvwa/app.yaml`, `security/dast/webgoat/app.yaml` — one file each, no `.py` |
+| Zero diff to `authoring/` and `runner/` | ⚠️ **not on DVWA** (see below) · ✅ **yes on WebGoat**, app #3 |
+| End-to-end through the CLI | ✅ `dast onboard → author → scan → report` on both, gates passed |
+| Onboarding time measured and published | ✅ **DVWA 4m20s, WebGoat 4m32s** (config + four commands; excludes environment prep) |
+| CI job | ❌ **deferred to Phase 2 (W3-1)** — no workflow exists yet, so the loop is proven by hand, not on a schedule |
+
+**The honest reading.** DVWA was *not* a zero-code onboarding: it required finishing the live
+half of W2-11 (`wait_for_auth`, step-driven login in `record`/`seed`, a configured proof in
+`prove_auth_live`). The claim was only tested by **app #3**. WebGoat — Spring Boot, JSESSIONID
+cookie, `selector` proof, `/service/` API pattern — onboarded in 4m32s with `git status` showing
+exactly one new path and no diff to any module. Three applications now cover three different
+stacks, three login shapes, three session mechanics and all three proof modes.
+
+**What the exercise cost, and what it bought.** Each onboarding found real defects that reading
+the code had not: DVWA exposed the unfinished live proof path; WebGoat exposed that a
+`selector` proof required a *visible* element (fixed: presence is the proof) and that **ZAP
+hijacks any target on its own port** (W4-7 — silent, and likely in the pilot, since internal
+Java apps commonly listen on 8080). Onboarding real applications is the cheapest defect-finding
+activity available to this project.
+
+**Not claimed:** environment prep is excluded from both timings. DVWA needed its database
+created, WebGoat a registered account (its passwords cap at 10 characters). That is the same
+category of work as standing up the container, but an operator's clock includes it, so quote
+"config-only onboarding under 5 minutes; environment prep varies."
+
+See `docs/onboarding_a_new_application.md` for the procedure these numbers describe.
 
 ### Phase 1 — Make a finding worth receiving (≈ 5 sessions)
 **W1-1 … W1-4** (rich records, SARIF `help`, request/response excerpt, resolvable evidence) +
@@ -359,14 +393,28 @@ being finished.
 
 ## 7. How we will know this worked
 
-| Measure | Today | Target at the next gate |
-|---|---|---|
-| **Second app onboarded config-only** | **No — requires editing Python** | **DVWA, zero diff to `authoring/`/`runner/`, proven by a CI job and the W2-13 guard test** |
-| Time to onboard a new app | Unmeasured; requires editing Python | < 1 hour, one YAML file, published number |
-| Files to edit to onboard | 2 Python modules + 2 JSON files | 1 (`app.yaml`) |
-| Commands to a report from scratch | ~12, across two terminals | 4 (`onboard`/`author`/`scan`/`report`) |
-| Scans run with nobody watching | 0 | ≥ 2 consecutive scheduled runs |
-| A developer can act on a finding unaided | No | Yes — description, solution, reproduction, evidence link |
-| Coverage expressed as a percentage | No denominator | % of declared routes (OpenAPI) or of a ground-truth inventory |
-| Measured LLM increment over deterministic | One Juice Shop run, inconclusive | A number from three applications |
-| Posture exclusions disclosed on the scorecard | Not agreed | All of SP-1…SP-7, agreed before the scan |
+Measured 2026-09-27 unless stated. "Start" is where this plan was written.
+
+| Measure | Start | **Now** | Target |
+|---|---|---|---|
+| Apps onboarded config-only | 0 | **2** (DVWA, WebGoat — WebGoat with zero code diff) | ✅ met |
+| Time to onboard a new app | Unmeasured; required editing Python | **4m32s** (WebGoat; DVWA 4m20s), excluding environment prep | ✅ well under the 1-hour target |
+| Files to edit to onboard | 2 Python modules + 2 JSON files | **1** (`app.yaml`) | ✅ met |
+| Commands to a report from scratch | ~12, across two terminals | **4** (`onboard`/`author`/`scan`/`report`) | ✅ met |
+| Login shapes supported | email + password only | **3**: email, username, and arbitrary step lists (`fill`/`click`/`press`/`wait_for`) | ✅ met |
+| Proof-of-authentication modes | JS token only | **3**: `js`, `route` (cookie sessions), `selector` — all three exercised live | ✅ met |
+| Generated artifacts the runner consumes | 2 of 7 | **4 of 7** (`flow.py`, `scope.json`, `zap-policy.yaml`, and the scope's budgets) | `auth.json`, `manifest.json`, `lock` remain informational |
+| Scan posture | hard-coded constants | **per-app config**, resolved policy pinned into `coverage.json` | ✅ met |
+| Tests | 213 | **318** | grows with the register |
+| Scans run with nobody watching | 0 | **0** | ≥ 2 consecutive scheduled runs (W3-1, Phase 2) |
+| A developer can act on a finding unaided | No | **No** — still a rule id, a severity and a path | Phase 1 (W1-1…W1-4) |
+| Coverage expressed as a percentage | No denominator | **No denominator** | % of declared routes (W6-4) |
+| Measured LLM increment over deterministic | One Juice Shop run, inconclusive | **Still one run** | A number from three applications (W7-4) |
+| Posture exclusions disclosed on the scorecard | Not agreed | **Two recorded with evidence**: DOM-XSS 40026 (OOM-killed the daemon), write paths unexercised | All of SP-1…SP-7, agreed before the first internal scan |
+
+**One number worth quoting on its own.** On DVWA, moving scan posture into configuration and
+widening the recorded surface by four parameterised GETs took the same scan from **0
+high-severity findings to 5** (reflected XSS ×3, MySQL injection ×2) with no code change. The
+missing findings were never an engine problem: ZAP had only ever seen `/vulnerabilities/sqli/`
+without parameters, so there was nothing to inject into — the readiness plan's SP-4 point,
+demonstrated rather than argued.
