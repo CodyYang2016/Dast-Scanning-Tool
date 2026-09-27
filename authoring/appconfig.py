@@ -66,22 +66,73 @@ def base_url(cfg: dict) -> str:
 
 
 def login(cfg: dict) -> dict:
-    """The login block: url + email/password/submit selectors."""
+    """The login block: url + the three shorthand selectors.
+
+    Only valid for applications configured with the shorthand; anything else must use
+    `login_steps`, which covers both shapes.
+    """
     auth = cfg["auth"]
+    if "selectors" not in auth:
+        raise ValueError("this application's login is a step list; use login_steps()")
     return {"url": auth["login_url"], **auth["selectors"]}
+
+
+def login_url(cfg: dict) -> str:
+    return cfg["auth"]["login_url"]
+
+
+def uses_shorthand_login(cfg: dict) -> bool:
+    return "selectors" in cfg["auth"]
+
+
+_CREDENTIAL_ALIASES = {"email": "identifier", "password": "secret"}
+
+
+def login_steps(cfg: dict) -> list[dict]:
+    """The login as an ordered list of browser actions.
+
+    The three-selector shorthand normalizes into the same shape as an explicit `steps` list, so
+    every consumer (record, seed, the flow renderer) has one code path whether the app has an
+    email field, a username field, two pages or a keypress. `value` names which credential to
+    type; the value itself never appears in config (NFR-3).
+    """
+    auth = cfg["auth"]
+    if "steps" in auth:
+        out = []
+        for step in auth["steps"]:
+            step = dict(step)
+            if "value" in step:
+                step["value"] = _CREDENTIAL_ALIASES.get(step["value"], step["value"])
+            out.append(step)
+        return out
+    sel = auth["selectors"]
+    return [
+        {"action": "fill", "selector": sel["email"], "value": "identifier"},
+        {"action": "fill", "selector": sel["password"], "value": "secret"},
+        {"action": "click", "selector": sel["submit"]},
+    ]
+
+
+def proof(cfg: dict) -> dict:
+    """The configured proof of authentication, exactly one mode (schema-enforced)."""
+    return cfg["auth"]["proof"]
+
+
+def proof_mode(cfg: dict) -> str:
+    """'js' | 'route' | 'selector' — which proof this application uses."""
+    return next(iter(cfg["auth"]["proof"]))
 
 
 def proof_js(cfg: dict) -> str:
     """The JS expression proving authentication.
 
-    Raises ValueError for a proof mode this build cannot evaluate (route/selector arrive with
-    W2-11). Fail closed: never fall back to "assume authenticated".
+    Raises ValueError for any other mode: a caller that can only evaluate JavaScript must fail
+    rather than silently treat an unproven session as authenticated.
     """
-    proof = cfg["auth"]["proof"]
-    if "js" in proof:
-        return proof["js"]
-    mode = next(iter(proof), "none")
-    raise ValueError(f"auth.proof mode '{mode}' is not supported yet (W2-11); use proof.js")
+    p = cfg["auth"]["proof"]
+    if "js" in p:
+        return p["js"]
+    raise ValueError(f"auth.proof mode '{proof_mode(cfg)}' is not a JS expression")
 
 
 def dismiss_selectors(cfg: dict) -> list[str]:
@@ -127,6 +178,12 @@ def self_registers(cfg: dict) -> bool:
 def bootstrap(cfg: dict) -> dict | None:
     """The account-creation request, or None when the identity is provisioned."""
     return cfg["auth"].get("bootstrap") if self_registers(cfg) else None
+
+
+def credential_env_names(cfg: dict) -> tuple[str, str]:
+    """The environment variable names holding (identifier, secret) — never the values."""
+    creds = cfg["auth"].get("credentials", {})
+    return creds.get("email_env", "AUTH_EMAIL"), creds.get("password_env", "AUTH_PASSWORD")
 
 
 def credentials(cfg: dict) -> tuple[str, str]:

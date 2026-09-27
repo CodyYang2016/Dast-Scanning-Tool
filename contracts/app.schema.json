@@ -2,10 +2,16 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://nationwide.com/ssd-dast-poc/contracts/app.schema.json",
   "title": "Per-application configuration",
-  "description": "Everything app-specific the tool needs, in one file per application (security/dast/<app_id>/app.yaml). Onboarding an application is adding one of these — never a code change (see docs/dast_poc_remediation_plan.md §1). This is an INPUT: generate still emits the frozen artifacts (scope.json, auth.json, zap-policy.yaml, manifest.json, lock) from it, so preflight and the runner are unchanged. Credentials appear only as environment variable NAMES (NFR-3). additionalProperties is false everywhere so a typo fails loudly instead of being silently ignored.",
+  "description": "Everything app-specific the tool needs, in one file per application (security/dast/<app_id>/app.yaml). Onboarding an application is adding one of these \u2014 never a code change (see docs/dast_poc_remediation_plan.md \u00a71). This is an INPUT: generate still emits the frozen artifacts (scope.json, auth.json, zap-policy.yaml, manifest.json, lock) from it, so preflight and the runner are unchanged. Credentials appear only as environment variable NAMES (NFR-3). additionalProperties is false everywhere so a typo fails loudly instead of being silently ignored.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["app_id", "environment_class", "base_url", "scope", "auth"],
+  "required": [
+    "app_id",
+    "environment_class",
+    "base_url",
+    "scope",
+    "auth"
+  ],
   "properties": {
     "app_id": {
       "type": "string",
@@ -14,7 +20,11 @@
     },
     "environment_class": {
       "type": "string",
-      "enum": ["dev", "test", "staging"],
+      "enum": [
+        "dev",
+        "test",
+        "staging"
+      ],
       "description": "Deliberately has no default: preflight refuses prod (D3), and a wrong value here is the whole safety story, so it must be stated per app rather than inherited."
     },
     "base_url": {
@@ -25,22 +35,33 @@
     "scope": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["allow"],
+      "required": [
+        "allow"
+      ],
       "properties": {
         "allow": {
           "type": "array",
           "minItems": 1,
-          "items": {"type": "string", "minLength": 1},
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
           "description": "Hosts that may be reached AND attacked. Exact match, case-insensitive (D6)."
         },
         "deny": {
           "type": "array",
-          "items": {"type": "string", "minLength": 1},
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
           "description": "Wildcard deny patterns; deny takes precedence over allow (D6)."
         },
         "avoid_actions": {
           "type": "array",
-          "items": {"type": "string", "minLength": 1},
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
           "description": "Destructive action terms refused deterministically during exploration (never by LLM judgement)."
         }
       }
@@ -48,24 +69,47 @@
     "auth": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["mode", "login_url", "selectors", "proof"],
-      "description": "How to log in and how we PROVE we are logged in. Operator-owned: the LLM never sees or influences this block.",
+      "required": [
+        "mode",
+        "login_url",
+        "proof"
+      ],
+      "description": "How to log in and how we PROVE we are logged in. Operator-owned: the LLM never sees or influences this block. Give either `selectors` (the three-field shorthand) or `steps` (anything else: a username field, a two-page login, a keypress) \u2014 the shorthand normalizes into steps.",
       "properties": {
         "mode": {
           "type": "string",
-          "enum": ["form", "seeded"],
+          "enum": [
+            "form",
+            "seeded"
+          ],
           "description": "form = drive the login form; seeded = replay a human-seeded storageState."
         },
-        "login_url": {"type": "string", "minLength": 1},
+        "login_url": {
+          "type": "string",
+          "minLength": 1
+        },
         "selectors": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["email", "password", "submit"],
-          "description": "Single-step form login. A step list for multi-step and username-based logins lands with W2-10.",
+          "required": [
+            "email",
+            "password",
+            "submit"
+          ],
+          "description": "Shorthand for the common single-step form: fill identifier, fill secret, click submit. Equivalent to the three-step `steps` list.",
           "properties": {
-            "email": {"type": "string", "minLength": 1},
-            "password": {"type": "string", "minLength": 1},
-            "submit": {"type": "string", "minLength": 1}
+            "email": {
+              "type": "string",
+              "minLength": 1
+            },
+            "password": {
+              "type": "string",
+              "minLength": 1
+            },
+            "submit": {
+              "type": "string",
+              "minLength": 1
+            }
           }
         },
         "proof": {
@@ -73,29 +117,74 @@
           "additionalProperties": false,
           "minProperties": 1,
           "maxProperties": 1,
-          "description": "Exactly one proof of authentication, and no default — an unproven session must never be scanned. Only the js mode exists today; route and selector modes land with W2-11.",
+          "description": "Exactly one proof of authentication, and no default \u2014 an unproven session must never be scanned. js: a truthy JS expression (SPA with a visible token). route: an authenticated route must answer 2xx/3xx and not bounce to the login page (cookie sessions, where no token is reachable from JavaScript). selector: an element that only exists when logged in.",
           "properties": {
             "js": {
               "type": "string",
               "minLength": 1,
               "description": "JS expression that is truthy only when authenticated, e.g. window.localStorage.getItem('token')."
+            },
+            "route": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "An authenticated route to probe, e.g. /account."
+                },
+                "expect_status": {
+                  "type": "integer",
+                  "minimum": 100,
+                  "maximum": 599,
+                  "description": "Exact status to require; any 2xx/3xx if omitted."
+                },
+                "forbid_redirect_to": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Substring that must NOT appear in the landing URL, e.g. login.php."
+                }
+              }
+            },
+            "selector": {
+              "type": "string",
+              "minLength": 1,
+              "description": "CSS selector present only when authenticated, e.g. nav a[href='/logout']."
             }
           }
         },
         "identity": {
           "type": "string",
-          "enum": ["provisioned", "self-register"],
+          "enum": [
+            "provisioned",
+            "self-register"
+          ],
           "default": "provisioned",
-          "description": "provisioned (default): a test account already exists. self-register: the tool may create its own account via auth.bootstrap — most real applications forbid this."
+          "description": "provisioned (default): a test account already exists. self-register: the tool may create its own account via auth.bootstrap \u2014 most real applications forbid this."
         },
         "bootstrap": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["method", "path"],
+          "required": [
+            "method",
+            "path"
+          ],
           "description": "Account-creation request, used only when identity is self-register. Credentials are injected from the environment at run time.",
           "properties": {
-            "method": {"type": "string", "enum": ["POST", "PUT"]},
-            "path": {"type": "string", "minLength": 1},
+            "method": {
+              "type": "string",
+              "enum": [
+                "POST",
+                "PUT"
+              ]
+            },
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
             "body": {
               "type": "object",
               "description": "Extra body fields merged with the credential fields."
@@ -105,19 +194,83 @@
         "credentials": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["email_env", "password_env"],
-          "description": "Environment variable NAMES only — never values (NFR-3).",
+          "required": [
+            "email_env",
+            "password_env"
+          ],
+          "description": "Environment variable NAMES only \u2014 never values (NFR-3).",
           "properties": {
-            "email_env": {"type": "string", "minLength": 1},
-            "password_env": {"type": "string", "minLength": 1}
+            "email_env": {
+              "type": "string",
+              "minLength": 1
+            },
+            "password_env": {
+              "type": "string",
+              "minLength": 1
+            }
           }
         },
         "storage_state": {
           "type": "string",
           "minLength": 1,
           "description": "Where the seeded session lives (gitignored path today; a secret store reference with W5-3)."
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "description": "The login as an ordered list of browser actions \u2014 the general form. Values are never written here: `value` names which credential to type, and the credential itself comes from the environment (NFR-3).",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "action",
+              "selector"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "fill",
+                  "click",
+                  "press",
+                  "wait_for"
+                ]
+              },
+              "selector": {
+                "type": "string",
+                "minLength": 1
+              },
+              "value": {
+                "type": "string",
+                "enum": [
+                  "identifier",
+                  "secret",
+                  "email",
+                  "password"
+                ],
+                "description": "Which credential to type (fill only). email/password are accepted as aliases of identifier/secret."
+              },
+              "key": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Key to press (press only), e.g. Enter."
+              }
+            }
+          }
         }
-      }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "selectors"
+          ]
+        },
+        {
+          "required": [
+            "steps"
+          ]
+        }
+      ]
     },
     "ui": {
       "type": "object",
@@ -125,8 +278,11 @@
       "properties": {
         "dismiss_selectors": {
           "type": "array",
-          "items": {"type": "string", "minLength": 1},
-          "description": "Cookie banners / welcome modals to click away before interacting. Empty for a new application — nothing is inherited from another app's UI."
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Cookie banners / welcome modals to click away before interacting. Empty for a new application \u2014 nothing is inherited from another app's UI."
         }
       }
     },
@@ -136,7 +292,10 @@
       "properties": {
         "authenticated_routes": {
           "type": "array",
-          "items": {"type": "string", "minLength": 1},
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
           "description": "Routes the recorded walk visits after login, chosen so the SPA fires its authenticated XHR."
         }
       }
@@ -148,7 +307,10 @@
         "patterns": {
           "type": "array",
           "minItems": 1,
-          "items": {"type": "string", "minLength": 1},
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
           "description": "URL substrings that mark a request as an API call worth recording, e.g. /rest/ or /v1/."
         }
       }
@@ -157,19 +319,37 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "seed_routes": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "seed_routes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
         "safe_forms": {
           "type": "array",
-          "items": {"type": "string", "minLength": 1},
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
           "description": "Targets for which a state-changing submit is permitted (SP-1). Empty = read-only exploration."
         },
         "budgets": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "max_pages": {"type": "integer", "minimum": 1},
-            "max_depth": {"type": "integer", "minimum": 1},
-            "max_minutes": {"type": "number", "exclusiveMinimum": 0}
+            "max_pages": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "max_depth": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "max_minutes": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
           }
         }
       }

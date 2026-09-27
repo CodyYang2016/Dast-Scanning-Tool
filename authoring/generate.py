@@ -96,14 +96,17 @@ def login_block(config: dict) -> dict:
     journey only. `generate` injects this block into every plan before validation, so a model
     that omits it (or invents one) cannot change how we authenticate.
     """
-    cfg_login = appconfig.login(config)
-    return {
-        "url": cfg_login["url"],
-        "email_selector": cfg_login["email"],
-        "password_selector": cfg_login["password"],
-        "submit_selector": cfg_login["submit"],
-        "token_check": appconfig.proof_js(config),
-    }
+    block: dict = {"url": appconfig.login_url(config)}
+    if appconfig.uses_shorthand_login(config):
+        cfg_login = appconfig.login(config)
+        block["email_selector"] = cfg_login["email"]
+        block["password_selector"] = cfg_login["password"]
+        block["submit_selector"] = cfg_login["submit"]
+    else:
+        block["steps"] = appconfig.login_steps(config)
+    if appconfig.proof_mode(config) == "js":
+        block["token_check"] = appconfig.proof_js(config)
+    return block
 
 
 def validate_plan(plan: dict) -> None:
@@ -128,6 +131,54 @@ def parse_plan_text(text: str) -> dict:
 
 # ---- Step B: deterministic render (LLM safety boundary) ----------------------------------
 
+def _render_login_steps(config: dict, w) -> None:
+    """Emit the login itself. The shorthand and a step list normalize to one code path."""
+    for step in appconfig.login_steps(config):
+        action, sel = step["action"], json.dumps(step["selector"])
+        if action == "fill":
+            var = "identifier" if step.get("value", "identifier") == "identifier" else "secret"
+            w(f"    page.fill({sel}, {var})")
+        elif action == "click":
+            w(f"    page.click({sel})")
+        elif action == "press":
+            w(f"    page.press({sel}, {json.dumps(step.get('key', 'Enter'))})")
+        elif action == "wait_for":
+            w(f"    page.wait_for_selector({sel}, timeout=15000)")
+
+
+def _render_auth_proof(config: dict, w) -> bool:
+    """Emit the proof that we are authenticated. Returns True when a bearer token is available.
+
+    Every mode ends in a raise if the proof fails: a flow that cannot prove authentication must
+    stop, never hand an unauthenticated session to the scanner.
+    """
+    mode = appconfig.proof_mode(config)
+    spec = appconfig.proof(config)[mode]
+    if mode == "js":
+        w(f'    page.wait_for_function({json.dumps("() => !!(" + spec + ")")}, timeout=15000)')
+        w(f'    token = page.evaluate({json.dumps("() => " + spec)})')
+        w("    if not token:")
+        w('        raise RuntimeError("login did not produce an auth token")')
+        return True
+    if mode == "selector":
+        w(f"    page.wait_for_selector({json.dumps(spec)}, timeout=15000)")
+        w(f"    if not page.locator({json.dumps(spec)}).count():")
+        w('        raise RuntimeError("login did not reveal the authenticated marker")')
+        return False
+    # route: an authenticated page must answer, and must not bounce us back to the login form
+    w(f'    _resp = page.goto(base_url + {json.dumps(spec["path"])}, wait_until="networkidle")')
+    w("    _status = _resp.status if _resp else None")
+    if "expect_status" in spec:
+        w(f"    if _status != {spec['expect_status']}:")
+    else:
+        w("    if _status is None or not (200 <= _status < 400):")
+    w('        raise RuntimeError(f"auth check returned {_status}")')
+    if spec.get("forbid_redirect_to"):
+        w(f"    if {json.dumps(spec['forbid_redirect_to'])} in page.url:")
+        w('        raise RuntimeError(f"auth check redirected to {page.url}")')
+    return False
+
+
 def render_flow(plan: dict, config: dict) -> str:
     """Render a validated journey plan into flow.py source. Deterministic (FR-G4); no secrets
     (creds from env, NFR-3). String literals are json.dumps-quoted for safety.
@@ -135,8 +186,6 @@ def render_flow(plan: dict, config: dict) -> str:
     The banner selectors and the authentication proof come from `config`, not from the plan —
     they are the application's, and no app's UI quirks are inherited by another's flow.
     """
-    login = plan["login"]
-    token_check = appconfig.proof_js(config)
     banners = appconfig.dismiss_selectors(config)
     # Render as a tuple literal; a single selector needs the trailing comma or the generated
     # loop would iterate over the characters of a string.
@@ -159,18 +208,15 @@ def render_flow(plan: dict, config: dict) -> str:
     w("            pass")
     w("")
     w("")
+    creds = appconfig.credential_env_names(config)
     w("def run(page, base_url, evidence_dir=None):")
-    w('    email = os.environ.get("AUTH_EMAIL", "")')
-    w('    password = os.environ.get("AUTH_PASSWORD", "")')
-    w(f'    page.goto(base_url + {json.dumps(login["url"])}, wait_until="networkidle")')
+    w(f'    identifier = os.environ.get({json.dumps(creds[0])}, "")')
+    w(f'    secret = os.environ.get({json.dumps(creds[1])}, "")')
+    w(f'    page.goto(base_url + {json.dumps(appconfig.login_url(config))}, '
+      'wait_until="networkidle")')
     w("    _dismiss_banners(page)")
-    w(f'    page.fill({json.dumps(login["email_selector"])}, email)')
-    w(f'    page.fill({json.dumps(login["password_selector"])}, password)')
-    w(f'    page.click({json.dumps(login["submit_selector"])})')
-    w(f'    page.wait_for_function({json.dumps("() => !!(" + token_check + ")")}, timeout=15000)')
-    w(f'    token = page.evaluate({json.dumps("() => " + token_check)})')
-    w("    if not token:")
-    w('        raise RuntimeError("login did not produce an auth token")')
+    _render_login_steps(config, w)
+    has_token = _render_auth_proof(config, w)
     for step in plan["journey"]:
         action, target = step["action"], step["target"]
         if action == "goto":
@@ -178,9 +224,16 @@ def render_flow(plan: dict, config: dict) -> str:
         elif action == "click":
             w(f'    page.click({json.dumps(target)})')
         elif action == "api_get":
-            w(f'    page.request.get(base_url + {json.dumps(target)}, '
-              'headers={"Authorization": f"Bearer {token}"})')
-    w('    return {"authenticated": True, "token_present": bool(token)}')
+            if has_token:
+                w(f'    page.request.get(base_url + {json.dumps(target)}, '
+                  'headers={"Authorization": f"Bearer {token}"})')
+            else:
+                # No bearer token: the session rides on the context's cookies.
+                w(f'    page.request.get(base_url + {json.dumps(target)})')
+    if has_token:
+        w('    return {"authenticated": True, "token_present": bool(token)}')
+    else:
+        w('    return {"authenticated": True, "token_present": False}')
     w("")
     return "\n".join(out)
 

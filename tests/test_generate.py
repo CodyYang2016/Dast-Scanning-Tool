@@ -192,3 +192,85 @@ def test_manifest_and_lock_are_json_serializable():
     lock = emit_lock()
     assert json.loads(json.dumps(manifest))["app_id"] == "juice-shop"
     assert "playwright_version" in json.loads(json.dumps(lock))
+
+
+# ---- W2-10/W2-11: any login shape, any proof of authentication --------------------------
+# A generated flow must work for an application that has a username field and a session
+# cookie, not just an SPA with an email field and a JS token. Oracle: Python's compiler plus
+# the specific calls each mode must and must not emit.
+
+DVWA_CONFIG = {
+    "app_id": "dvwa",
+    "environment_class": "dev",
+    "base_url": "http://dvwa",
+    "scope": {"allow": ["dvwa"]},
+    "auth": {
+        "mode": "form",
+        "login_url": "/login.php",
+        "steps": [
+            {"action": "fill", "selector": "input[name=username]", "value": "identifier"},
+            {"action": "fill", "selector": "input[name=password]", "value": "secret"},
+            {"action": "click", "selector": "input[type=submit]"},
+        ],
+        "proof": {"route": {"path": "/index.php", "forbid_redirect_to": "login.php"}},
+    },
+}
+
+DVWA_PLAN = {
+    "app_id": "dvwa",
+    "base_url": "http://dvwa",
+    "login": {"url": "/login.php", "steps": DVWA_CONFIG["auth"]["steps"]},
+    "journey": [{"action": "goto", "target": "/vulnerabilities/sqli/"},
+                {"action": "api_get", "target": "/vulnerabilities/brute/"}],
+}
+
+
+def _compiles(src):
+    ast.parse(src)
+    return src
+
+
+def test_plan_for_a_step_list_login_is_schema_valid():
+    plan = journey_from_trace({**TRACE, "app_id": "dvwa", "base_url": "http://dvwa"}, DVWA_CONFIG)
+    Draft202012Validator(json.loads(JOURNEY_SCHEMA.read_text())).validate(plan)
+    assert plan["login"]["steps"][0]["selector"] == "input[name=username]"
+
+
+def test_rendered_flow_drives_a_username_login():
+    src = _compiles(render_flow(DVWA_PLAN, DVWA_CONFIG))
+    assert 'page.fill("input[name=username]", identifier)' in src
+    assert 'page.fill("input[name=password]", secret)' in src
+    assert 'page.click("input[type=submit]")' in src
+
+
+def test_route_proof_checks_status_and_login_redirect_instead_of_a_token():
+    src = _compiles(render_flow(DVWA_PLAN, DVWA_CONFIG))
+    assert "/index.php" in src and "login.php" in src
+    assert "wait_for_function" not in src        # nothing to evaluate in JS
+    assert "localStorage" not in src
+
+
+def test_cookie_session_flow_sends_no_bearer_header():
+    # There is no token to bear; the session rides on the context's cookies.
+    src = _compiles(render_flow(DVWA_PLAN, DVWA_CONFIG))
+    assert "Authorization" not in src and "Bearer" not in src
+    assert 'page.request.get(base_url + "/vulnerabilities/brute/")' in src
+
+
+def test_selector_proof_waits_for_a_logged_in_marker():
+    cfg = {**DVWA_CONFIG, "auth": {**DVWA_CONFIG["auth"], "proof": {"selector": "nav .logout"}}}
+    src = _compiles(render_flow(DVWA_PLAN, cfg))
+    assert 'page.wait_for_selector("nav .logout"' in src
+
+
+def test_js_proof_still_renders_the_token_path_with_a_bearer_header():
+    src = _compiles(render_flow(PLAN, CONFIG))
+    assert "wait_for_function" in src and "Bearer" in src
+
+
+def test_every_proof_mode_raises_when_authentication_cannot_be_proven():
+    # Fail closed: each rendered flow must refuse to continue rather than scan logged out.
+    for cfg, plan in ((CONFIG, PLAN), (DVWA_CONFIG, DVWA_PLAN),
+                      ({**DVWA_CONFIG, "auth": {**DVWA_CONFIG["auth"],
+                                                "proof": {"selector": ".logout"}}}, DVWA_PLAN)):
+        assert "raise RuntimeError" in render_flow(plan, cfg)

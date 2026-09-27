@@ -2,28 +2,108 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://nationwide.com/ssd-dast-poc/contracts/journey.schema.json",
   "title": "Journey plan",
-  "description": "The constrained, LLM-emitted (or fallback-derived) plan that generate renders into flow.py. The LLM produces DATA validated against this schema; deterministic code turns it into code (LLM safety boundary). No credentials appear here — they live in auth.json / env.",
+  "description": "The constrained, LLM-emitted (or fallback-derived) plan that generate renders into flow.py. The LLM produces DATA validated against this schema; deterministic code turns it into code (LLM safety boundary). No credentials appear here \u2014 they live in auth.json / env.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["app_id", "base_url", "login", "journey"],
+  "required": [
+    "app_id",
+    "base_url",
+    "login",
+    "journey"
+  ],
   "properties": {
-    "app_id": {"type": "string", "minLength": 1},
-    "base_url": {"type": "string", "minLength": 1},
+    "app_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "base_url": {
+      "type": "string",
+      "minLength": 1
+    },
     "login": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["url", "email_selector", "password_selector", "submit_selector"],
+      "required": [
+        "url"
+      ],
       "properties": {
-        "url": {"type": "string", "minLength": 1, "description": "Login route, e.g. /#/login"},
-        "email_selector": {"type": "string", "minLength": 1},
-        "password_selector": {"type": "string", "minLength": 1},
-        "submit_selector": {"type": "string", "minLength": 1},
+        "url": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Login route, e.g. /#/login"
+        },
+        "email_selector": {
+          "type": "string",
+          "minLength": 1
+        },
+        "password_selector": {
+          "type": "string",
+          "minLength": 1
+        },
+        "submit_selector": {
+          "type": "string",
+          "minLength": 1
+        },
         "token_check": {
           "type": "string",
           "description": "JS truthy expression proving auth, e.g. window.localStorage.getItem('token')",
           "default": "window.localStorage.getItem('token')"
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Ordered browser actions performing the login. No credential values appear here: `value` names which credential to type.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "action",
+              "selector"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "fill",
+                  "click",
+                  "press",
+                  "wait_for"
+                ]
+              },
+              "selector": {
+                "type": "string",
+                "minLength": 1
+              },
+              "value": {
+                "type": "string",
+                "enum": [
+                  "identifier",
+                  "secret"
+                ]
+              },
+              "key": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
         }
-      }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "email_selector",
+            "password_selector",
+            "submit_selector"
+          ]
+        },
+        {
+          "required": [
+            "steps"
+          ]
+        }
+      ],
+      "description": "How to log in, copied from the application's config \u2014 the model never authors this block. Either the three-selector shorthand or a `steps` list; both are accepted so plans written before the step list stay valid."
     },
     "journey": {
       "type": "array",
@@ -32,10 +112,24 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["action", "target"],
+        "required": [
+          "action",
+          "target"
+        ],
         "properties": {
-          "action": {"type": "string", "enum": ["goto", "click", "api_get"]},
-          "target": {"type": "string", "minLength": 1, "description": "URL/route for goto/api_get, or a selector for click"}
+          "action": {
+            "type": "string",
+            "enum": [
+              "goto",
+              "click",
+              "api_get"
+            ]
+          },
+          "target": {
+            "type": "string",
+            "minLength": 1,
+            "description": "URL/route for goto/api_get, or a selector for click"
+          }
         }
       }
     }

@@ -134,3 +134,91 @@ def test_missing_credentials_raise_rather_than_logging_in_blank(monkeypatch):
     monkeypatch.delenv("APP_PASS", raising=False)
     with pytest.raises(ValueError):
         appconfig.credentials(cfg)
+
+
+# ---- W2-10: login steps — the shorthand and the general form are one code path ----------
+# Onboarding an app whose login is a username field, or two pages, or needs a keypress, must
+# not need a code change. The three-selector shorthand normalizes into the same step list the
+# general form produces, so record/seed/generate only ever consume steps.
+
+def test_shorthand_normalizes_to_fill_fill_click():
+    assert appconfig.login_steps(MINIMAL) == [
+        {"action": "fill", "selector": "#u", "value": "identifier"},
+        {"action": "fill", "selector": "#p", "value": "secret"},
+        {"action": "click", "selector": "#go"},
+    ]
+
+
+def test_explicit_steps_are_returned_as_written():
+    cfg = json.loads(json.dumps(MINIMAL))
+    del cfg["auth"]["selectors"]
+    cfg["auth"]["steps"] = [
+        {"action": "fill", "selector": "input[name=username]", "value": "identifier"},
+        {"action": "click", "selector": "#next"},
+        {"action": "wait_for", "selector": "input[name=password]"},
+        {"action": "fill", "selector": "input[name=password]", "value": "secret"},
+        {"action": "press", "selector": "input[name=password]", "key": "Enter"},
+    ]
+    steps = appconfig.login_steps(cfg)
+    assert [s["action"] for s in steps] == ["fill", "click", "wait_for", "fill", "press"]
+    assert steps[0]["selector"] == "input[name=username]"
+
+
+def test_auth_with_neither_selectors_nor_steps_is_rejected(tmp_path):
+    bad = json.loads(json.dumps(MINIMAL))
+    del bad["auth"]["selectors"]
+    with pytest.raises(jsonschema.ValidationError):
+        appconfig.load_app_config(_write(tmp_path, bad))
+
+
+def test_a_username_and_cookie_session_app_is_expressible(tmp_path):
+    """The DVWA shape: username field, PHPSESSID cookie, no self-registration."""
+    cfg = {
+        "app_id": "dvwa",
+        "environment_class": "dev",
+        "base_url": "http://dvwa",
+        "scope": {"allow": ["dvwa"]},
+        "auth": {
+            "mode": "form",
+            "login_url": "/login.php",
+            "steps": [
+                {"action": "fill", "selector": "input[name=username]", "value": "identifier"},
+                {"action": "fill", "selector": "input[name=password]", "value": "secret"},
+                {"action": "click", "selector": "input[type=submit]"},
+            ],
+            "proof": {"route": {"path": "/index.php", "forbid_redirect_to": "login.php"}},
+        },
+    }
+    loaded = appconfig.load_app_config(_write(tmp_path, cfg))
+    assert appconfig.self_registers(loaded) is False          # no account creation
+    assert appconfig.proof_mode(loaded) == "route"            # no JS token anywhere
+
+
+# ---- W2-11: proof modes ------------------------------------------------------------------
+
+def test_proof_mode_reports_which_mode_is_configured():
+    assert appconfig.proof_mode(MINIMAL) == "js"
+    sel = json.loads(json.dumps(MINIMAL))
+    sel["auth"]["proof"] = {"selector": "nav .logout"}
+    assert appconfig.proof_mode(sel) == "selector"
+
+
+def test_route_proof_is_accepted_by_the_schema(tmp_path):
+    cfg = json.loads(json.dumps(MINIMAL))
+    cfg["auth"]["proof"] = {"route": {"path": "/account", "expect_status": 200,
+                                      "forbid_redirect_to": "/login"}}
+    assert appconfig.proof_mode(appconfig.load_app_config(_write(tmp_path, cfg))) == "route"
+
+
+def test_two_proof_modes_at_once_are_rejected(tmp_path):
+    cfg = json.loads(json.dumps(MINIMAL))
+    cfg["auth"]["proof"] = {"js": "x", "selector": ".y"}
+    with pytest.raises(jsonschema.ValidationError):
+        appconfig.load_app_config(_write(tmp_path, cfg))
+
+
+def test_proof_js_still_raises_for_non_js_modes():
+    cfg = json.loads(json.dumps(MINIMAL))
+    cfg["auth"]["proof"] = {"selector": ".logout"}
+    with pytest.raises(ValueError):
+        appconfig.proof_js(cfg)

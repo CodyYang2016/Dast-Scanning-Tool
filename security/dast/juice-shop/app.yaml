@@ -16,13 +16,16 @@ scope:
 auth:
   mode: form
   login_url: /#/login
+  # Shorthand for the usual single-step form. An app with a username field, a two-page login
+  # or a keypress uses `steps:` instead — both normalize to the same step list.
   selectors:
     email: "#email"
     password: "#password"
     submit: "#loginButton"
-  # How we prove the session is real. Juice Shop is an SPA that stores a JWT in localStorage,
-  # so a JS expression is the honest check; cookie-session apps get the route/selector modes
-  # in W2-11.
+  # How we prove the session is real — exactly one mode, no default. Juice Shop is an SPA that
+  # stores a JWT in localStorage, so a JS expression is the honest check. A cookie-session app
+  # uses `route:` (an authenticated page must answer and not bounce to the login form) and one
+  # with neither uses `selector:` (a logged-in-only element).
   proof:
     js: "window.localStorage.getItem('token')"
   # Juice Shop lets anyone register, so the recorder creates its own throwaway account. Most
