@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 from authoring import appconfig
+from runner.replay import wait_for_auth
 from runner.scope_guard import host_of
 
 
@@ -84,10 +85,11 @@ def crawl(config: dict, email: str, password: str, base_url: str | None = None,
 
     app_id = config["app_id"]
     base_url = base_url or appconfig.base_url(config)
-    login = appconfig.login(config)
+    login_url = appconfig.login_url(config)
+    steps = appconfig.login_steps(config)
     patterns = appconfig.api_patterns(config)
     banners = appconfig.dismiss_selectors(config)
-    proof = appconfig.proof_js(config)
+    proof = appconfig.proof(config)
     events: list[dict] = []
     with sync_playwright() as pw:
         launch = {"headless": headless, "args": _launch_args()}
@@ -114,23 +116,38 @@ def crawl(config: dict, email: str, password: str, base_url: str | None = None,
                 f"{base_url}{boot['path']}", method=boot.get("method", "POST"),
                 data={"email": email, "password": password, "passwordRepeat": password,
                       **boot.get("body", {})})
-        goto(login["url"])
+        goto(login_url)
         _dismiss(page, banners)
-        events.append({"type": "form", "url": base_url + login["url"],
-                       "fields": ["email", "password"]})
-        events.append({"type": "fill", "selector": login["email"], "field": "email"})
-        page.fill(login["email"], email)
-        events.append({"type": "fill", "selector": login["password"], "field": "password"})
-        page.fill(login["password"], password)
-        events.append({"type": "click", "selector": login["submit"]})
-        page.click(login["submit"])
-        page.wait_for_function(f"() => !!({proof})", timeout=15000)
+        events.append({"type": "form", "url": base_url + login_url,
+                       "fields": [s.get("value") for s in steps if s.get("value")]})
+        _run_login_steps(page, steps, email, password, events)
+        # Fail closed: nothing downstream runs unless authentication is proven.
+        wait_for_auth(page, base_url, proof)
         # Authenticated pages -> the app fires its authenticated XHR, captured above.
         for route in appconfig.authenticated_routes(config):
             goto(route)
         browser.close()
 
     return build_trace(app_id, base_url, events)
+
+
+def _run_login_steps(page, steps, identifier: str, secret: str, events: list[dict]) -> None:
+    """Drive the configured login and record what was done (never the values typed)."""
+    values = {"identifier": identifier, "secret": secret}
+    for step in steps:
+        action, sel = step["action"], step["selector"]
+        if action == "fill":
+            field = step.get("value", "identifier")
+            events.append({"type": "fill", "selector": sel, "field": field})
+            page.fill(sel, values[field])
+        elif action == "click":
+            events.append({"type": "click", "selector": sel})
+            page.click(sel)
+        elif action == "press":
+            events.append({"type": "click", "selector": sel})
+            page.press(sel, step.get("key", "Enter"))
+        elif action == "wait_for":
+            page.wait_for_selector(sel, timeout=15000)
 
 
 def _dismiss(page, selectors) -> None:

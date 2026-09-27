@@ -136,3 +136,36 @@ def test_prove_auth_live_dead_when_token_missing():
 def test_session_dead_error_is_raisable():
     with pytest.raises(SessionDeadError):
         raise SessionDeadError("expired")
+
+
+# ---- prove_auth_live with a configured proof (W2-11) ------------------------------------
+# The seeded path (explore, replay_seeded) must judge liveness the same way the login path
+# does, or a cookie-session app is "alive" in one and dead in the other.
+
+def test_prove_auth_live_accepts_a_js_proof_dict():
+    page = FakePage(landed_url=BASE + "/#/basket", status=200, token="jwt")
+    res = prove_auth_live(page, BASE, "/#/basket", proof={"js": "window.t"})
+    assert res["alive"] is True
+
+
+def test_prove_auth_live_dead_when_a_js_proof_is_falsy():
+    page = FakePage(landed_url=BASE + "/#/basket", status=200, token="")
+    res = prove_auth_live(page, BASE, "/#/basket", proof={"js": "window.t"})
+    assert res["alive"] is False
+
+
+def test_prove_auth_live_with_a_route_proof_needs_no_token():
+    # A cookie session has nothing for JavaScript to read; status + no login bounce is proof.
+    page = FakePage(landed_url=BASE + "/index.php", status=200, token="")
+    res = prove_auth_live(page, BASE, "/index.php",
+                          proof={"route": {"path": "/index.php",
+                                           "forbid_redirect_to": "login.php"}})
+    assert res["alive"] is True
+
+
+def test_prove_auth_live_with_a_route_proof_catches_the_login_bounce():
+    page = FakePage(landed_url=BASE + "/login.php", status=200, token="")
+    res = prove_auth_live(page, BASE, "/index.php",
+                          proof={"route": {"path": "/index.php",
+                                           "forbid_redirect_to": "login.php"}})
+    assert res["alive"] is False

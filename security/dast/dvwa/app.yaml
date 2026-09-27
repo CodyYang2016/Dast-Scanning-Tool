@@ -1,0 +1,60 @@
+# DVWA (Damn Vulnerable Web Application) — the second onboarded application.
+#
+# This file is the whole onboarding: there is no DVWA-specific line anywhere in `authoring/`
+# or `runner/`, and tests/test_no_app_specifics.py fails the build if one appears. DVWA was
+# chosen as the acceptance target precisely because it breaks the pilot's assumptions:
+#   * it logs in with a USERNAME, not an email;
+#   * its session is a PHPSESSID cookie — there is no token reachable from JavaScript, so
+#     authentication has to be proven by visiting an authenticated page;
+#   * it has no self-registration, so the tool uses a provisioned identity;
+#   * it is server-rendered, so there is no XHR API surface to record.
+#
+# Environment prep (not configuration): the container needs its database created once via
+# setup.php -> "Create / Reset Database" before admin/password works.
+
+app_id: dvwa
+environment_class: dev
+base_url: http://dvwa            # as ZAP resolves it on the `dast` network
+
+scope:
+  allow: [dvwa]
+  avoid_actions: [logout, setup, phpinfo]   # logout ends the session; setup resets the database
+
+auth:
+  mode: form
+  login_url: /login.php
+  # A username field, so the three-selector shorthand does not fit. The form also carries an
+  # anti-CSRF `user_token`; driving the real form in a browser submits it for free.
+  steps:
+    - {action: fill, selector: "input[name=username]", value: identifier}
+    - {action: fill, selector: "input[name=password]", value: secret}
+    - {action: click, selector: "input[name=Login]"}
+  # No JS-visible token exists: the session is a PHPSESSID cookie. Proof is that an
+  # authenticated page answers and does not bounce us back to the login form.
+  proof:
+    route:
+      path: /index.php
+      forbid_redirect_to: login.php
+  identity: provisioned          # admin/password ships with the app; nothing is registered
+  credentials:
+    email_env: DVWA_USER
+    password_env: DVWA_PASS
+  storage_state: .secrets/dvwa-storageState.json
+
+record:
+  authenticated_routes:
+    - /vulnerabilities/sqli/
+    - /vulnerabilities/brute/
+    - /security.php
+
+# No `api:` block on purpose — DVWA is server-rendered and exposes no XHR API, so nothing
+# should be recorded as an API call.
+
+explore:
+  seed_routes:
+    - /index.php
+    - /vulnerabilities/sqli/
+    - /vulnerabilities/xss_r/
+  safe_forms: []                 # read-only: DVWA's forms are the injection points (SP-1)
+  budgets:
+    max_pages: 10

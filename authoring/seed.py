@@ -20,6 +20,7 @@ from pathlib import Path
 import jsonschema
 
 from authoring import appconfig
+from runner.replay import wait_for_auth
 
 _ROOT = Path(__file__).resolve().parent.parent
 _SEED_SCHEMA = _ROOT / "contracts" / "seed.schema.json"
@@ -73,8 +74,9 @@ def capture_session(config: dict, storage_state: str | None = None, *,
     storage_state = storage_state or appconfig.storage_state(config)
     if not storage_state:
         raise ValueError("no storage_state given and none in the app config (auth.storage_state)")
-    check = appconfig.proof_js(config)
-    login = appconfig.login(config)
+    proof = appconfig.proof(config)
+    login_url = appconfig.login_url(config)
+    steps = appconfig.login_steps(config)
     Path(storage_state).parent.mkdir(parents=True, exist_ok=True)
 
     with sync_playwright() as pw:
@@ -84,7 +86,7 @@ def capture_session(config: dict, storage_state: str | None = None, *,
         browser = pw.chromium.launch(**launch)
         context = browser.new_context(ignore_https_errors=True)
         page = context.new_page()
-        page.goto(base_url + login["url"], wait_until="networkidle")
+        page.goto(base_url + login_url, wait_until="networkidle")
         if email and password:
             # Assisted login: create the account first where the application allows it, then
             # drive the form. A human seeding a real target does this part themselves.
@@ -101,11 +103,19 @@ def capture_session(config: dict, storage_state: str | None = None, *,
                         el.first.click(timeout=2000)
                 except Exception:
                     pass
-            page.fill(login["email"], email)
-            page.fill(login["password"], password)
-            page.click(login["submit"])
+            values = {"identifier": email, "secret": password}
+            for step in steps:
+                action, sel = step["action"], step["selector"]
+                if action == "fill":
+                    page.fill(sel, values[step.get("value", "identifier")])
+                elif action == "click":
+                    page.click(sel)
+                elif action == "press":
+                    page.press(sel, step.get("key", "Enter"))
+                elif action == "wait_for":
+                    page.wait_for_selector(sel, timeout=15000)
         # Wait for auth to be established (human finishes login, or the assisted login lands).
-        page.wait_for_function(f"() => !!({check})", timeout=timeout_ms)
+        wait_for_auth(page, base_url, proof, timeout_ms=timeout_ms)
         context.storage_state(path=storage_state)
         browser.close()
     return storage_state

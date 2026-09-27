@@ -30,13 +30,65 @@ _DEFAULT_SCHEMA = str(Path(__file__).resolve().parent.parent / "contracts" / "sc
 _LOGIN_MARKERS = ("/login", "/#/login", "/signin")
 
 
+class AuthProofError(Exception):
+    """Raised when authentication cannot be PROVEN after a login attempt.
+
+    Fail closed: an unproven session is never handed to the scanner (NFR-2)."""
+
+
+def wait_for_auth(page, base_url: str, proof: dict, timeout_ms: int = 15000) -> None:
+    """Block until the configured proof of authentication holds, else raise AuthProofError.
+
+    One live implementation of the three proof modes (app.yaml `auth.proof`), shared by record
+    and seed so an application behaves identically here and in the generated flow:
+
+      js       a truthy JS expression          — SPA with a token in web storage
+      selector an element only present when logged in
+      route    an authenticated route answers (2xx/3xx, or an exact status) and does not
+               bounce back to the login form  — cookie sessions, where nothing is visible to
+               JavaScript and a 200 on the login page would otherwise look like success
+    """
+    mode = next(iter(proof), None)
+    try:
+        if mode == "js":
+            page.wait_for_function(f"() => !!({proof['js']})", timeout=timeout_ms)
+            return
+        if mode == "selector":
+            page.wait_for_selector(proof["selector"], timeout=timeout_ms)
+            return
+        if mode == "route":
+            spec = proof["route"]
+            resp = page.goto(base_url + spec["path"], wait_until="networkidle")
+            status = getattr(resp, "status", None)
+            if callable(status):
+                status = status()
+            expected = spec.get("expect_status")
+            ok = (status == expected) if expected else (
+                status is not None and 200 <= int(status) < 400)
+            if not ok:
+                raise AuthProofError(f"auth check {spec['path']} returned {status}")
+            forbid = spec.get("forbid_redirect_to")
+            if forbid and forbid in page.url:
+                raise AuthProofError(f"auth check redirected to {page.url}")
+            return
+    except AuthProofError:
+        raise
+    except Exception as exc:  # timeout, navigation failure, evaluation error
+        raise AuthProofError(f"authentication not proven ({mode}): {exc}") from exc
+    raise AuthProofError(f"unknown auth.proof mode '{mode}'")
+
+
 class SessionDeadError(Exception):
     """Raised when a seeded session is not authenticated (expired/invalid). Fail closed: the
     caller must fall back to a login flow, never scan an unauthenticated surface (Phase A)."""
 
 
-def prove_auth_live(page, base_url: str, seed_route: str, token_check: str | None = None) -> dict:
+def prove_auth_live(page, base_url: str, seed_route: str, token_check: str | None = None,
+                    proof: dict | None = None) -> dict:
     """Visit a seed route and decide whether the (seeded) session is authenticated.
+
+    `proof` is the application's configured proof of authentication (app.yaml auth.proof); it
+    supersedes `token_check`, which remains for callers that only have a JS expression.
 
     Dead if the app redirects to a login route, the seed route does not answer 2xx/3xx (401/403 =
     unauthenticated; 5xx/None = target unreachable, e.g. ZAP's 502 when the app is down — the
@@ -54,6 +106,20 @@ def prove_auth_live(page, base_url: str, seed_route: str, token_check: str | Non
         return {"alive": False, "reason": f"redirected to login: {current}", "url": current}
     if status is None or not (200 <= int(status) < 400):
         return {"alive": False, "reason": f"seed route returned {status}", "url": current}
+    # An application's configured proof (app.yaml auth.proof) takes precedence, so the seeded
+    # path judges liveness exactly as the login path does. A `route` proof needs nothing
+    # further here: the redirect and status checks above ARE that proof.
+    mode = next(iter(proof), None) if proof else None
+    if mode == "js":
+        token_check = proof["js"]
+    elif mode == "selector":
+        try:
+            if not page.locator(proof["selector"]).count():
+                return {"alive": False, "reason": "authenticated marker absent", "url": current}
+        except Exception as exc:
+            return {"alive": False, "reason": f"marker check failed: {exc}", "url": current}
+        return {"alive": True, "reason": "session authenticated", "url": current}
+
     if token_check and not page.evaluate(f"() => !!({token_check})"):
         return {"alive": False, "reason": "auth token missing (session not established)", "url": current}
     return {"alive": True, "reason": "session authenticated", "url": current}

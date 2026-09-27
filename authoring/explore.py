@@ -255,7 +255,7 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
     # App-specific knowledge (how auth is proven, what counts as an API call) comes from the
     # app config; the loop itself names no application.
     api_patterns = appconfig.api_patterns(config) if config else ("/rest/", "/api/")
-    proof = appconfig.proof_js(config) if config else None
+    proof = appconfig.proof(config) if config else None
     guard = ScopeGuard(scope, mode="discovery")  # block-and-continue during discovery (KI4)
     events: list[dict] = []
     api_events: list[dict] = []
@@ -273,7 +273,7 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
         page.on("request", lambda r: api_events.append({"type": "request", "method": r.method,
                 "url": r.url}) if any(m in r.url for m in api_patterns) else None)
 
-        liveness = prove_auth_live(page, base_url, seed_routes[0], token_check=proof)
+        liveness = prove_auth_live(page, base_url, seed_routes[0], proof=proof)
         if not liveness["alive"]:
             context.close(); browser.close()
             raise SessionDeadError(liveness["reason"])
