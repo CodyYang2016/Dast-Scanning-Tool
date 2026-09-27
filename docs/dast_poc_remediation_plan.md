@@ -1,8 +1,13 @@
-# DAST PoC — remediation plan: make it configurable, then make it complete
+# DAST PoC — remediation plan: onboard a second application, then make it complete
 
 The actionable plan derived from the three feedback documents (`dast_poc_review.md`,
 `dast_first_internal_app_readiness.md`, `Authenticated-Application-Discovery-DAST-Design-Proposal.md`)
 plus what we found running the pipeline ourselves.
+
+**The one goal above all others:** make this tool easy enough to use that a second application
+— one nobody wrote code for — can be onboarded from configuration alone. Everything in Phase 0
+serves that; everything after it is sequenced behind it. The rest of the register is real work
+the review identified, but it is not what this programme is judged on first.
 
 **How to read this.** §1 is the operating principle every item below is subordinate to. §2 is the
 concrete configuration contract that principle implies. §3 is the issue register — every issue,
@@ -27,6 +32,11 @@ meets this tool through its configuration, and the configuration is code**:
 Onboarding a second application currently means editing `authoring/record.py` and
 `authoring/generate.py`. That single fact caps adoption, invalidates the onboarding-cost question
 every reviewer asks, and is the reason the demo needs a rehearsal.
+
+> **Primary goal.** Onboard a second application with **zero diff to `authoring/` or `runner/`**,
+> and publish the elapsed time. Phase 0 is not finished until that is true and enforced in CI.
+> This is the claim a funding audience can check in one minute, and the one we currently cannot
+> make.
 
 ### The rule we adopt from here on
 
@@ -85,11 +95,23 @@ scope:
 auth:
   mode: form                      # form | seeded
   login_url: /#/login
+  # Either the three-selector shorthand (below) or an explicit `steps:` list for multi-step and
+  # username-based logins — see W2-10. The shorthand desugars to the same step list.
   selectors: {email: "#email", password: "#password", submit: "#loginButton"}
-  token_check: "window.localStorage.getItem('token')"
-  bootstrap:  {method: POST, path: /api/Users/, body: register.json}   # optional, app-specific
+  # How we PROVE we are authenticated. Exactly one mode; no default (W2-11, fail closed).
+  proof:
+    js: "window.localStorage.getItem('token')"        # SPA with a JS-visible token
+    # route: {path: /account, expect_status: 200, forbid_redirect_to: /login}   # cookie session
+    # selector: "nav a[href='/logout']"                                          # logged-in marker
+  identity: provisioned           # provisioned (default) | self-register  (W2-12)
+  bootstrap:  {method: POST, path: /api/Users/, body: register.json}   # only when self-register
   credentials: {email_env: AUTH_EMAIL, password_env: AUTH_PASSWORD}
   storage_state: secret://dast/juice-shop/storageState     # or .secrets/… in local dev
+
+ui:
+  dismiss_selectors:              # cookie banners / modals; EMPTY by default, not Juice Shop's (W2-9)
+    - "button[aria-label='Close Welcome Banner']"
+    - "a[aria-label='dismiss cookie message']"
 
 explore:
   seed_routes: ["/#/basket", "/#/order-history", "/#/search?q=apple"]
@@ -131,7 +153,7 @@ governance/approver. Size in sessions.
 | W1-5 | No triage model: no dedup, no suppression, no accepted-risk state; GitHub dismissals are invisible to the diff so a dismissed finding returns as `open` forever | `detections/lifecycle_diff.py` | SEC, DEV | Per-app suppression file keyed by fingerprint; reconcile GitHub alert state on upload | 1.5 |
 | W1-6 | No scan summary — 1,400+ records with no grouping or ranking | — | SEC, GOV | One Markdown/HTML report per scan: counts by severity/rule/route, top 10, coverage, lifecycle deltas | 1 |
 
-### W2 — Configuration and onboarding (unblocks SEC; the cornerstone)
+### W2 — Configuration and onboarding (Phase 0 — the primary goal)
 
 | ID | Issue | Evidence | Persona | Proposed fix | Size |
 |---|---|---|---|---|---|
@@ -141,8 +163,13 @@ governance/approver. Size in sessions.
 | W2-4 | `zap-policy.yaml`, `auth.json`, `manifest.json`, `lock` are generated but no code consumes them; `configure_policy()` takes only two time budgets and a hard-coded disabled scanner | `runner/scan.py:49-53` (`_SLOW_SCANNERS = "40026"`) | SEC, OPS | Load the policy in `configure_policy()` (attack strength, alert threshold, rule set); record the resolved policy into the coverage artifact; fail the scan if the enabled rule set differs from the pinned policy | 1.5 |
 | W2-5 | Four inputs, four formats, no single place to look | — | SEC | `app.yaml` loader + schema + `dast onboard` skeleton generator | 1 |
 | W2-6 | Every capability is a bare module invocation with 6–8 flags | the runbook exists because of this | SEC, OPS | `dast` console script: `onboard`/`author`/`scan`/`report`. Modules keep their current entry points so tests are untouched | 1 |
-| W2-7 | **Proof:** onboarding a second app is unmeasured | — | SEC, GOV | Onboard DVWA (or an internal dev app) with config only, no diff to `authoring/`/`runner/`; publish the elapsed time | 1 |
+| W2-7 | **Proof:** onboarding a second app is unmeasured | — | SEC, GOV | Onboard **DVWA** with config only, zero diff to `authoring/`/`runner/`, as a CI job; publish the elapsed time | 1 |
 | W2-8 | `Containerfile` does not copy `authoring/`, so the authoring half has no deployable form and `runner.main --seed` fails in-container | `Containerfile` | OPS | Copy `authoring/` into the image; add `dast` as the entry point | 0.5 |
+| W2-9 | Juice Shop's cookie-banner selectors are emitted into **every** generated `flow.py` — they are baked into the code generator, not config | `authoring/generate.py:125-126` (`Close Welcome Banner`, `dismiss cookie message`, `.cc-btn`) | SEC | `ui.dismiss_selectors` from `app.yaml`; default empty so a new app inherits nothing | 0.5 |
+| W2-10 | The journey contract assumes a **single-step email+password** login. A username field, a two-step login (email → Next → password) or an SSO redirect cannot be expressed | `contracts/journey.schema.json` — `login.required = [url, email_selector, password_selector, submit_selector]` | SEC | Additive, versioned schema change: `login` accepts either the current shorthand **or** a `steps[]` list of typed actions (`goto`/`fill`/`click`/`press`/`wait_for`). Shorthand desugars to steps, so existing plans, bundles and tests stay valid | 1.5 |
+| W2-11 | Auth proof is mandatory and **JS-token-shaped**: the generated flow always waits on a JS expression and raises if it is falsy. An app with an **HttpOnly session cookie** can never satisfy it. Note the asymmetry — the seeded path already tolerates no token | `authoring/generate.py:143-146`; cf. `runner/replay.py:57` | SEC | `auth.proof` with three modes — `js`, `route` (status + no login redirect, reusing `prove_auth_live`'s logic), `selector`. Shared helper between generated flow and seeded replay; no default, fail closed if unset | 1.5 |
+| W2-12 | Self-registration is assumed — `record` POSTs the app's signup endpoint to create its own user. Real apps do not permit this | `authoring/record.py:98` | SEC, GOV | `auth.identity: provisioned` is the default; `bootstrap` runs only when `self-register` is configured. Juice Shop keeps self-register | 0.5 |
+| W2-13 | Nothing prevents app-specific code creeping back into the core | — | SEC | Guard test: fail the suite if any module under `authoring/` or `runner/` contains an app-identifying token (`juice`, `dvwa`, `#loginButton`, `PHPSESSID`, …). This is how DoD rule 1 is enforced rather than remembered | 0.5 |
 
 ### W3 — Unattended operation and audit (unblocks OPS)
 
@@ -210,7 +237,7 @@ governance/approver. Size in sessions.
 
 | ID | Issue | Evidence | Persona | Proposed fix | Size |
 |---|---|---|---|---|---|
-| W9-1 | **Two repositories have diverged.** Upstream (`Nationwide/ssd-dast-tool-poc`) has 228 tests, `authoring/llm_backend.py` (Copilot backend), the demo deck and helper scripts; this checkout has 213 tests and none of them. The runbook here now documents `LLM_PROVIDER`/`COPILOT_GITHUB_TOKEN` and four helper scripts that do not exist here | verified | all | Declare one canonical repo, port the missing commits both ways (our coverage-aware export + explore hardening upstream; their backend + scripts here), and reconcile the test count in the README | 1 |
+| W9-1 | **Two repositories have diverged.** Upstream (`Nationwide/ssd-dast-tool-poc`) has 228 tests, `authoring/llm_backend.py` (Copilot backend), the demo deck and helper scripts; this checkout has 213 tests and none of them. The runbook here now documents `LLM_PROVIDER`/`COPILOT_GITHUB_TOKEN` and four helper scripts that do not exist here | verified | all | **This repo is canonical (decision 1).** Port upstream's additions in — Copilot backend behind `LLM_PROVIDER`, demo deck, helper scripts — reconcile the README test count, and make the runbook match this checkout. Enterprise packaging consumes this repo rather than forking it | 1 |
 | W9-2 | Stray files upstream: a 17 KB file named `-`, `runner/capture_zap_fixture copy.sh`, an empty committed `nw-ca-all.pem` referenced by two runbooks | review §4 (upstream only) | OPS | Delete; source the CA bundle at runtime | 0.2 |
 | W9-3 | No linter, no pre-commit, no CI running the suite | — | OPS | ruff + pre-commit + the test suite in the same workflow as W3-1 | 0.5 |
 | W9-4 | `payload_family` is a pure function of `rule_id`, so the "four-dimension" fingerprint has three effective dimensions | `detections/fingerprint.py:42-44` | SEC | Documentation fix, not a code change — restate the formula honestly in `contracts/README.md`. Changing it is a contract change and is not proposed | 0.2 |
@@ -219,16 +246,38 @@ governance/approver. Size in sessions.
 
 ## 4. Sequencing
 
-Four phases. Phase 1 exists to make Phases 2–4 cheap; nothing in it requires a target application,
-so it starts immediately and in parallel with target selection.
+Five phases. Phase 0 is the primary goal and everything else is sequenced behind it; nothing in
+Phase 0 or 1 requires a real target application, so both start immediately and run in parallel
+with target selection.
 
-### Phase 1 — Make it configurable and actionable (≈ 9 sessions)
-**W2-1 … W2-8** (config contract, `dast` CLI, policy consumption, container) + **W1-1 … W1-4**
-(rich findings, SARIF help, evidence) + **W5-4** (clean auth abort) + **W7-1** (D11 supersession)
-+ **W8-1** (commit the evidence).
+### Phase 0 — Onboard a second application (≈ 11 sessions) — **the gate**
+**W2-1 … W2-13**: move every app-specific input to `app.yaml` (selectors, bootstrap, token check,
+API patterns, environment class, deny-list, banner selectors), generalise the two contracts that
+assume Juice Shop's login shape (W2-10 step list, W2-11 pluggable auth proof), default to a
+provisioned identity (W2-12), ship the `dast` CLI (W2-6), consume the generated policy (W2-4),
+copy `authoring/` into the image (W2-8), and lock it all down with the guard test (W2-13).
 
-*Exit:* a new app is onboarded with one YAML file and four commands, its findings tell a developer
-what to fix, and the onboarding cost is published in hours.
+**Acceptance target: DVWA.** Chosen because it runs locally in a container with no approvals and
+breaks three of our assumptions at once — a **username** field rather than email, a **PHPSESSID
+session cookie** rather than a JS token, and **no self-registration**. Its one-time database
+setup also exercises the "app needs a bootstrap step we don't control" case. If DVWA onboards
+config-only, the first internal Nationwide application becomes a network-and-identity problem
+rather than a code problem.
+
+*Exit (all four, or the phase is not done):*
+1. `security/dast/dvwa/` contains **configuration only** — no `.py`.
+2. `git diff --stat authoring/ runner/` is **empty** for the onboarding commit, and W2-13's guard
+   test enforces it from then on.
+3. A CI job runs `dast onboard → author → scan → report` against a DVWA container end to end.
+4. The elapsed wall-clock time for a first-time operator is measured and published.
+
+### Phase 1 — Make a finding worth receiving (≈ 5 sessions)
+**W1-1 … W1-4** (rich records, SARIF `help`, request/response excerpt, resolvable evidence) +
+**W5-4** (clean auth abort) + **W7-1** (D11 supersession) + **W8-1** (commit the evidence we
+already have).
+
+*Exit:* a developer on either pilot app can read one alert and know what is wrong, where, why it
+matters and how to fix it, without asking the tool team.
 
 ### Phase 2 — Make it run itself (≈ 5 sessions)
 **W3-1 … W3-5** (workflow, gate split, structured logs, durable state, token upload) + **W9-1,
@@ -254,10 +303,12 @@ the fact.
 *Exit:* the benchmark run completes with every posture exclusion disclosed, and the LLM's
 measured increment is a number rather than a claim.
 
-**Dependency notes.** W1 must land before any real app receives findings (W6-2's longer scans
-otherwise just produce more unactionable noise). W4 and W5 gate the first internal scan. W6-4
-(coverage denominator) and W7-4 (the experiment) are the only items that produce the numbers the
-funding decision needs, and both depend on Phase 1 being finished.
+**Dependency notes.** Phase 0 comes first because every later item lands as a field in
+`app.yaml` once it exists, and as another flag to remember if it does not. W1 must land before any
+real app receives findings (W6-2's longer scans otherwise just produce more unactionable noise).
+W4 and W5 gate the first internal scan. W6-4 (coverage denominator) and W7-4 (the experiment) are
+the only items that produce the numbers the funding decision needs, and both depend on Phases 0–1
+being finished.
 
 > **These phases are ordered by dependency, not by severity.** The most serious defects in this
 > register are not in Phase 1: **W4-1** (ZAP's own spider and active scan are unbounded — our two
@@ -265,15 +316,15 @@ funding decision needs, and both depend on Phase 1 being finished.
 > silently degrade to unauthenticated and still report `authenticated: true`). They sit in Phase 3
 > for two reasons only: neither can bite until we point the scanner at a real shared environment,
 > and that is gated on target selection (readiness Gate 0), which is a human decision with the
-> longest lead time in the programme. Phase 1 is what we do *while* that decision is being made,
-> and it makes every later fix cheaper — config-driven onboarding means each Phase 3 and 4 control
-> lands as a field in `app.yaml` rather than as another flag to remember.
+> longest lead time in the programme. Phases 0–1 are what we do *while* that decision is being
+> made, and they make every later fix cheaper — config-driven onboarding means each Phase 3 and 4
+> control lands as a field in `app.yaml` rather than as another flag to remember.
 >
-> **If a target application is selected sooner than expected, reorder: pull W4 and W5 ahead of the
-> rest of Phase 1**, keeping only W2-1/W2-5 (the config loader) in front of them, since the new
-> safety controls should be configured from `app.yaml` rather than retrofitted into it. No
+> **If a target application is selected sooner than expected, reorder: pull W4 and W5 ahead of
+> Phase 1**, keeping Phase 0's config loader (W2-1/W2-5/W2-10/W2-11) in front of them, since the
+> new safety controls should be configured from `app.yaml` rather than retrofitted into it. No
 > internal scan should run before Phase 3's misconfiguration suite passes, regardless of how much
-> of Phase 1 is finished.
+> of Phases 0–1 is finished.
 
 ---
 
@@ -281,9 +332,9 @@ funding decision needs, and both depend on Phase 1 being finished.
 
 | # | Decision | Why it blocks | Recommendation |
 |---|---|---|---|
-| 1 | **Canonical repository** | We are maintaining two diverging copies; the runbook here already documents code that only exists upstream | Upstream `Nationwide/ssd-dast-tool-poc`; port our commits there this week |
+| 1 | ~~**Canonical repository**~~ — **settled 2026-09-27: this repository** | We are maintaining two diverging copies; the runbook here already documents code that only exists upstream | Work proceeds here. This inverts W9-1: port *upstream's* additions **into** this repo (the `llm_backend.py` Copilot backend, the demo deck, the four helper scripts the runbook already references), and reconcile the 213-vs-228 test count. The enterprise Nationwide packaging is a consumer of this repo, not a fork of it |
 | 2 | **Supersede D9** (deterministic-first vs. LLM-primary) | Three documents currently disagree, in a repo whose credibility rests on documentation discipline | Adopt D11 as in W7-1; keep R1 (no LLM in the scan loop) explicit and unchanged |
-| 3 | **First target application** | Sizes everything; longest lead time | An app with real SSO — it is the capability actually under test — accepting a longer identity gate |
+| 3 | **First *internal* target application** | Sizes Phases 3–4; longest lead time. (The Phase 0 acceptance target is settled: **DVWA**, local, no approvals) | An app with real SSO — it is the capability actually under test — accepting a longer identity gate |
 | 4 | **Build vs. buy underneath** | Changes what W2, W4 and W6 are worth building | Decide at this gate; the differentiated value (governed authoring, honest lifecycle) survives on top of a commercial scanner |
 | 5 | **What is parity, and who declares it** | Without a threshold agreed beforehand, the comparison produces a table nobody can act on | Agree must-win vs. acceptable-to-lose criteria before the first scan (W6-7) |
 | 6 | **OAST and authorization testing in or out** | Both are capability projects, not settings | Explicitly out for the pilot, disclosed on the scorecard |
@@ -309,6 +360,7 @@ funding decision needs, and both depend on Phase 1 being finished.
 
 | Measure | Today | Target at the next gate |
 |---|---|---|
+| **Second app onboarded config-only** | **No — requires editing Python** | **DVWA, zero diff to `authoring/`/`runner/`, proven by a CI job and the W2-13 guard test** |
 | Time to onboard a new app | Unmeasured; requires editing Python | < 1 hour, one YAML file, published number |
 | Files to edit to onboard | 2 Python modules + 2 JSON files | 1 (`app.yaml`) |
 | Commands to a report from scratch | ~12, across two terminals | 4 (`onboard`/`author`/`scan`/`report`) |
