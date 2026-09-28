@@ -228,8 +228,26 @@ def truncated_rules(outcomes: dict) -> list[str]:
                   if "skip" in o["state"].lower() and "time" in o["state"].lower())
 
 
+def _excluded_matcher(excluded):
+    """A predicate for "the scanner was told not to touch this route".
+
+    A regex ZAP accepted but Python cannot compile is ignored rather than treated as matching
+    everything: the failure mode of a bad pattern must be recording too MUCH coverage to
+    review, never silently deleting all of it.
+    """
+    import re as _re
+    patterns = []
+    for rx in excluded or []:
+        try:
+            patterns.append(_re.compile(rx))
+        except _re.error:
+            continue
+    return lambda route: any(p.match(route) or p.search(route) for p in patterns)
+
+
 def capture(zap_api: str, target: str, scan_id: str | None = None, probes=None,
-            cookies: dict | None = None, authenticated: bool | None = None) -> dict:
+            cookies: dict | None = None, authenticated: bool | None = None,
+            excluded=None) -> dict:
     """This scan's coverage: what it exercised, what each rule did, and what state the
     application was in while it did so.
 
@@ -237,13 +255,21 @@ def capture(zap_api: str, target: str, scan_id: str | None = None, probes=None,
     not run, the rule ran and found nothing, or the application was not vulnerable at the
     time (W6-2, W6-8).
     """
+    # A route the scanner was told to leave alone was NOT scanned, however many times the
+    # browser walked through it. Counting it as covered would let a finding on it resolve
+    # itself the moment the exclusion was added — the same false-fix this module exists to
+    # prevent, arriving through the front door.
+    is_excluded = _excluded_matcher(excluded)
     out = {
-        "routes": sorted(accessed_routes(zap_api, target)),
+        "routes": sorted(r for r in accessed_routes(zap_api, target) if not is_excluded(r)),
         "rules": sorted(enabled_rule_ids(zap_api)),
         # Per-route parameters, so a fix claim needs evidence that the finding's own
         # parameter was exercised and not merely its route (W6-10).
-        "route_params": accessed_params(zap_api, target),
+        "route_params": {r: p for r, p in accessed_params(zap_api, target).items()
+                         if not is_excluded(r)},
     }
+    if excluded:
+        out["excluded"] = list(excluded)
     if scan_id is not None:
         outcomes = rule_outcomes(zap_api, scan_id)
         if outcomes:

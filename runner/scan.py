@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 import urllib.parse
@@ -146,6 +147,45 @@ def _poll(zap_api: str, view_path: str, scan_id: str, poll_s: float, max_polls: 
         time.sleep(poll_s)
 
 
+def exclusion_regexes(avoid_actions, login_url: str | None) -> list[str]:
+    """URL patterns the scanner must not attack, from what the config already declares.
+
+    `scope.avoid_actions` was only ever enforced during exploration; ZAP itself was free to
+    attack anything it found. Measured on DVWA: one 10-minute scan submitted the "Create /
+    Reset Database" form about 325 times and POSTed to the login form about 1,000 times, so
+    roughly half of all /vulnerabilities/* responses came back as redirects to the login page.
+    The scan was resetting and logging out of the application it was scanning, which is the
+    real cause of findings that appeared and vanished between runs.
+
+    The login page is excluded whether or not it was named: attacking the form that holds the
+    session is how a scan loses the session. Terms are matched as substrings anywhere in the
+    URL, case-insensitively; a login path is escaped so it matches literally.
+    """
+    out: list[str] = []
+    for term in (avoid_actions or []):
+        term = str(term).strip()
+        if term:
+            out.append(f"(?i).*{re.escape(term)}.*")
+    if login_url:
+        path = urllib.parse.urlsplit(str(login_url)).path or str(login_url)
+        rx = f"(?i).*{re.escape(path)}.*"
+        if rx not in out:
+            out.append(rx)
+    return out
+
+
+def apply_exclusions(zap_api: str, regexes) -> None:
+    """Tell ZAP to leave these URLs alone, for the spider and the active scan alike.
+
+    Exclusions live in the ZAP session, so this must run AFTER new_session. A failure is
+    raised rather than logged: continuing would attack exactly what we undertook not to.
+    """
+    for rx in regexes or []:
+        for view in ("/JSON/spider/action/excludeFromScan/",
+                     "/JSON/ascan/action/excludeFromScan/"):
+            _api(zap_api, view, {"regex": rx})
+
+
 def spider(zap_api: str, target: str, poll_s: float = 3.0, max_polls: int = 120) -> str:
     scan_id = _api(zap_api, "/JSON/spider/action/scan/", {"url": target, "recurse": "true"})["scan"]
     _poll(zap_api, "/JSON/spider/view/status/", scan_id, poll_s, max_polls)
@@ -164,7 +204,7 @@ def export_alerts(zap_api: str, target: str) -> dict:
 
 
 def scan(zap_api: str, target: str, allow_hosts, do_spider: bool = True,
-         max_scan_min: int = 4, policy: dict | None = None) -> dict:
+         max_scan_min: int = 4, policy: dict | None = None, exclusions=None) -> dict:
     """Spider + bounded active-scan `target`; return raw ZAP alerts plus the active scan's
     id. Refuses out-of-scope targets before touching ZAP (safety pre-check)."""
     host = host_of(target)
@@ -174,6 +214,7 @@ def scan(zap_api: str, target: str, allow_hosts, do_spider: bool = True,
             f"refusing to scan {target!r}: host {host!r} not in allow-list {sorted(allow)} (NFR-2)."
         )
     configure_policy(zap_api, max_scan_min=max_scan_min, policy=policy)
+    apply_exclusions(zap_api, exclusions)
     _api(zap_api, "/JSON/core/action/accessUrl/", {"url": target, "followRedirects": "true"})
     if do_spider:
         spider(zap_api, target)
@@ -182,6 +223,9 @@ def scan(zap_api: str, target: str, allow_hosts, do_spider: bool = True,
     # Carried so coverage can read back what each rule did (W6-2): "ran and found nothing"
     # and "never ran" are otherwise the same sentence.
     report["ascan_id"] = ascan_id
+    # Carried so coverage can subtract them: an excluded route was NOT scanned, and must not
+    # be counted as covered or a finding on it would resolve itself.
+    report["exclusions"] = list(exclusions or [])
     return report
 
 

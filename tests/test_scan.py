@@ -10,6 +10,7 @@ import json
 
 import pytest
 
+from runner import scan as scan_mod
 from runner.scan import ScanScopeError, scan
 
 # A ZAP API that would explode if used — proves scan() never touches the network on refusal.
@@ -190,3 +191,53 @@ def test_scan_reports_the_active_scan_id_so_its_rules_can_be_read_back(monkeypat
     monkeypatch.setattr("runner.scan.time.sleep", lambda s: None)
     report = scan("http://zap", "http://app", ["app"], do_spider=False)
     assert report["ascan_id"] == "7"
+
+
+# ---- keeping the scanner off the application's own controls ----------------------------
+
+def test_avoided_actions_become_scanner_exclusions():
+    rx = scan_mod.exclusion_regexes(["logout", "setup"], None)
+    assert any("logout" in r for r in rx) and any("setup" in r for r in rx)
+
+
+def test_the_login_page_is_excluded_even_when_no_terms_are_given():
+    # Attacking the login form is what logs the scan out of the app it is scanning.
+    rx = scan_mod.exclusion_regexes([], "/login.php")
+    assert rx and all(r.startswith("(?i)") for r in rx)
+    assert any("login" in r for r in rx)
+
+
+def test_a_login_path_is_matched_literally_not_as_a_pattern():
+    (rx,) = scan_mod.exclusion_regexes([], "/login.php")
+    import re
+    assert re.match(rx, "http://app/login.php")
+    assert not re.match(rx, "http://app/loginXphp")      # the dot is escaped
+
+
+def test_nothing_configured_excludes_nothing():
+    assert scan_mod.exclusion_regexes([], None) == []
+
+
+def test_exclusions_are_applied_to_both_the_spider_and_the_active_scan(monkeypatch):
+    calls = []
+    monkeypatch.setattr(scan_mod, "_api", lambda z, p, params=None: calls.append((p, params)) or {})
+    scan_mod.apply_exclusions("http://zap", ["(?i).*logout.*"])
+    paths = [p for p, _ in calls]
+    assert "/JSON/spider/action/excludeFromScan/" in paths
+    assert "/JSON/ascan/action/excludeFromScan/" in paths
+
+
+def test_applying_no_exclusions_touches_nothing(monkeypatch):
+    calls = []
+    monkeypatch.setattr(scan_mod, "_api", lambda z, p, params=None: calls.append(p) or {})
+    scan_mod.apply_exclusions("http://zap", [])
+    assert calls == []
+
+
+def test_a_zap_that_rejects_an_exclusion_fails_the_scan(monkeypatch):
+    # Silently continuing would attack the thing we promised not to attack.
+    def boom(z, p, params=None):
+        raise RuntimeError("no")
+    monkeypatch.setattr(scan_mod, "_api", boom)
+    with pytest.raises(Exception):
+        scan_mod.apply_exclusions("http://zap", ["(?i).*logout.*"])

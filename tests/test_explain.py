@@ -122,3 +122,18 @@ def test_coverage_predating_parameter_recording_keeps_its_old_answer():
     old = {k: v for k, v in PARAM_COV.items() if k != "route_params"}
     (why,) = explain.explain_disappearance([_sqli("id")], [], old, old)
     assert why["reason"] == "fixed"
+
+
+def test_an_excluded_route_is_named_as_excluded_not_merely_uncovered():
+    cov = {**BASE_COV, "routes": [], "excluded": [r"(?i).*setup.*"]}
+    rec = _rec("f9", endpoint="/setup.php", rule="40018")
+    (why,) = explain.explain_disappearance([rec], [], cov, cov)
+    assert why["reason"] == "route_excluded"
+    assert "setup" in why["detail"]
+
+
+def test_a_route_absent_for_other_reasons_is_still_route_not_covered():
+    cov = {**BASE_COV, "routes": [], "excluded": [r"(?i).*setup.*"]}
+    rec = _rec("f9", endpoint="/other.php", rule="40018")
+    (why,) = explain.explain_disappearance([rec], [], cov, cov)
+    assert why["reason"] == "route_not_covered"

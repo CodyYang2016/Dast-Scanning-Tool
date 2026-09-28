@@ -11,6 +11,7 @@ rules enabled, what each rule actually did, whether any ran out of time, whether
 allowed to write, and a digest of the application's own state. This module turns that into an
 attribution, most specific cause first:
 
+    route_excluded         the scanner was told not to touch this route
     route_not_covered      this scan never visited the finding's route
     parameter_not_exercised  the route was visited, but never with this parameter
     rule_not_enabled       the rule that found it was switched off
@@ -28,6 +29,23 @@ from __future__ import annotations
 
 def _route_covered(record: dict, coverage: dict) -> bool:
     return record.get("endpoint") in set(coverage.get("routes") or [])
+
+
+def _excluded(record: dict, coverage: dict) -> str | None:
+    """The exclusion pattern that kept the scanner off this route, if one did.
+
+    An exclusion is a deliberate detection gap, and saying so is different from "we happened
+    not to go there": the operator chose it and can unchoose it.
+    """
+    import re
+    endpoint = record.get("endpoint") or ""
+    for rx in coverage.get("excluded") or []:
+        try:
+            if re.match(rx, endpoint) or re.search(rx, endpoint):
+                return rx
+        except re.error:
+            continue
+    return None
 
 
 def _parameter_exercised(record: dict, coverage: dict) -> bool:
@@ -65,7 +83,11 @@ def explain_one(record: dict, coverage: dict, previous_coverage: dict) -> dict:
     rule = str(record.get("rule_id"))
     outcome = (coverage.get("rule_outcomes") or {}).get(rule, {})
 
-    if not _route_covered(record, coverage):
+    if (pattern := _excluded(record, coverage)):
+        reason, detail = "route_excluded", (
+            f"{record.get('endpoint')} was excluded from this scan by {pattern!r}, so nothing "
+            f"tested it; remove the exclusion to scan it again")
+    elif not _route_covered(record, coverage):
         reason, detail = "route_not_covered", (
             f"{record.get('endpoint')} was not among the {len(coverage.get('routes') or [])} "
             f"routes this scan exercised, so nothing looked for it")

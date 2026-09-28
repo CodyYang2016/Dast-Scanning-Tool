@@ -256,3 +256,40 @@ def test_session_cookies_are_separable_from_configured_state(tmp_path):
     ss = _storage(tmp_path, [{"name": "PHPSESSID", "value": "abc", "domain": "app"}])
     assert coverage.session_cookies(ss, "http://app") == {"PHPSESSID": "abc"}
     assert coverage.session_cookies(None, "http://app") == {}
+
+
+# ---- an excluded route was not scanned -------------------------------------------------
+
+def test_excluded_routes_are_not_counted_as_covered(monkeypatch):
+    monkeypatch.setattr(coverage, "accessed_routes",
+                        lambda z, t: {"/index.php", "/setup.php", "/login.php"})
+    monkeypatch.setattr(coverage, "accessed_params", lambda z, t: {})
+    monkeypatch.setattr(coverage, "enabled_rule_ids", lambda z: {"40018"})
+    out = coverage.capture("http://zap", "http://app",
+                           excluded=[r"(?i).*setup.*", r"(?i).*/login\.php.*"])
+    assert out["routes"] == ["/index.php"]
+    assert out["excluded"] == [r"(?i).*setup.*", r"(?i).*/login\.php.*"]
+
+
+def test_parameters_of_an_excluded_route_are_dropped_too(monkeypatch):
+    monkeypatch.setattr(coverage, "accessed_routes", lambda z, t: {"/setup.php"})
+    monkeypatch.setattr(coverage, "accessed_params", lambda z, t: {"/setup.php": ["create_db"]})
+    monkeypatch.setattr(coverage, "enabled_rule_ids", lambda z: set())
+    out = coverage.capture("http://zap", "http://app", excluded=[r"(?i).*setup.*"])
+    assert out["route_params"] == {}
+
+
+def test_no_exclusions_leaves_coverage_untouched(monkeypatch):
+    monkeypatch.setattr(coverage, "accessed_routes", lambda z, t: {"/a", "/b"})
+    monkeypatch.setattr(coverage, "accessed_params", lambda z, t: {"/a": ["x"]})
+    monkeypatch.setattr(coverage, "enabled_rule_ids", lambda z: set())
+    out = coverage.capture("http://zap", "http://app")
+    assert out["routes"] == ["/a", "/b"] and "excluded" not in out
+
+
+def test_a_malformed_exclusion_does_not_silently_drop_everything(monkeypatch):
+    monkeypatch.setattr(coverage, "accessed_routes", lambda z, t: {"/a"})
+    monkeypatch.setattr(coverage, "accessed_params", lambda z, t: {})
+    monkeypatch.setattr(coverage, "enabled_rule_ids", lambda z: set())
+    out = coverage.capture("http://zap", "http://app", excluded=["(["])
+    assert out["routes"] == ["/a"]

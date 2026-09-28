@@ -28,6 +28,7 @@ from runner import evidence
 from runner.preflight import PreflightError, preflight
 from runner.replay import SessionDeadError, load_flow, replay, replay_seeded
 from runner.scan import (ScanScopeError, ZapUnavailableError, load_policy, new_session,
+                        exclusion_regexes as scan_exclusions,
                          resolved_policy, scan)
 from runner.scope_guard import ScopeViolation
 
@@ -154,10 +155,15 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
 
     app_cfg = bundle_app_config(scope_path)
     cookies = probes = None
+    exclusions: list[str] = []
     if app_cfg:
         from authoring import appconfig
         cookies = appconfig.scan_cookies(app_cfg)
         probes = appconfig.state_probes(app_cfg)
+        # What exploration already refuses, the scanner must refuse too: attacking the login
+        # form or a database-reset page changes the application underneath its own scan.
+        exclusions = scan_exclusions(appconfig.avoid_actions(app_cfg),
+                                     appconfig.login_url(app_cfg))
 
     # The scan's own session, collected from the browser so the state probes can see the app
     # as the scan saw it. Never written to an artifact — only used to fetch the probes.
@@ -188,7 +194,8 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
     policy = bundle_policy(scope_path)
     max_scan_min = resolve_max_scan_min(max_scan_min, policy)
     report = scan(zap_api, base_url, scope["fqdn_allow_list"],
-                  do_spider=do_spider, max_scan_min=max_scan_min, policy=policy)
+                  do_spider=do_spider, max_scan_min=max_scan_min, policy=policy,
+                  exclusions=exclusions)
     records = list(normalize(report["alerts"], scope["app_id"], scan_id))
     # Reference the scan's evidence from each record (FR-E1).
     relpath = evidence.evidence_relpath(scan_id)
@@ -201,7 +208,8 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
     probe_jar = {**session, **(cookies or {})}
     coverage = coverage_capture.capture(zap_api, base_url, scan_id=report.get("ascan_id"),
                                         probes=probes, cookies=probe_jar,
-                                        authenticated=bool(session))
+                                        authenticated=bool(session),
+                                        excluded=report.get("exclusions"))
     # Pin the policy that produced this coverage, so a later diff can tell "we fixed it" from
     # "we scanned it less hard this time" (R2).
     coverage["policy"] = resolved_policy(policy, max_scan_min, 1)
