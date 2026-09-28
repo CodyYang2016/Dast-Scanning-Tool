@@ -221,6 +221,7 @@ and a **redactor** that scrubs DOM/XHR bodies before anything reaches the model.
 | `seeded_session_exploration_design.md` | Seeded-session + LLM exploration loop (`seed`/`explore`), coverage-aware lifecycle (R1/R2) |
 | `chromium_and_playwright_setup.md` | All Playwright/Chromium usage + gotchas |
 | `../onboarding_a_new_application.md` | **Onboarding a new app** — the procedure, the decisions, the failure modes |
+| `../deterministic_vs_llm_discovery.md` | **Deterministic vs LLM-guided discovery** — what each path found, measured, and what running it taught us |
 | `../dast_poc_remediation_plan.md` | The issue register and phase plan derived from the funding review |
 | `decisions_and_known_issues.md` | Every design decision (D1–D10) + known gaps (KI1–KI4) |
 
