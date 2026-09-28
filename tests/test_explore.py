@@ -32,9 +32,17 @@ def test_destructive_action_rejected_by_policy():
 
 
 def test_deny_listed_action_rejected():
+    scope = {"app_id": "x", "fqdn_allow_list": ["juice"], "avoid_action_list": ["purchase"]}
     ok, reason = validate_proposal(
-        {"action": "follow_link", "target": {"path": "/#/logout"}}, SCOPE)
+        {"action": "follow_link", "target": {"path": "/#/purchase"}}, scope)
     assert not ok and "deny-list" in reason
+
+
+def test_a_session_ending_action_is_rejected_even_if_the_app_forgot_to_list_it():
+    ok, reason = validate_proposal(
+        {"action": "follow_link", "target": {"path": "/#/logout"}},
+        {"app_id": "x", "fqdn_allow_list": ["juice"]})
+    assert not ok and "session" in reason
 
 
 def test_stop_is_valid():
@@ -280,3 +288,22 @@ def test_staying_put_with_nothing_new_is_not_progress():
 def test_staying_put_but_revealing_links_is_progress():
     # expand_nav legitimately does not navigate; it uncovers routes.
     assert is_progress("http://app/a", "http://app/a", before_links=3, after_links=9)
+
+
+# ---- filling a form with approved data --------------------------------------------------
+
+from authoring.explore import fill_values
+
+
+def test_only_fields_the_app_provides_data_for_are_filled():
+    assert fill_values(["email", "csrf_token", "comment"],
+                       {"email": "dast@example.test", "comment": "hello"}) == [
+        ("email", "dast@example.test"), ("comment", "hello")]
+
+
+def test_nothing_is_invented_when_no_test_data_is_configured():
+    assert fill_values(["email", "amount"], {}) == []
+
+
+def test_a_form_with_no_fields_is_handled():
+    assert fill_values(None, {"email": "x@y.test"}) == []

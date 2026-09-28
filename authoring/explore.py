@@ -43,7 +43,7 @@ _MAX_STALLED_STEPS = 3   # consecutive actions that achieve nothing before givin
 # ---- validation: schema + scope/deny policy (pure) --------------------------------------
 
 def validate_proposal(action: dict, scope: dict, deny_actions=None, safe_forms=None,
-                      submit_get_forms: bool = True):
+                      submit_get_forms: bool = True, allow_writes: bool = False):
     """Validate a proposed action against the action schema AND the action policy.
     Returns (ok: bool, reason: str). Fail-closed: any schema or policy failure -> not ok."""
     try:
@@ -56,7 +56,7 @@ def validate_proposal(action: dict, scope: dict, deny_actions=None, safe_forms=N
     if not (target.get("path") or target.get("selector")):
         return False, "no navigable target (empty path/selector)"
     decision = validate_action(action, scope, deny_actions=deny_actions, safe_forms=safe_forms,
-                               submit_get_forms=submit_get_forms)
+                               submit_get_forms=submit_get_forms, allow_writes=allow_writes)
     return decision.allowed, decision.reason
 
 
@@ -99,6 +99,16 @@ def _normalize_action(action: dict) -> dict:
     return action
 
 
+def fill_values(fields, data: dict) -> list[tuple[str, str]]:
+    """Which (field, value) pairs to type before submitting a form.
+
+    A form posted with empty strings mostly yields a validation error rather than coverage, so
+    approved test data is what makes submitting one worthwhile. Only fields the application's
+    config names are filled: the tool never invents data to send to someone's application.
+    """
+    return [(f, data[f]) for f in (fields or []) if f in data]
+
+
 def is_progress(url_before: str, url_after: str, before_links: int, after_links: int) -> bool:
     """Did an executed action achieve anything?
 
@@ -133,7 +143,8 @@ def _in_scope_path(path: str, scope: dict) -> bool:
 
 
 def propose_fallback(observation: dict, visited, scope: dict, deny_actions=None,
-                     safe_forms=None, submit_get_forms: bool = True) -> dict:
+                     safe_forms=None, submit_get_forms: bool = True,
+                     allow_writes: bool = False) -> dict:
     """Pick the next action deterministically: the first unvisited, in-scope, non-destructive link,
     then an unvisited observed API GET, then an unsubmitted read-only form; else stop. No LLM.
     Used as the D9 fallback and in tests."""
@@ -142,7 +153,8 @@ def propose_fallback(observation: dict, visited, scope: dict, deny_actions=None,
         if href and href not in visited and _in_scope_path(href, scope):
             candidate = {"action": "follow_link", "target": {"method": "GET", "path": href},
                          "reason": "unvisited in-scope link", "confidence": 1.0}
-            if validate_proposal(candidate, scope, deny_actions, safe_forms)[0]:
+            if validate_proposal(candidate, scope, deny_actions, safe_forms,
+                                 submit_get_forms, allow_writes)[0]:
                 return candidate
     for api in observation.get("api", []):
         path = api.get("url", "")
@@ -150,7 +162,8 @@ def propose_fallback(observation: dict, visited, scope: dict, deny_actions=None,
                 and _in_scope_path(path, scope)):
             candidate = {"action": "visit_api", "target": {"method": "GET", "path": path},
                          "reason": "unvisited observed API GET", "confidence": 1.0}
-            if validate_proposal(candidate, scope, deny_actions, safe_forms)[0]:
+            if validate_proposal(candidate, scope, deny_actions, safe_forms,
+                                 submit_get_forms, allow_writes)[0]:
                 return candidate
     # Nothing left to navigate to: submitting a read-only form is what reveals an endpoint's
     # parameters, and those are what the scanner can actually test.
@@ -161,7 +174,8 @@ def propose_fallback(observation: dict, visited, scope: dict, deny_actions=None,
                          "target": {"method": form.get("method", "POST"), "selector": sel},
                          "reason": "unsubmitted read-only form; reveals its parameters",
                          "confidence": 1.0}
-            if validate_proposal(candidate, scope, deny_actions, safe_forms, submit_get_forms)[0]:
+            if validate_proposal(candidate, scope, deny_actions, safe_forms, submit_get_forms,
+                                 allow_writes)[0]:
                 return candidate
     return {"action": "stop", "reason": "no unvisited in-scope non-destructive targets"}
 
@@ -217,14 +231,15 @@ def parse_action_text(text: str) -> dict:
 
 
 def next_action(observation: dict, visited, scope: dict, *, deny_actions=None, safe_forms=None,
-                submit_get_forms: bool = True, use_llm: bool = True,
+                submit_get_forms: bool = True, allow_writes: bool = False, use_llm: bool = True,
                 model: str = _DEFAULT_MODEL, api_key: str | None = None):
     """Return (action, source). LLM-primary; on any LLM/validation failure, deterministic fallback."""
     api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
     if use_llm and api_key:
         try:
             action = _normalize_action(propose_llm(observation, model, api_key))
-            ok, reason = validate_proposal(action, scope, deny_actions, safe_forms, submit_get_forms)
+            ok, reason = validate_proposal(action, scope, deny_actions, safe_forms,
+                                           submit_get_forms, allow_writes)
             if ok:
                 return action, "llm"
             t = action.get("target") or {}
@@ -234,7 +249,7 @@ def next_action(observation: dict, visited, scope: dict, *, deny_actions=None, s
         except Exception as exc:
             print(f"explore: LLM path failed ({exc}); using fallback", file=sys.stderr)
     return propose_fallback(observation, visited, scope, deny_actions, safe_forms,
-                            submit_get_forms), "fallback"
+                            submit_get_forms, allow_writes), "fallback"
 
 
 # ---- browser loop -----------------------------------------------------------------------
@@ -301,6 +316,8 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
     # app config; the loop itself names no application.
     api_patterns = appconfig.api_patterns(config) if config else ("/rest/", "/api/")
     allow_get_forms = appconfig.submit_get_forms(config) if config else True
+    allow_writes = appconfig.writes_allowed(config) if config else False
+    form_data = appconfig.test_data(config) if config else {}
     proof = appconfig.proof(config) if config else None
     guard = ScopeGuard(scope, mode="discovery")  # block-and-continue during discovery (KI4)
     events: list[dict] = []
@@ -344,12 +361,12 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
             observation["visited"] = sorted(visited)  # coverage so far, so the model doesn't repeat
             action, _src = next_action(observation, visited, scope, deny_actions=deny_actions,
                                        safe_forms=safe_forms, submit_get_forms=allow_get_forms,
-                                       use_llm=use_llm, model=model,
+                                       allow_writes=allow_writes, use_llm=use_llm, model=model,
                                        api_key=api_key)
             if action.get("action") == "stop":
                 break
             ok, _reason = validate_proposal(action, scope, deny_actions, safe_forms,
-                                            allow_get_forms)
+                                            allow_get_forms, allow_writes)
             if not ok:  # fail-closed: never execute an action that didn't pass validation
                 break
             todo = dispatch(action)
@@ -360,6 +377,18 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
             if op == "goto":
                 _goto(arg)
             else:  # click a selector (expand_nav / submit_form)
+                if action.get("action") == "submit_form":
+                    # Type approved test data into the fields this form declares, so the
+                    # submission exercises the endpoint instead of its validation errors.
+                    for form in observation.get("forms", []):
+                        if form.get("selector") == arg:
+                            for field, value in fill_values(form.get("fields"), form_data):
+                                try:
+                                    page.fill(f"[name={field}]", value, timeout=2000)
+                                    events.append({"type": "fill", "selector": f"[name={field}]",
+                                                   "field": field})
+                                except Exception:
+                                    pass
                 events.append({"type": "click", "selector": arg})
                 try:
                     page.click(arg, timeout=3000)

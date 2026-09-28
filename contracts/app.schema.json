@@ -356,6 +356,22 @@
           "type": "boolean",
           "default": true,
           "description": "Whether exploration may submit forms that explicitly use GET. Submitting a search or filter form is how an endpoint's parameters become visible to the scanner, and a GET submit is a read. Set false for an application known to mutate on GET; state-changing verbs are default-denied either way."
+        },
+        "write_mode": {
+          "type": "string",
+          "enum": [
+            "deny",
+            "allow"
+          ],
+          "default": "deny",
+          "description": "Whether exploration may submit state-changing forms (POST/PUT/PATCH). Permitted only when data_policy is disposable. Unlocks stored XSS, POST-body injection, mass assignment and upload flaws, which are invisible to a read-only scan (SP-1). DELETE always needs an explicit safe_forms entry, and session-ending actions are refused at any posture."
+        },
+        "test_data": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Field name -> value to type when filling a form, e.g. {email: dast@example.test, search: test}. Posting empty strings mostly yields validation errors rather than coverage, so approved test data is what makes write mode worth enabling."
         }
       }
     },
@@ -413,6 +429,15 @@
           }
         }
       }
+    },
+    "data_policy": {
+      "type": "string",
+      "enum": [
+        "durable",
+        "disposable"
+      ],
+      "default": "durable",
+      "description": "Whether this environment's data can be thrown away and rebuilt. `durable` (the default) means writes are refused: a scan must not corrupt data other people depend on. `disposable` is an attestation by whoever owns the environment, and it is what write mode requires \u2014 the decision belongs to a person, once per application, not to a model per form."
     }
   }
 }

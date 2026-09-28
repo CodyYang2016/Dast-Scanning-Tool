@@ -6,9 +6,13 @@ never by the model's own "non-destructive" label. Three independent rules, all f
   1. Deny-list: if the action's target matches any `avoid_action_list` / `deny_actions` term
      (logout, delete, purchase, admin-mutation, ...), reject it.
   2. Default-deny state-changing verbs: any POST/PUT/PATCH/DELETE is rejected unless its target is
-     on an explicit safe-form allow-list. GET-like navigation (follow_link/goto/expand_nav) is
-     allowed subject to scope, as is a form submit that explicitly states GET — reading a form
-     is how parameters are discovered. A submit with no stated method is assumed to write.
+     on an explicit safe-form allow-list, or the environment has been declared disposable and
+     write mode enabled (app.yaml `data_policy` + `explore.write_mode`) — DELETE always needs
+     the explicit allow-list. GET-like navigation (follow_link/goto/expand_nav) is allowed
+     subject to scope, as is a form submit that explicitly states GET: reading a form is how
+     parameters are discovered. A submit with no stated method is assumed to write.
+  4. Never, at any posture: actions that end the session or the credential (logout, delete
+     account, change/reset password). Losing auth mid-scan silently invalidates the results.
   3. Embedded off-scope URLs: an in-scope *path* whose query embeds an absolute URL to a host
      outside the allow-list (open-redirect style, e.g. `/redirect?to=https://github.com/...`) is
      rejected — following it would carry the browser off-scope on the app's 302.
@@ -29,6 +33,17 @@ from runner.scope_guard import host_of
 _EMBEDDED_URL = re.compile(r"https?://[^\s&\"'<>]+", re.IGNORECASE)
 
 STATE_CHANGING = {"POST", "PUT", "PATCH", "DELETE"}
+
+# Refused whatever the application's posture says. These end the session or the credential,
+# and losing authentication mid-scan does not merely risk damage — it silently invalidates
+# every result after it, which we cannot yet detect (W5-1). Not posture; correctness.
+_NEVER = ("logout", "log-out", "signout", "sign-out", "delete-account", "delete_account",
+          "deleteaccount", "close-account", "deactivate", "change-password", "changepassword",
+          "reset-password", "resetpassword")
+
+# Even in write mode, DELETE needs an explicit per-target opt-in: "it is a test environment"
+# is least comforting for the one verb whose whole purpose is destruction.
+_ALWAYS_EXPLICIT = {"DELETE"}
 
 # Navigation actions are read-only by nature; visit_api/submit_form carry an explicit method.
 _GET_ACTIONS = {"follow_link", "goto", "expand_nav"}
@@ -68,8 +83,14 @@ def is_denied(action: dict, deny_actions) -> bool:
     return any(term.strip().lower() in hay for term in (deny_actions or []) if term.strip())
 
 
+def never_allowed(action: dict) -> bool:
+    """True for an action that ends the session or the credential, at any posture."""
+    hay = f"{action.get('action', '')} {_target_str(action)}".lower()
+    return any(term in hay for term in _NEVER)
+
+
 def validate_action(action: dict, scope: dict, deny_actions=None, safe_forms=None,
-                    submit_get_forms: bool = True) -> ActionDecision:
+                    submit_get_forms: bool = True, allow_writes: bool = False) -> ActionDecision:
     """Decide whether a proposed LLM action may execute. Fail-closed on every rule.
 
     `deny_actions` defaults to the scope's `avoid_action_list`. `safe_forms` is the explicit
@@ -81,12 +102,18 @@ def validate_action(action: dict, scope: dict, deny_actions=None, safe_forms=Non
     safe_forms = set(safe_forms or [])
     target = _target_str(action)
 
+    if never_allowed(action):
+        return ActionDecision(False, "ends the session or the credential; refused at any posture")
+
     if is_denied(action, deny_actions):
         return ActionDecision(False, "matches deny-list (avoid_action_list)")
 
     verb = action_verb(action)
     if verb in STATE_CHANGING and target not in safe_forms:
-        return ActionDecision(False, f"state-changing {verb} not on the safe-form allow-list")
+        # A write is permitted only where the environment has been declared disposable
+        # (app.yaml data_policy + explore.write_mode), and never for DELETE.
+        if not allow_writes or verb in _ALWAYS_EXPLICIT:
+            return ActionDecision(False, f"state-changing {verb} not on the safe-form allow-list")
     if action.get("action") == "submit_form" and verb == "GET" and not submit_get_forms:
         return ActionDecision(False, "this application does not permit form submission")
 

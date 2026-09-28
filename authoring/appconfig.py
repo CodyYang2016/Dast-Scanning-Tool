@@ -204,6 +204,22 @@ def submit_get_forms(cfg: dict) -> bool:
     return bool(cfg.get("explore", {}).get("submit_get_forms", True))
 
 
+def writes_allowed(cfg: dict) -> bool:
+    """May exploration submit state-changing forms?
+
+    Requires BOTH an attestation that the environment is disposable and an explicit opt-in.
+    Two keys rather than one because they are different statements by different people: the
+    environment's owner says the data can be rebuilt, the tool's operator says to use that.
+    """
+    return (cfg.get("data_policy") == "disposable"
+            and cfg.get("explore", {}).get("write_mode") == "allow")
+
+
+def test_data(cfg: dict) -> dict:
+    """Field name -> value to type when filling a form. Empty by default."""
+    return dict(cfg.get("explore", {}).get("test_data", {}))
+
+
 def avoid_actions(cfg: dict) -> list[str]:
     return list(cfg.get("scope", {}).get("avoid_actions", []))
 

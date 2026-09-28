@@ -28,6 +28,18 @@ from collections.abc import Iterable
 from detections.normalizer import write_json_array
 
 
+def _wrote_to_the_app(covered) -> bool:
+    """True when the scan that produced this coverage was allowed to change the application.
+
+    A write-enabled scan mutates state, so a finding that disappeared may have been fixed or
+    may simply have lost the data it depended on. `resolved` is a claim about a fix, so it is
+    not available from a scan that moved the ground underneath the comparison — the same
+    reasoning as R2's route-coverage rule, applied to the app's state instead of its routes.
+    """
+    return bool(isinstance(covered, dict)
+                and covered.get("policy", {}).get("write_mode") == "allow")
+
+
 def _coverage_check(covered):
     """Return a predicate (route, rule) -> bool for whether this scan exercised that pair.
 
@@ -61,6 +73,8 @@ def diff(current_records: Iterable[dict], previous_records: Iterable[dict],
     current_fps = {r["fingerprint"] for r in current}
     previous_fps = {r["fingerprint"] for r in previous}
     is_covered = _coverage_check(covered)
+    if _wrote_to_the_app(covered):      # a write-enabled scan cannot claim a fix
+        is_covered = lambda route, rule: False    # noqa: E731 — deliberate, one line
 
     out: list[dict] = []
     for r in current:

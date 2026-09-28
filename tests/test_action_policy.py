@@ -46,9 +46,17 @@ def test_state_changing_allowed_when_on_safe_form_list():
     assert d.allowed
 
 
-def test_deny_list_blocks_logout_even_as_get():
-    d = validate_action(_a("follow_link", "/#/logout"), SCOPE)
+def test_deny_list_blocks_a_denied_route_even_as_get():
+    # A per-app deny term, not a session-ender: this exercises the deny-list rule itself.
+    scope = {"fqdn_allow_list": ["juice"], "avoid_action_list": ["purchase"]}
+    d = validate_action(_a("follow_link", "/#/checkout/purchase"), scope)
     assert not d.allowed and "deny-list" in d.reason
+
+
+def test_logout_is_refused_by_the_stronger_session_rule():
+    # Denied whether or not the app remembered to list it: losing auth invalidates the scan.
+    d = validate_action(_a("follow_link", "/#/logout"), {"fqdn_allow_list": ["juice"]})
+    assert not d.allowed and "session" in d.reason
 
 
 def test_deny_list_matches_action_name():
@@ -127,8 +135,9 @@ def test_a_post_form_still_needs_the_safe_form_allow_list():
 
 def test_a_get_form_on_the_deny_list_is_still_refused():
     # Plenty of applications mutate on GET; the deny-list is what protects those.
+    scope = {"fqdn_allow_list": ["juice"], "avoid_action_list": ["purchase"]}
     d = validate_action({"action": "submit_form",
-                         "target": {"method": "GET", "selector": "#logout-form"}}, SCOPE)
+                         "target": {"method": "GET", "selector": "#purchase-form"}}, scope)
     assert not d.allowed and "deny-list" in d.reason
 
 
@@ -141,3 +150,56 @@ def test_an_app_can_switch_get_form_submission_off_entirely():
 def test_get_verb_is_reported_for_an_explicit_get_form():
     assert action_verb({"action": "submit_form", "target": {"method": "GET"}}) == "GET"
     assert action_verb({"action": "submit_form", "target": {}}) == "POST"
+
+
+# ---- write mode: posture is a choice, but some actions never are ------------------------
+# Whole vulnerability classes live behind writes — stored XSS, POST-body injection, mass
+# assignment, IDOR on update endpoints, upload flaws — and refusing every write makes the
+# tool look weaker than a commercial scanner when the real difference is posture (SP-1). So
+# writes become an ENVIRONMENT-level opt-in rather than a per-form allow-list a human has to
+# maintain forever. Two things stay non-negotiable: the deny-list, and anything that ends the
+# session or the credential, because losing authentication mid-scan silently invalidates
+# everything after it (W5-1) and we cannot yet detect it.
+
+WRITE = {"action": "submit_form", "target": {"method": "POST", "selector": "#comment"}}
+
+
+def test_a_write_is_refused_by_default():
+    assert not validate_action(WRITE, SCOPE).allowed
+
+
+def test_a_write_is_permitted_when_the_environment_opts_in():
+    d = validate_action(WRITE, SCOPE, allow_writes=True)
+    assert d.allowed
+
+
+def test_the_deny_list_still_wins_over_write_mode():
+    scope = {"fqdn_allow_list": ["juice"], "avoid_action_list": ["purchase"]}
+    action = {"action": "submit_form", "target": {"method": "POST", "selector": "#purchase-form"}}
+    assert not validate_action(action, scope, allow_writes=True).allowed
+
+
+def test_session_ending_actions_are_refused_even_in_write_mode():
+    # Not posture — correctness. These are denied whatever the app's config says.
+    for target in ("/account/delete-account", "#change-password", "/auth/logout",
+                   "/profile/deactivate", "/reset-password"):
+        d = validate_action({"action": "submit_form",
+                             "target": {"method": "POST", "selector": target}},
+                            {"fqdn_allow_list": ["app"], "avoid_action_list": []},
+                            allow_writes=True)
+        assert not d.allowed, target
+        assert "session" in d.reason or "deny" in d.reason
+
+
+def test_a_delete_verb_is_still_refused_in_write_mode_unless_explicitly_safe():
+    # DELETE is the one verb where "it is a test environment" is least comforting.
+    action = {"action": "visit_api", "target": {"method": "DELETE", "path": "/api/orders/1"}}
+    assert not validate_action(action, SCOPE, allow_writes=True).allowed
+    assert validate_action(action, SCOPE, allow_writes=True,
+                           safe_forms=["/api/orders/1"]).allowed
+
+
+def test_write_mode_does_not_loosen_scope():
+    action = {"action": "submit_form",
+              "target": {"method": "POST", "selector": "http://evil.test/x"}}
+    assert not validate_action(action, SCOPE, allow_writes=True).allowed

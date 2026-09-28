@@ -304,3 +304,27 @@ def test_seed_derivation_falls_back_to_the_site_root():
     cfg = json.loads(json.dumps(MINIMAL))
     cfg["auth"]["storage_state"] = ".secrets/example.json"
     assert appconfig.seed_from_config(cfg)["seed_routes"] == ["/"]
+
+
+# ---- write mode needs two separate statements, by two different people -----------------
+
+def test_writes_are_denied_unless_both_the_environment_and_the_operator_say_yes():
+    base = json.loads(json.dumps(MINIMAL))
+    assert appconfig.writes_allowed(base) is False                      # neither
+    assert appconfig.writes_allowed({**base, "data_policy": "disposable"}) is False   # only one
+    only_mode = {**base, "explore": {"write_mode": "allow"}}
+    assert appconfig.writes_allowed(only_mode) is False                 # only the other
+    both = {**base, "data_policy": "disposable", "explore": {"write_mode": "allow"}}
+    assert appconfig.writes_allowed(both) is True
+
+
+def test_a_durable_environment_cannot_be_overridden_by_the_explore_block():
+    cfg = {**json.loads(json.dumps(MINIMAL)), "data_policy": "durable",
+           "explore": {"write_mode": "allow"}}
+    assert appconfig.writes_allowed(cfg) is False
+
+
+def test_test_data_is_empty_unless_provided():
+    assert appconfig.test_data(MINIMAL) == {}
+    cfg = {**json.loads(json.dumps(MINIMAL)), "explore": {"test_data": {"email": "a@b.test"}}}
+    assert appconfig.test_data(cfg) == {"email": "a@b.test"}

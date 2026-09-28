@@ -264,6 +264,9 @@ def emit_zap_policy(config: dict | None = None, intensity: str = "medium") -> di
     policy = appconfig.scan_policy(config)
     budgets = appconfig.scan_budgets(config)
     return {
+        # Recorded so the scan's coverage artifact, and therefore the lifecycle diff, knows
+        # whether the application was changed while it was being explored.
+        "write_mode": "allow" if appconfig.writes_allowed(config) else "deny",
         "intensity": policy["attack_strength"],
         "attack_strength": policy["attack_strength"],
         "alert_threshold": policy["alert_threshold"],

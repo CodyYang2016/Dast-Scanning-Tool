@@ -246,3 +246,29 @@ def test_not_scanned_record_validates_against_schema():
     out = diff([], prev, {"routes": [], "rules": []})
     assert out[0]["status"] == "not_scanned"
     Draft202012Validator(_DET_SCHEMA).validate(out[0])
+
+
+# ---- a write-enabled scan may not claim a fix (W2-15) -----------------------------------
+# Writes mutate the application, so scan N+1 sees a different app than scan N. A finding that
+# vanished might have been fixed, or the data it depended on might simply be gone. The diff
+# already refuses to claim `resolved` for a route it did not exercise (R2); the same honesty
+# applies when the scan itself changed the app underneath the comparison.
+
+def test_a_write_enabled_scan_labels_vanished_findings_not_scanned():
+    previous = [rec("aaa", endpoint="/orders", rule_id="40018")]
+    coverage = {"routes": ["/orders"], "rules": ["40018"], "policy": {"write_mode": "allow"}}
+    labels = _by_status(diff([], previous, coverage))
+    assert labels["not_scanned"] == {"aaa"} and not labels["resolved"]
+
+
+def test_a_read_only_scan_still_resolves_what_it_exercised():
+    previous = [rec("aaa", endpoint="/orders", rule_id="40018")]
+    coverage = {"routes": ["/orders"], "rules": ["40018"], "policy": {"write_mode": "deny"}}
+    labels = _by_status(diff([], previous, coverage))
+    assert labels["resolved"] == {"aaa"} and not labels["not_scanned"]
+
+
+def test_coverage_without_a_policy_block_behaves_as_before():
+    previous = [rec("aaa", endpoint="/orders", rule_id="40018")]
+    labels = _by_status(diff([], previous, {"routes": ["/orders"], "rules": ["40018"]}))
+    assert labels["resolved"] == {"aaa"}

@@ -79,6 +79,7 @@ def resolved_policy(policy: dict | None, max_scan_min: int, max_rule_min: int) -
     """
     policy = policy or {}
     return {
+        "write_mode": policy.get("write_mode", "deny"),
         "attack_strength": policy.get("attack_strength", "default"),
         "alert_threshold": policy.get("alert_threshold", "default"),
         "disabled_scanners": list(policy.get("disabled_scanners", [_SLOW_SCANNERS])),

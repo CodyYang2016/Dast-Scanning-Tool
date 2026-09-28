@@ -14,6 +14,9 @@
 
 app_id: dvwa
 environment_class: dev
+# A throwaway container rebuilt by setup.php: someone can attest the data is expendable,
+# which is what write mode requires. A shared internal environment would stay `durable`.
+data_policy: disposable
 base_url: http://dvwa            # as ZAP resolves it on the `dast` network
 
 scope:
@@ -63,7 +66,22 @@ explore:
     - /index.php
     - /vulnerabilities/sqli/
     - /vulnerabilities/xss_r/
-  safe_forms: []                 # read-only: DVWA's forms are the injection points (SP-1)
+  safe_forms: []                 # not needed: write_mode covers POST forms wholesale
+  write_mode: deny
+  # Writes are SUPPORTED here (data_policy is disposable) but left off pending one
+  # unexplained result: a write-enabled autonomous run covered 89 routes and produced 966
+  # records — the most of any run — yet the two SQL-injection highs a read-only run finds on
+  # ?id= were absent, with the route in the journey, in coverage, rule 40018 enabled and the
+  # scan completed to 100%. Most likely a submitted form changed DVWA's security level, or
+  # the per-rule budget thinned across the larger surface; neither is confirmed. Flip to
+  # `allow` to reproduce. That we cannot yet answer "why did this finding disappear" is the
+  # real gap (W6-2: record truncation and app state alongside coverage).
+  test_data:                     # only these field names are ever typed into a form
+    name: dast-test
+    message: dast-test-message
+    ip: 127.0.0.1
+    username: admin
+    id: "1"
   budgets:
     max_pages: 10
 
