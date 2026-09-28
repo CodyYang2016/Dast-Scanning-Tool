@@ -32,6 +32,10 @@ _VERSIONS_LOCK = _ROOT / "versions.lock"
 _DEFAULT_MODEL = "claude-opus-4-8"
 
 
+def _is_absolute(target: str) -> bool:
+    return target.startswith(("http://", "https://"))
+
+
 def _relpath(url: str, base_url: str) -> str:
     if url.startswith(base_url):
         return url[len(base_url):] or "/"
@@ -221,17 +225,23 @@ def render_flow(plan: dict, config: dict) -> str:
     has_token = _render_auth_proof(config, w)
     for step in plan["journey"]:
         action, target = step["action"], step["target"]
+        # A target may be absolute or relative: a plan derived from a trace naturally carries
+        # absolute URLs, and an LLM asked for routes from that trace will answer in kind.
+        # Gluing base_url onto an absolute URL produces nonsense, so only relative paths are
+        # joined. An absolute target pointing off-host is caught by validate's allow-list
+        # check, which is where a scope decision belongs.
+        url = json.dumps(target) if _is_absolute(target) else f"base_url + {json.dumps(target)}"
         if action == "goto":
-            w(f'    page.goto(base_url + {json.dumps(target)}, wait_until="networkidle")')
+            w(f'    page.goto({url}, wait_until="networkidle")')
         elif action == "click":
             w(f'    page.click({json.dumps(target)})')
         elif action == "api_get":
             if has_token:
-                w(f'    page.request.get(base_url + {json.dumps(target)}, '
+                w(f'    page.request.get({url}, '
                   'headers={"Authorization": f"Bearer {token}"})')
             else:
                 # No bearer token: the session rides on the context's cookies.
-                w(f'    page.request.get(base_url + {json.dumps(target)})')
+                w(f'    page.request.get({url})')
     if has_token:
         w('    return {"authenticated": True, "token_present": bool(token)}')
     else:
@@ -295,9 +305,18 @@ def emit_auth(config: dict) -> dict:
 
 # ---- Step A (primary): LLM plan ---------------------------------------------------------
 
-def plan_from_llm(trace: dict, model: str, api_key: str) -> dict:
-    """Ask the LLM for a journey plan (validated). Raises on any failure so callers can fall
-    back. anthropic is imported lazily so the fallback/tests don't need it."""
+def plan_from_llm(trace: dict, model: str, api_key: str, config: dict | None = None) -> dict:
+    """Ask the LLM for a journey plan. Raises on any failure so callers can fall back.
+
+    The model's job is the JOURNEY — which authenticated routes are worth visiting, in what
+    order. How to log in is operator config, so the login block is replaced with the
+    config-derived one *before* validation: the model cannot influence authentication, and an
+    irrelevant field in its reply cannot fail the call. (It could: asked for a plan against a
+    schema documenting both login forms, the model returned both at once, and `oneOf` rejected
+    the combination — killing the LLM path over a block that was about to be discarded.)
+
+    anthropic is imported lazily so the fallback and the tests don't need it.
+    """
     import anthropic  # lazy
 
     schema = _JOURNEY_SCHEMA.read_text()
@@ -308,9 +327,11 @@ def plan_from_llm(trace: dict, model: str, api_key: str) -> dict:
     )
     user = (
         "Crawl trace (no secrets):\n" + json.dumps(trace, indent=2) +
-        "\n\nProduce the journey plan: a login block (selectors) and a short authenticated "
-        "journey (goto authenticated routes, api_get authenticated GET endpoints). "
-        "Do not include credentials."
+        "\n\nProduce the journey plan. Only the `journey` matters: the authenticated routes "
+        "worth visiting (`goto`) and authenticated GET endpoints worth calling (`api_get`), "
+        "in a sensible order, drawn from the trace. Emit `login` as {\"url\": \"/\"} — the "
+        "real login block is supplied from the application's configuration and whatever you "
+        "put there is discarded. Never include credentials."
     )
     client = anthropic.Anthropic(api_key=api_key)
     # Latest models (Opus 4.8, Sonnet 5, ...) reject temperature/top_p/top_k; omit them.
@@ -320,7 +341,9 @@ def plan_from_llm(trace: dict, model: str, api_key: str) -> dict:
     )
     text = "".join(getattr(b, "text", "") for b in msg.content)
     plan = parse_plan_text(text)
-    validate_plan(plan)  # raise if the model produced something off-contract
+    if config is not None:
+        plan["login"] = login_block(config)   # operator config wins, before validation
+    validate_plan(plan)  # raise if the model's JOURNEY is off-contract
     return plan
 
 
@@ -334,8 +357,8 @@ def make_plan(trace: dict, config: dict, use_llm: bool = True, model: str = _DEF
     api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
     if use_llm and api_key:
         try:
-            plan = plan_from_llm(trace, model, api_key)
-            plan["login"] = login_block(config)
+            plan = plan_from_llm(trace, model, api_key, config=config)
+            plan["login"] = login_block(config)   # belt and braces for any other caller
             validate_plan(plan)
             return plan, "llm"
         except Exception as exc:  # network/parse/validation — fall back deterministically

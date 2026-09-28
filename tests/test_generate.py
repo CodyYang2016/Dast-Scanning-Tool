@@ -274,3 +274,135 @@ def test_every_proof_mode_raises_when_authentication_cannot_be_proven():
                       ({**DVWA_CONFIG, "auth": {**DVWA_CONFIG["auth"],
                                                 "proof": {"selector": ".logout"}}}, DVWA_PLAN)):
         assert "raise RuntimeError" in render_flow(plan, cfg)
+
+
+# ---- the model's login block must not be able to fail the LLM path ----------------------
+# The login block is operator config: make_plan overwrites whatever the model sent. But
+# plan_from_llm validated the model's version FIRST, so an irrelevant field could kill the
+# whole call and fall back silently. Observed live on DVWA: asked for a plan against a schema
+# documenting both login forms, the model emitted both the shorthand selectors AND a steps
+# list; `oneOf` rejected "both" and the LLM path died on a field we discard.
+
+from authoring.generate import make_plan
+
+OVER_SPECIFIED_LOGIN = {
+    "app_id": "dvwa", "base_url": "http://dvwa",
+    "login": {                                   # both forms at once — off-contract
+        "url": "/login.php",
+        "email_selector": "input[name=username]",
+        "password_selector": "input[name=password]",
+        "submit_selector": "input[name=Login]",
+        "steps": [{"action": "fill", "selector": "input[name=username]", "value": "identifier"}],
+    },
+    "journey": [{"action": "goto", "target": "/vulnerabilities/sqli/?id=1"}],
+}
+
+
+def test_llm_path_survives_an_over_specified_login_block(monkeypatch):
+    monkeypatch.setattr("authoring.generate.plan_from_llm",
+                        lambda trace, model, api_key, config=None: dict(OVER_SPECIFIED_LOGIN))
+    plan, source = make_plan(TRACE, CONFIG, api_key="k")
+    assert source == "llm"                       # not silently dropped to the fallback
+    assert plan["journey"] == OVER_SPECIFIED_LOGIN["journey"]     # the model's routes survive
+
+
+def test_the_config_login_block_replaces_whatever_the_model_sent(monkeypatch):
+    monkeypatch.setattr("authoring.generate.plan_from_llm",
+                        lambda trace, model, api_key, config=None: dict(OVER_SPECIFIED_LOGIN))
+    plan, _ = make_plan(TRACE, CONFIG, api_key="k")
+    assert plan["login"]["email_selector"] == "#email"           # from CONFIG, not the model
+    assert "steps" not in plan["login"]
+
+
+def test_a_model_plan_with_no_login_block_is_fine(monkeypatch):
+    no_login = {k: v for k, v in OVER_SPECIFIED_LOGIN.items() if k != "login"}
+    monkeypatch.setattr("authoring.generate.plan_from_llm",
+                        lambda trace, model, api_key, config=None: dict(no_login))
+    plan, source = make_plan(TRACE, CONFIG, api_key="k")
+    assert source == "llm" and plan["login"]["url"] == "/#/login"
+
+
+def test_an_off_contract_journey_still_falls_back(monkeypatch):
+    # The part the model IS responsible for must still be validated.
+    bad = {**OVER_SPECIFIED_LOGIN, "journey": [{"action": "rm -rf", "target": "/"}]}
+    monkeypatch.setattr("authoring.generate.plan_from_llm",
+                        lambda trace, model, api_key, config=None: dict(bad))
+    _, source = make_plan(TRACE, CONFIG, api_key="k")
+    assert source == "fallback"
+
+
+class _FakeAnthropicModule:
+    """Stands in for the anthropic SDK so plan_from_llm runs for real, offline."""
+    def __init__(self, reply: str):
+        self._reply = reply
+
+    def Anthropic(self, api_key=None):           # noqa: N802 — mirrors the SDK's name
+        reply = self._reply
+
+        class _Messages:
+            def create(self, **kw):
+                return type("Msg", (), {"content": [type("B", (), {"text": reply})()]})()
+        return type("Client", (), {"messages": _Messages()})()
+
+
+def _with_fake_anthropic(monkeypatch, reply):
+    import sys
+    monkeypatch.setitem(sys.modules, "anthropic", _FakeAnthropicModule(reply))
+
+
+def test_plan_from_llm_accepts_a_reply_whose_login_is_over_specified(monkeypatch):
+    """The real defect: plan_from_llm validated the model's login block before returning, so
+    a field make_plan discards could fail the call. Only the journey is the model's job."""
+    from authoring.generate import plan_from_llm
+    _with_fake_anthropic(monkeypatch, json.dumps(OVER_SPECIFIED_LOGIN))
+    plan = plan_from_llm(TRACE, "some-model", "k", config=CONFIG)
+    assert plan["journey"] == OVER_SPECIFIED_LOGIN["journey"]
+    assert plan["login"]["email_selector"] == "#email"       # replaced from config
+
+
+def test_plan_from_llm_still_rejects_an_off_contract_journey(monkeypatch):
+    from authoring.generate import plan_from_llm
+    bad = {**OVER_SPECIFIED_LOGIN, "journey": [{"action": "exfiltrate", "target": "/"}]}
+    _with_fake_anthropic(monkeypatch, json.dumps(bad))
+    with pytest.raises(Exception):
+        plan_from_llm(TRACE, "some-model", "k", config=CONFIG)
+
+
+def test_plan_from_llm_rejects_a_journey_step_with_an_unknown_field(monkeypatch):
+    from authoring.generate import plan_from_llm
+    bad = {**OVER_SPECIFIED_LOGIN,
+           "journey": [{"action": "goto", "target": "/x", "headers": {"X": "y"}}]}
+    _with_fake_anthropic(monkeypatch, json.dumps(bad))
+    with pytest.raises(Exception):
+        plan_from_llm(TRACE, "some-model", "k", config=CONFIG)
+
+
+# ---- a journey target may be absolute; the renderer must not concatenate it -------------
+# The renderer emitted `base_url + target`, which is right for "/x" and catastrophic for
+# "http://host/x" — it produced page.goto("http://dvwahttp://dvwa/security.php"). Observed on
+# the first successful live LLM run: asked for routes from a trace whose `index` holds
+# absolute URLs, the model answered with absolute URLs, which is entirely reasonable.
+
+ABS_PLAN = {
+    "app_id": "dvwa", "base_url": "http://dvwa",
+    "login": {"url": "/login.php", "steps": DVWA_CONFIG["auth"]["steps"]},
+    "journey": [{"action": "goto", "target": "http://dvwa/security.php"},
+                {"action": "api_get", "target": "http://dvwa/vulnerabilities/sqli/?id=1"},
+                {"action": "goto", "target": "/relative/stays/relative"}],
+}
+
+
+def test_absolute_targets_are_not_glued_onto_the_base_url():
+    src = render_flow(ABS_PLAN, DVWA_CONFIG)
+    assert "base_url + \"http://" not in src            # the bug
+    assert 'page.goto("http://dvwa/security.php"' in src
+    assert 'page.request.get("http://dvwa/vulnerabilities/sqli/?id=1"' in src
+
+
+def test_relative_targets_still_use_the_base_url():
+    src = render_flow(ABS_PLAN, DVWA_CONFIG)
+    assert 'page.goto(base_url + "/relative/stays/relative"' in src
+
+
+def test_a_flow_mixing_both_forms_compiles():
+    ast.parse(render_flow(ABS_PLAN, DVWA_CONFIG))
