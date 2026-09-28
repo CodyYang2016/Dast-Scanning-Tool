@@ -145,6 +145,12 @@ def cmd_onboard(args) -> int:
     if path.exists() and not args.force:
         print(f"{path} already exists (use --force to overwrite)", file=sys.stderr)
         return 2
+    if getattr(args, "discover", False):
+        return _discover(args, path)
+    return _write_skeleton(args, path)
+
+
+def _write_skeleton(args, path) -> int:
     host = args.base_url.split("://")[-1].split("/")[0].split(":")[0]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(SKELETON.format(
@@ -159,6 +165,49 @@ def cmd_onboard(args) -> int:
               f"dast author {args.app}")
     except Exception as exc:
         print(f"fill in the TODOs — the skeleton is not valid yet: {exc}".split("\n")[0])
+    return 0
+
+
+def _discover(args, path) -> int:
+    """Have a model propose the auth block, verify it live, and write the config.
+
+    A proof is written only after it has been observed to hold while logged in AND to fail
+    while logged out. If none survives, this leaves the skeleton rather than a config that
+    looks finished and is not. The model call goes through llm_backend, so it uses the
+    approved Copilot CLI inside Nationwide (LLM_PROVIDER=copilot) or the Anthropic API.
+    """
+    import os
+
+    from authoring import discover
+
+    env = args.app.replace("-", "_").upper()
+    identifier = os.environ.get(f"{env}_USER") or os.environ.get("AUTH_EMAIL")
+    secret = os.environ.get(f"{env}_PASS") or os.environ.get("AUTH_PASSWORD")
+    if not (identifier and secret):
+        print(f"--discover verifies the login by performing it, so it needs credentials: "
+              f"export {env}_USER and {env}_PASS", file=sys.stderr)
+        return 2
+
+    print(f"reading {args.base_url}{args.login_url} …")
+    try:
+        found = discover.discover_auth(args.base_url, args.login_url, identifier, secret,
+                                       model=args.model, zap_proxy=args.zap_proxy,
+                                       headless=not args.headed)
+    except discover.DiscoveryFailed as exc:
+        print(f"\ndiscovery failed: {exc}\n\nWriting the skeleton instead — fill in "
+              f"`auth:` by hand.", file=sys.stderr)
+        return _write_skeleton(args, path)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(discover.render_config(
+        app_id=args.app, base_url=args.base_url, login_url=args.login_url,
+        steps=found["steps"], proof=found["proof"],
+        authenticated_routes=found.get("authenticated_routes", []), model=found["model"]))
+    print(f"\nwrote {path.relative_to(ROOT)}")
+    print(f"  login:  {len(found['steps'])} steps against {args.login_url}")
+    print(f"  proof:  {json.dumps(found['proof'])}")
+    print("          verified: holds when logged in, fails when logged out")
+    print(f"\nreview it, then: dast author {args.app}")
     return 0
 
 
@@ -285,6 +334,13 @@ def build_parser() -> argparse.ArgumentParser:
     o.add_argument("--auth", default="form", choices=["form", "seeded"])
     o.add_argument("--environment-class", default="dev", choices=["dev", "test", "staging"])
     o.add_argument("--force", action="store_true", help="overwrite an existing config")
+    o.add_argument("--discover", action="store_true",
+                   help="have a model propose the auth block and verify it live (needs creds)")
+    o.add_argument("--login-url", default="/login", help="Login page path (with --discover)")
+    o.add_argument("--zap-proxy", default=None, help="Discover through ZAP (matches the scan)")
+    o.add_argument("--model", default=None,
+                   help="LLM model id; defaults to the LLM_PROVIDER's default (Anthropic or Copilot)")
+    o.add_argument("--headed", action="store_true", help="show the browser during discovery")
     o.set_defaults(func=cmd_onboard)
 
     a = common(sub.add_parser("author", help="record (or seed+explore) -> generate -> validate"))

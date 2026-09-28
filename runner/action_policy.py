@@ -61,6 +61,39 @@ def is_denied(action: dict, deny_actions) -> bool:
     return any(term.strip().lower() in hay for term in (deny_actions or []) if term.strip())
 
 
+# Terms that end the session or the credential at any posture — losing authentication mid-run
+# silently invalidates every result after it (correctness, not posture).
+_NEVER = ("logout", "log-out", "signout", "sign-out", "delete-account", "delete_account",
+          "deleteaccount", "close-account", "deactivate", "change-password", "changepassword",
+          "reset-password", "resetpassword")
+
+# A form carrying these fields changes a credential, whatever its submit selector looks like.
+_CREDENTIAL_FIELDS = ("password_new", "password_conf", "new_password", "newpassword",
+                      "confirm_password", "passwordconfirm", "password_confirm",
+                      "current_password", "currentpassword", "old_password", "oldpassword",
+                      "password1", "password2")
+
+
+def changes_a_credential(action: dict) -> bool:
+    """True when a form's own fields show it sets or confirms a password (not a plain login)."""
+    fields = [str(f).lower() for f in action.get("target", {}).get("field_bindings", [])]
+    if any(f in _CREDENTIAL_FIELDS for f in fields):
+        return True
+    return sum(1 for f in fields if "password" in f or "passwd" in f) > 1
+
+
+def never_allowed(action: dict, page_url: str | None = None) -> bool:
+    """True for an action that ends the session or the credential, at any posture.
+
+    Judged on the action kind, its target, the page it is on, and the fields it would submit —
+    used by discovery to refuse a proof whose evaluation would itself log us out.
+    """
+    hay = f"{action.get('action', '')} {_target_str(action)} {page_url or ''}".lower()
+    if any(term in hay for term in _NEVER):
+        return True
+    return changes_a_credential(action)
+
+
 def validate_action(action: dict, scope: dict, deny_actions=None, safe_forms=None) -> ActionDecision:
     """Decide whether a proposed LLM action may execute. Fail-closed on every rule.
 
