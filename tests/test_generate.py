@@ -15,6 +15,7 @@ from jsonschema import Draft202012Validator
 from authoring.appconfig import load_app_config
 from authoring.generate import (
     emit_lock,
+    generate,
     emit_manifest,
     emit_scope,
     emit_zap_policy,
@@ -406,3 +407,34 @@ def test_relative_targets_still_use_the_base_url():
 
 def test_a_flow_mixing_both_forms_compiles():
     ast.parse(render_flow(ABS_PLAN, DVWA_CONFIG))
+
+
+# ---- the bundle must record its own provenance (W2-14) ----------------------------------
+# `plan_source` was printed by the CLI and persisted nowhere, so "did a model author this
+# bundle?" could only be answered from terminal scrollback or by diffing the plan against a
+# freshly generated deterministic one. For a project whose safety argument is "the LLM emits
+# only a schema-validated plan, and here is that artifact", the artifact has to say so.
+
+def test_manifest_records_a_deterministic_plan_as_such():
+    m = emit_manifest(TRACE, plan_source="fallback")
+    assert m["plan_source"] == "fallback"
+    assert "model" not in m                      # no model was involved; do not imply one
+
+
+def test_manifest_records_the_model_that_authored_the_plan():
+    m = emit_manifest(TRACE, plan_source="llm", model="claude-opus-4-8")
+    assert m["plan_source"] == "llm" and m["model"] == "claude-opus-4-8"
+
+
+def test_manifest_stays_backwards_compatible_for_callers_that_say_nothing():
+    m = emit_manifest(TRACE)
+    assert m["app_id"] == "juice-shop" and m["plan_source"] == "unknown"
+
+
+def test_generate_writes_the_provenance_it_used(tmp_path):
+    out = tmp_path / "bundle"
+    summary = generate(TRACE, str(out), CONFIG, use_llm=False)
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert summary["plan_source"] == "fallback"
+    assert manifest["plan_source"] == "fallback"     # the file agrees with the CLI output
+    assert manifest["trace_app_id"] == TRACE["app_id"]

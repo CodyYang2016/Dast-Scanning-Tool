@@ -116,6 +116,21 @@ Artifacts land under `out/<app>/`: `authoring/` (trace and bundle) and `scans/<s
 
 ---
 
+## 4a. Which path authored the plan?
+
+`author` prints `"plan_source": "llm"` or `"fallback"`, and the bundle records the same thing,
+so a committed bundle answers the question by itself:
+
+```bash
+python -c "import json;m=json.load(open('out/my-app/authoring/bundle/manifest.json'));print(m['plan_source'], m.get('model',''))"
+```
+
+`fallback` is not a failure — it is the deterministic planner, and it is the default with
+`--no-llm`. But it is also what you get **silently** when `ANTHROPIC_API_KEY` is unset or the
+call fails, so check the field rather than assuming. If you expected `llm` and got `fallback`,
+rerun `python -m authoring.generate --app my-app --trace … --out-dir /tmp/x` and read stderr:
+it names the reason.
+
 ## 5. Make the scan worth running
 
 A passing gate is not the same as a useful scan. Two knobs, both configuration:

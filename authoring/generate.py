@@ -273,14 +273,27 @@ def emit_zap_policy(config: dict | None = None, intensity: str = "medium") -> di
     }
 
 
-def emit_manifest(trace: dict) -> dict:
-    return {
+def emit_manifest(trace: dict, plan_source: str = "unknown", model: str | None = None) -> dict:
+    """The bundle's provenance: what produced this plan, from which trace.
+
+    `plan_source` is the load-bearing field. The safety argument for this project is that the
+    LLM emits only a schema-validated journey plan, which deterministic code renders — so a
+    reviewer looking at a committed bundle must be able to tell whether a model was involved,
+    and which one, without rerunning anything or reading terminal scrollback. `model` is
+    present only when one actually authored the plan (W2-14).
+    """
+    manifest = {
         "app_id": trace["app_id"],
         "base_url": trace["base_url"],
         "generated_by": "authoring/generate.py",
+        "plan_source": plan_source,
+        "trace_app_id": trace["app_id"],
         "artifacts": ["flow.py", "scope.json", "auth.json", "zap-policy.yaml",
                       "manifest.json", "lock"],
     }
+    if plan_source == "llm" and model:
+        manifest["model"] = model
+    return manifest
 
 
 def emit_lock() -> dict:
@@ -373,6 +386,7 @@ def generate(trace: dict, out_dir: str, config: dict, use_llm: bool = True,
              model: str = _DEFAULT_MODEL, api_key: str | None = None) -> dict:
     """Produce all authoring artifacts from a trace. Returns a summary dict."""
     plan, source = make_plan(trace, config, use_llm=use_llm, model=model, api_key=api_key)
+    # Record which path produced the plan, so the committed bundle is self-describing.
     flow_src = render_flow(plan, config)
     ast.parse(flow_src)  # guarantee the generated code compiles (FR-G1 pre-check)
 
@@ -384,7 +398,8 @@ def generate(trace: dict, out_dir: str, config: dict, use_llm: bool = True,
     (d / "auth.json").write_text(json.dumps(emit_auth(config), indent=2) + "\n")
     # json.dumps is valid YAML, so no PyYAML dependency is needed for the .yaml file.
     (d / "zap-policy.yaml").write_text(json.dumps(emit_zap_policy(config), indent=2) + "\n")
-    (d / "manifest.json").write_text(json.dumps(emit_manifest(trace), indent=2) + "\n")
+    (d / "manifest.json").write_text(
+        json.dumps(emit_manifest(trace, plan_source=source, model=model), indent=2) + "\n")
     (d / "lock").write_text(json.dumps(emit_lock(), indent=2) + "\n")
     return {"plan_source": source, "journey_steps": len(plan["journey"]), "out_dir": str(d)}
 
