@@ -227,10 +227,12 @@ def test_proof_js_still_raises_for_non_js_modes():
 # ---- W2-4: scan posture is configuration, not a constant in the code --------------------
 
 def test_scan_policy_defaults_are_conservative_and_explicit():
-    # An app that says nothing gets the historical posture, and says so out loud.
+    # An app that says nothing gets a stated posture, not an accidental one.
     assert appconfig.scan_policy(MINIMAL) == {
         "attack_strength": "medium", "alert_threshold": "medium", "disabled_rules": ["40026"]}
-    assert appconfig.scan_budgets(MINIMAL) == {"max_scan_min": 4, "max_rule_min": 1}
+    # Raised from 4 minutes once discovery could reach enough surface for it to bind: a
+    # budget too small to attack what was found looks exactly like "found nothing".
+    assert appconfig.scan_budgets(MINIMAL) == {"max_scan_min": 10, "max_rule_min": 1}
 
 
 def test_an_app_can_raise_the_posture_and_re_enable_a_rule(tmp_path):
