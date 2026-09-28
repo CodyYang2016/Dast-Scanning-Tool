@@ -235,8 +235,13 @@ and a **redactor** that scrubs DOM/XHR bodies before anything reaches the model.
 | `../dast_poc_remediation_plan.md` | The issue register and phase plan derived from the funding review |
 | `decisions_and_known_issues.md` | Every design decision (D1–D10) + known gaps (KI1–KI4) |
 
-Background specs: `docs/dast_poc_requirements.md`, `dast_poc_3week_plan.md`,
-`dast_poc_demo_plan.md`, `dast_poc_day1_runbook.md`.
+Current specs: `docs/dast_poc_requirements.md`, `docs/dast_first_internal_app_readiness.md`,
+`docs/dast_poc_remediation_plan.md`.
+
+Superseded planning and demo material lives in [`docs/archive/`](docs/archive/) — the original
+design proposal, the funding review, the 3-week plan, the Day 1 runbook and the Phase 1 demo
+scripts. Kept because they explain why things are as they are, moved because they no longer
+describe how the tool works.
 
 ## Known gaps (documented, out of POC scope)
 

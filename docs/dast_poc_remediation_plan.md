@@ -1,7 +1,7 @@
 # DAST PoC — remediation plan: onboard a second application, then make it complete
 
-The actionable plan derived from the three feedback documents (`dast_poc_review.md`,
-`dast_first_internal_app_readiness.md`, `Authenticated-Application-Discovery-DAST-Design-Proposal.md`)
+The actionable plan derived from the three feedback documents (`archive/dast_poc_review.md`,
+`dast_first_internal_app_readiness.md`, `archive/Authenticated-Application-Discovery-DAST-Design-Proposal.md`)
 plus what we found running the pipeline ourselves.
 
 **The one goal above all others:** make this tool easy enough to use that a second application

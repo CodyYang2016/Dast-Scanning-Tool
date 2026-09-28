@@ -1,6 +1,6 @@
 ﻿# DAST POC — Demo Plan (Risk-Gated)
 
-Companion to `dast_poc_requirements.md` and `dast_poc_3week_plan.md`. This plan reframes
+Companion to `../dast_poc_requirements.md` and `dast_poc_3week_plan.md`. This plan reframes
 the three milestones as **risk gates**, not feature showcases. Each phase closes the single
 biggest remaining source of technical or safety risk before the next begins. Where the review
 pushed toward production hardening, those items are captured as **known gaps** rather than build

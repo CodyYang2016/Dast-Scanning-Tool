@@ -3,7 +3,7 @@
 This is the **operator's runbook** for the whole Phase 2 demo: every window to open, every
 command to run, every click, what appears on screen, and what to say — in order. It merges the
 Phase 2 script (`dast_poc_phase2_demo_script.md`, which has the talking points and Q&A) with
-the Playwright screen-recording runbook (`dast_poc_playwright_demo_runbook.md`) and works on
+the Playwright screen-recording runbook (`archive/dast_poc_playwright_demo_runbook.md`) and works on
 **both** demo machines: the **macOS laptop** (Docker Desktop, `$PY`) and the
 **Windows workstation** (Git Bash + Podman in WSL, `.venv/Scripts/python`, images via the
 Nationwide Trusted Registry). Every command below is bash — on Windows run them in **Git Bash

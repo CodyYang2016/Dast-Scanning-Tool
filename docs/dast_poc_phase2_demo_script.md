@@ -2,7 +2,7 @@
 
 Follow top to bottom. Each step has: the command, what to say while it runs, and what
 "success" looks like on screen. Total run time budget: ~15-18 minutes. See
-`dast_poc_demo_plan.md` (Phase 2) for the underlying gate definition, and
+`archive/dast_poc_demo_plan.md` (Phase 2) for the underlying gate definition, and
 `docs/dast_poc_phase1_demo_script.md` for the Phase 1 gate this demo builds on. Reference
 design docs: `docs/junior_engineer/authoring_clis_design.md` and
 `docs/junior_engineer/seeded_session_exploration_design.md`.

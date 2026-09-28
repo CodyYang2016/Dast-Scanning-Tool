@@ -8,7 +8,7 @@ API call into `trace.json`.
 **The point to land:** the login journey that later drives the scan is captured by *automation*,
 not hand-typed — and no credentials or tokens ever land in the recorded trace.
 
-Companion docs: `dast_poc_phase2_demo_script.md` (the full Phase 2 flow this is a slice of),
+Companion docs: `../dast_poc_phase2_demo_script.md` (the full Phase 2 flow this is a slice of),
 `docs/junior_engineer/authoring_clis_design.md` (design). Everything here is verified on the
 current dev machine (macOS, Docker, host `.venv`).
 
