@@ -109,6 +109,19 @@ python -m dast scan   my-app               # preflight → replay → ZAP → no
 python -m dast report my-app               # lifecycle diff → SARIF   (--upload to publish)
 ```
 
+**Or let a model write the `auth:` block for you** (`--discover`). It reads the login page,
+proposes the login steps and several candidate proofs, then **verifies** one by logging in —
+a proof is written only after it is observed to hold while logged in **and** to fail while
+logged out. If nothing survives, you get the skeleton, never a config that looks finished and
+is not. Inside Nationwide, set `LLM_PROVIDER=copilot` so the model call goes through the
+approved Copilot CLI (the direct Anthropic API is policy-blocked):
+
+```bash
+export MY_APP_USER=…  MY_APP_PASS=…  LLM_PROVIDER=copilot   # Copilot CLI on PATH + COPILOT_GITHUB_TOKEN
+python -m dast onboard my-app --base-url http://my-app:8443 --login-url /login \
+  --zap-proxy http://localhost:8080 --discover
+```
+
 The login (`selectors` shorthand or a `steps` list), the proof of authentication (`js`,
 `route` or `selector`), the API URL patterns, scope and scan posture all come from `app.yaml`
 and are validated against `contracts/app.schema.json`. Nothing is inherited from the pilot.
