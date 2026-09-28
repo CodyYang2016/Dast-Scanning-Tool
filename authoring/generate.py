@@ -258,6 +258,9 @@ def emit_zap_policy(config: dict | None = None, intensity: str = "medium") -> di
         "disabled_scanners": list(policy["disabled_rules"]),
         "max_scan_min": budgets["max_scan_min"],
         "max_rule_min": budgets["max_rule_min"],
+        "write_mode": "allow" if appconfig.writes_allowed(config) else "deny",
+        "state_probes": appconfig.state_probes(config),
+        "probe_cookies": appconfig.scan_cookies(config),
     }
 
 

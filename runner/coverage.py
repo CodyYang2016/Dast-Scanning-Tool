@@ -18,6 +18,7 @@ See R2 in docs/seeded_session_exploration_design.md.
 from __future__ import annotations
 
 import json
+import hashlib
 import urllib.parse
 import urllib.request
 
@@ -48,6 +49,72 @@ def accessed_routes(zap_api: str, target: str) -> set[str]:
     return routes
 
 
+def accessed_params(zap_api: str, target: str) -> dict[str, list[str]]:
+    """Query-parameter names ZAP actually sent, grouped by canonical route."""
+    from urllib.parse import parse_qs, urlsplit
+    data = _api(zap_api, "/JSON/core/view/urls/", {"baseurl": target})
+    host = host_of(target)
+    out: dict[str, set[str]] = {}
+    for url in data.get("urls", []):
+        if host is not None and host_of(url) != host:
+            continue
+        route = endpoint_pattern(url)
+        out.setdefault(route, set()).update(parse_qs(urlsplit(url).query).keys())
+    return {route: sorted(names) for route, names in sorted(out.items())}
+
+
+def rule_outcomes(zap_api: str, scan_id: str) -> dict:
+    """Return best-effort per-rule request/alert outcomes from ZAP."""
+    try:
+        data = _api(zap_api, "/JSON/ascan/view/scanProgress/", {"scanId": scan_id})
+    except Exception:
+        return {}
+    out: dict[str, dict] = {}
+    for entry in data.get("scanProgress", []):
+        if not isinstance(entry, dict) or "HostProcess" not in entry:
+            continue
+        for row in entry["HostProcess"]:
+            plugin = row.get("Plugin") if isinstance(row, dict) else row
+            if not plugin or len(plugin) < 7:
+                continue
+            name, rule_id, _quality, state, requests, _total, alerts = plugin[:7]
+            out[str(rule_id)] = {"name": name, "state": state,
+                                 "requests": int(requests or 0), "alerts": int(alerts or 0)}
+    return out
+
+
+def truncated_rules(outcomes: dict) -> list[str]:
+    return sorted(rule_id for rule_id, outcome in outcomes.items()
+                  if "skip" in outcome["state"].lower() and "time" in outcome["state"].lower())
+
+
+def _fetch_probe(zap_api: str, url: str, cookies: dict | None = None) -> tuple[int | None, str]:
+    host = host_of(url) or ""
+    lines = [f"GET {url} HTTP/1.1", f"Host: {host}"]
+    if cookies:
+        lines.append("Cookie: " + "; ".join(f"{k}={v}" for k, v in sorted(cookies.items())))
+    try:
+        raw = "\r\n".join(lines) + "\r\n\r\n"
+        data = _api(zap_api, "/JSON/core/action/sendRequest/",
+                    {"request": raw, "followRedirects": "true"})
+        entry = (data.get("sendRequest") or [{}])[-1]
+        header = entry.get("responseHeader", "")
+        status = int(header.split()[1]) if header.startswith("HTTP/") else None
+        return status, entry.get("responseBody", "")
+    except Exception:
+        return None, ""
+
+
+def state_fingerprint(zap_api: str, target: str, probes, cookies: dict | None = None) -> dict:
+    """Store short response digests without storing probe response bodies."""
+    result = {}
+    for path in probes or []:
+        status, body = _fetch_probe(zap_api, target.rstrip("/") + path, cookies)
+        result[path] = {"status": status,
+                        "digest": hashlib.sha256((body or "").encode()).hexdigest()[:16]}
+    return {"probes": result, "authenticated": bool(cookies)} if result else {}
+
+
 def enabled_rule_ids(zap_api: str) -> set[str]:
     """Plugin ids currently enabled, active AND passive (matches record rule_id = ZAP pluginId).
 
@@ -73,9 +140,24 @@ def enabled_rule_ids(zap_api: str) -> set[str]:
     return out
 
 
-def capture(zap_api: str, target: str) -> dict:
-    """Return this scan's coverage as {"routes": [...], "rules": [...]} (sorted, JSON-friendly)."""
-    return {
-        "routes": sorted(accessed_routes(zap_api, target)),
+def capture(zap_api: str, target: str, scan_id: str | None = None,
+            excluded: list[str] | None = None, probes=None, cookies=None) -> dict:
+    """Return routes, enabled rules, exercised parameters and rule outcomes."""
+    routes = accessed_routes(zap_api, target)
+    params = accessed_params(zap_api, target)
+    out = {
+        "routes": sorted(routes),
         "rules": sorted(enabled_rule_ids(zap_api)),
+        "route_params": {route: names for route, names in params.items() if route in routes},
     }
+    if excluded:
+        out["excluded"] = list(excluded)
+    if scan_id is not None:
+        outcomes = rule_outcomes(zap_api, scan_id)
+        if outcomes:
+            out["rule_outcomes"] = outcomes
+            out["truncated_rules"] = truncated_rules(outcomes)
+    state = state_fingerprint(zap_api, target, probes, cookies)
+    if state:
+        out["app_state"] = state
+    return out

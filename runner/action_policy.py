@@ -94,7 +94,9 @@ def never_allowed(action: dict, page_url: str | None = None) -> bool:
     return changes_a_credential(action)
 
 
-def validate_action(action: dict, scope: dict, deny_actions=None, safe_forms=None) -> ActionDecision:
+def validate_action(action: dict, scope: dict, deny_actions=None, safe_forms=None,
+                    submit_get_forms: bool = True, allow_writes: bool = False,
+                    page_url: str | None = None) -> ActionDecision:
     """Decide whether a proposed LLM action may execute. Fail-closed on every rule.
 
     `deny_actions` defaults to the scope's `avoid_action_list`. `safe_forms` is the explicit
@@ -107,9 +109,15 @@ def validate_action(action: dict, scope: dict, deny_actions=None, safe_forms=Non
     if is_denied(action, deny_actions):
         return ActionDecision(False, "matches deny-list (avoid_action_list)")
 
+    if never_allowed(action, page_url):
+        return ActionDecision(False, "ends the session or credential; refused at any posture")
+
     verb = action_verb(action)
     if verb in STATE_CHANGING and target not in safe_forms:
-        return ActionDecision(False, f"state-changing {verb} not on the safe-form allow-list")
+        if not allow_writes or verb == "DELETE":
+            return ActionDecision(False, f"state-changing {verb} not on the safe-form allow-list")
+    if action.get("action") == "submit_form" and verb == "GET" and not submit_get_forms:
+        return ActionDecision(False, "GET form submission is disabled for this application")
 
     # Absolute targets must be in-scope by host; relative paths inherit the (in-scope) base host.
     allow = {h.strip().lower() for h in scope.get("fqdn_allow_list", [])}

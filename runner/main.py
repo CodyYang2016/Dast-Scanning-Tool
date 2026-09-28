@@ -132,7 +132,20 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
     for r in records:
         r["evidence_path"] = relpath
     # Capture the (route x rule) surface this scan exercised, for the coverage-aware diff (R2).
-    coverage = coverage_capture.capture(zap_api, base_url)
+    policy = {}
+    policy_path = Path(scope_path).parent / "zap-policy.yaml"
+    if policy_path.exists():
+        try:
+            policy = json.loads(policy_path.read_text())
+        except json.JSONDecodeError:
+            policy = {}
+    coverage = coverage_capture.capture(
+        zap_api, base_url, scan_id=scan_id,
+        probes=policy.get("state_probes"), cookies=policy.get("probe_cookies"))
+    coverage["policy"] = {
+        "write_mode": policy.get("write_mode", "deny"),
+        "state_probes": policy.get("state_probes", []),
+    }
     return scope, result, guard, records, scan_id, coverage
 
 

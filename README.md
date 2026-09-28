@@ -5,11 +5,11 @@ through a login, scan the authenticated app with OWASP ZAP inside a hard safety 
 normalize the findings with stable fingerprints, and publish them to the GitHub Security tab
 with lifecycle tracking across scans.
 
-**Status: the full loop works end-to-end on real data**, including the Phase 2 authoring CLIs
-(`record → generate → validate`). 213 automated tests pass; the containerized single-command
-run is verified; and the **auto-generated `flow.py` drives a passing scan** end-to-end
-(Week-2 checkpoint). The LLM path in `generate` runs with an `ANTHROPIC_API_KEY`; without one
-it uses a deterministic fallback (verified here).
+**Status: the full loop works end-to-end on real data**, including config-driven onboarding,
+`dast onboard --discover`, the Phase 2 authoring CLIs, coverage-aware lifecycle reporting,
+parameter reachability, and explainable disappeared findings. The target suite passes 316 tests;
+the containerized single-command run preserves the Juice Shop demo, and the LLM path supports
+the Nationwide-approved Copilot provider through `authoring/llm_backend.py`.
 
 An optional **seeded-session + LLM exploration** authoring path is also built and verified: a
 human seeds an authenticated session once (`seed`), an LLM-driven loop explores the authenticated
@@ -47,13 +47,17 @@ scope.json ─▶ preflight ─▶ replay (Chromium ─▶ ZAP proxy) ─▶ sco
   `scan` (bounded ZAP active scan), `coverage` (route×rule surface exercised), `evidence` (redacted
   HAR + screenshot), `main` (one-command gate).
 - **`detections/`** — the results pipeline: `normalizer`, `fingerprint`, `sarif_export`,
-  `github_upload`, `lifecycle_diff` (coverage-aware: `new`/`open`/`resolved`/`not_scanned`).
+  `github_upload`, `lifecycle_diff`, `explain`, `reachability` (coverage-aware:
+  `new`/`open`/`resolved`/`not_scanned`).
   Pure, streaming, fixture-testable.
 - **`contracts/`** — frozen shared contracts: `scope.json`/`scope.schema.json`,
   `detection.schema.json`, the fingerprint formula (`README.md`), the vendored SARIF schema,
   and the real ZAP fixture `sample_zap_output.json`.
 - **`security/dast/<app>/`** — per-app flow + scope (+ gitignored `evidence/`).
 - **`docs/`** — design + decision docs (see below).
+
+See [docs/onboarding_a_new_application.md](docs/onboarding_a_new_application.md) for the
+complete lower-environment onboarding and Podman workflow.
 
 ## Prerequisites
 

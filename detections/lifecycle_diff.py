@@ -37,13 +37,22 @@ def _coverage_check(covered):
       - an iterable of (route, rule) pairs -> exercised iff the exact pair is present
     """
     if covered is None:
-        return lambda route, rule: True
+        return lambda route, rule, parameter=None: True
     if isinstance(covered, dict):
         routes = set(covered.get("routes", []))
         rules = set(covered.get("rules", []))
-        return lambda route, rule: route in routes and rule in rules
+        params = covered.get("route_params")
+
+        def is_covered(route, rule, parameter=None):
+            if route not in routes or rule not in rules:
+                return False
+            if params and parameter:
+                return parameter in set(params.get(route, []))
+            return True
+
+        return is_covered
     pairs = {tuple(p) for p in covered}
-    return lambda route, rule: (route, rule) in pairs
+    return lambda route, rule, parameter=None: (route, rule) in pairs
 
 
 def diff(current_records: Iterable[dict], previous_records: Iterable[dict],
@@ -68,7 +77,8 @@ def diff(current_records: Iterable[dict], previous_records: Iterable[dict],
         out.append({**r, "status": status})
     for r in previous:
         if r["fingerprint"] not in current_fps:
-            status = "resolved" if is_covered(r.get("endpoint"), r.get("rule_id")) else "not_scanned"
+            status = "resolved" if is_covered(r.get("endpoint"), r.get("rule_id"),
+                                                r.get("parameter")) else "not_scanned"
             out.append({**r, "status": status})
     return out
 

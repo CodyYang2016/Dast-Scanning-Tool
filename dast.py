@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,6 +36,31 @@ ROOT = Path(__file__).resolve().parent
 OUT = ROOT / "out"
 
 _DEFAULT_ZAP = "http://localhost:8080"
+
+
+def resolve_out(config_dir=None, cli=None, env=None) -> Path:
+    """Resolve --out > DAST_OUT > app.yaml output.dir > repository out/."""
+    chosen = next((value for value in (cli, env, config_dir) if value is not None), None)
+    if chosen is None:
+        return ROOT / "out"
+    expanded = os.path.expanduser(os.path.expandvars(str(chosen))).strip()
+    if not expanded:
+        raise ValueError("output directory is empty; remove the setting to use the default")
+    path = Path(expanded)
+    return path if path.is_absolute() else ROOT / path
+
+
+def paths_for(args) -> Path:
+    config_dir = None
+    try:
+        config_dir = appconfig.output_dir(appconfig.load_app_config(args.app))
+    except Exception:
+        pass
+    return resolve_out(config_dir, getattr(args, "out", None), os.environ.get("DAST_OUT"))
+
+
+def default_category(app_id: str) -> str:
+    return f"dast/{app_id}"
 
 
 # ---- where things live (one predictable layout per app) ---------------------------------
@@ -218,6 +244,8 @@ def cmd_author(args) -> int:
     from authoring import record as record_mod
     from authoring import validate as validate_mod
 
+    global OUT
+    OUT = paths_for(args)
     config = appconfig.load_app_config(args.app)
     base_url = appconfig.base_url(config)
     traced, bundle = trace_dir(args.app), bundle_dir(args.app)
@@ -260,6 +288,8 @@ def cmd_author(args) -> int:
 def cmd_scan(args) -> int:
     from runner import main as runner_main
 
+    global OUT
+    OUT = paths_for(args)
     config = appconfig.load_app_config(args.app)
     bundle = bundle_dir(args.app)
     if not (bundle / "flow.py").exists():
@@ -283,6 +313,9 @@ def cmd_scan(args) -> int:
 def cmd_report(args) -> int:
     from detections import lifecycle_diff, sarif_export
 
+    global OUT
+    OUT = paths_for(args)
+
     run_dir = latest_scan_dir(args.app)
     if run_dir is None or not (run_dir / "records.json").exists():
         print(f"no scan to report on — run: dast scan {args.app}", file=sys.stderr)
@@ -302,20 +335,61 @@ def cmd_report(args) -> int:
 
     # Coverage-aware publishing: the export drops `resolved` and carries `not_scanned`
     # forward, so GitHub never closes a finding this scan did not look for.
+    config = appconfig.load_app_config(args.app)
+    configured = appconfig.github_publish(config)
+    owner = args.owner or os.environ.get("DAST_GH_OWNER") or configured.get("owner")
+    repo = args.repo or os.environ.get("DAST_GH_REPO") or configured.get("repo")
+    ref = args.ref or configured.get("ref") or "refs/heads/main"
+    category = args.category or configured.get("category") or default_category(args.app)
+    (run_dir / "settings.json").write_text(json.dumps({
+        "output_dir": str(OUT),
+        "github": {"owner": owner, "repo": repo, "ref": ref, "category": category},
+    }, indent=2) + "\n")
+
     sarif = run_dir / "results.sarif"
     rc = sarif_export.main([str(labeled), "--app-id", args.app,
-                            "--driver-version", args.driver_version, "-o", str(sarif)])
+                            "--driver-version", args.driver_version,
+                            "--category", category, "-o", str(sarif)])
     if rc:
         return rc
     print(f"SARIF: {sarif.relative_to(ROOT)}")
 
     if args.upload:
         from detections import github_upload
-        if not (args.owner and args.repo):
+        if not (owner and repo):
             print("--upload needs --owner and --repo", file=sys.stderr)
             return 2
-        return github_upload.main([str(sarif), "--owner", args.owner, "--repo", args.repo,
-                                   "--ref", args.ref])
+        return github_upload.main([str(sarif), "--owner", owner, "--repo", repo, "--ref", ref])
+    return 0
+
+
+def cmd_explain(args) -> int:
+    from detections import explain
+    global OUT
+    OUT = paths_for(args)
+    runs = sorted(p for p in scans_dir(args.app).iterdir()
+                  if p.is_dir() and (p / "records.json").exists()) \
+        if scans_dir(args.app).is_dir() else []
+    if len(runs) < 2:
+        print(f"need two scans to compare; {args.app} has {len(runs)}", file=sys.stderr)
+        return 2
+    previous, current = runs[-2], runs[-1]
+    def load_json(directory: Path, name: str, default):
+        path = directory / name
+        return json.loads(path.read_text()) if path.exists() else default
+
+    previous_records = load_json(previous, "records.json", [])
+    current_records = load_json(current, "records.json", [])
+    current_coverage = load_json(current, "coverage.json", {})
+    previous_coverage = load_json(previous, "coverage.json", {})
+    explanations = explain.explain_disappearance(
+        previous_records, current_records, current_coverage, previous_coverage)
+    print(f"comparing {previous.name} -> {current.name}")
+    print("nothing disappeared." if not explanations else
+          "what happened: " + ", ".join(f"{k}={v}" for k, v in
+                                         sorted(explain.summarize(explanations).items())))
+    for item in explanations[:args.limit]:
+        print(f"  [{item['severity']}] {item['title']} -> {item['reason']}: {item['detail']}")
     return 0
 
 
@@ -327,6 +401,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     def common(sp):
         sp.add_argument("app", help="App id (security/dast/<app>/app.yaml)")
+        sp.add_argument("--out", default=None, help="Artifact root; overrides DAST_OUT and app.yaml")
         return sp
 
     o = common(sub.add_parser("onboard", help="write an app.yaml skeleton to fill in"))
@@ -363,8 +438,13 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--upload", action="store_true", help="publish to GitHub code scanning")
     r.add_argument("--owner", default=None)
     r.add_argument("--repo", default=None)
-    r.add_argument("--ref", default="refs/heads/main")
+    r.add_argument("--ref", default=None)
+    r.add_argument("--category", default=None)
     r.set_defaults(func=cmd_report)
+
+    e = common(sub.add_parser("explain", help="explain disappeared findings"))
+    e.add_argument("--limit", type=int, default=10)
+    e.set_defaults(func=cmd_explain)
     return p
 
 

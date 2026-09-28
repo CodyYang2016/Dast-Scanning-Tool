@@ -41,7 +41,8 @@ _DEFAULT_MODEL = "claude-opus-4-8"
 
 # ---- validation: schema + scope/deny policy (pure) --------------------------------------
 
-def validate_proposal(action: dict, scope: dict, deny_actions=None, safe_forms=None):
+def validate_proposal(action: dict, scope: dict, deny_actions=None, safe_forms=None,
+                      submit_get_forms: bool = True, allow_writes: bool = False):
     """Validate a proposed action against the action schema AND the action policy.
     Returns (ok: bool, reason: str). Fail-closed: any schema or policy failure -> not ok."""
     try:
@@ -53,7 +54,8 @@ def validate_proposal(action: dict, scope: dict, deny_actions=None, safe_forms=N
     target = action.get("target") or {}
     if not (target.get("path") or target.get("selector")):
         return False, "no navigable target (empty path/selector)"
-    decision = validate_action(action, scope, deny_actions=deny_actions, safe_forms=safe_forms)
+    decision = validate_action(action, scope, deny_actions=deny_actions, safe_forms=safe_forms,
+                               submit_get_forms=submit_get_forms, allow_writes=allow_writes)
     return decision.allowed, decision.reason
 
 
@@ -248,6 +250,8 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
     # App-specific knowledge (how auth is proven, what counts as an API call) comes from the
     # app config; the loop itself names no application.
     api_patterns = appconfig.api_patterns(config) if config else ("/rest/", "/api/")
+    submit_get_forms = appconfig.submit_get_forms(config) if config else True
+    allow_writes = appconfig.writes_allowed(config) if config else False
     proof = appconfig.proof(config) if config else None
     guard = ScopeGuard(scope, mode="discovery")  # block-and-continue during discovery (KI4)
     events: list[dict] = []
@@ -294,7 +298,8 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
                                        api_key=api_key)
             if action.get("action") == "stop":
                 break
-            ok, _reason = validate_proposal(action, scope, deny_actions, safe_forms)
+            ok, _reason = validate_proposal(action, scope, deny_actions, safe_forms,
+                                            submit_get_forms, allow_writes)
             if not ok:  # fail-closed: never execute an action that didn't pass validation
                 break
             todo = dispatch(action)
