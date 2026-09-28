@@ -76,9 +76,15 @@ Artifacts land in one predictable place per application:
 
 ```
 out/<app>/authoring/        trace/ and bundle/ (flow.py, scope.json, journey.json, …)
-out/<app>/scans/<scan_id>/  records.json, coverage.json, labeled.json, results.sarif, evidence/
+out/<app>/scans/<scan_id>/  records.json, coverage.json, labeled.json, results.sarif,
+                            settings.json, evidence/
 out/<app>/state.json        lifecycle state across scans
 ```
+
+`out` is the default root, not a fixed one: `--out`, `$DAST_OUT` and `output.dir` in `app.yaml`
+move the whole workspace, highest precedence first. `settings.json` records which of them won,
+so a redirected run can explain itself. Note that `state.json` moves with it — it is the
+lifecycle history, so an inconsistent redirect makes every finding read `new`.
 
 `dast` is a thin facade: each verb composes the module entry points below, which remain the
 interface for anything unusual (a different proxy, a one-off trace, `--no-replay`).
@@ -145,7 +151,11 @@ python -m detections.lifecycle_diff out/records.json --app-id juice-shop --state
 # 4. Publish to the GitHub Security tab (SARIF) from the LABELED set: the export drops only
 #    `resolved` and carries `not_scanned` forward, so GitHub never auto-closes a finding the scan
 #    did not reach (it marks anything absent from the newest upload "fixed").
-python -m detections.sarif_export out/labeled.json -o out.sarif
+#    `--category` keeps one application's analysis separate from another's: GitHub keys an
+#    analysis by (tool, category, ref), and every app here exports under the same tool name, so
+#    two apps sharing a repository with no category share one analysis and the newer upload
+#    REPLACES the older one's alerts. `dast report` passes dast/<app> automatically.
+python -m detections.sarif_export out/labeled.json --category dast/<app> -o out.sarif
 python -m detections.github_upload out.sarif --owner <owner> --repo <repo>
 ```
 

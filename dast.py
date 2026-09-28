@@ -14,8 +14,11 @@ reimplemented, and the underlying CLIs stay the documented interface for anythin
 Artifacts land in one predictable place per application:
 
     out/<app>/authoring/        trace/ and bundle/ from `author`
-    out/<app>/scans/<scan_id>/  records, coverage, gate, SARIF from `scan` and `report`
+    out/<app>/scans/<scan_id>/  records, coverage, gate, SARIF, settings from `scan`/`report`
     out/<app>/state.json        lifecycle state across scans
+
+`out` is the default root. Override it with --out, $DAST_OUT, or `output.dir` in app.yaml,
+highest precedence first; each run records which of them won in its settings.json.
 
 This module names no application: everything app-specific comes from
 security/dast/<app>/app.yaml (enforced by tests/test_no_app_specifics.py).
@@ -25,53 +28,143 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime, timezone
+from dataclasses import dataclass
 from pathlib import Path
 
 from authoring import appconfig
 
 ROOT = Path(__file__).resolve().parent
-OUT = ROOT / "out"
 
 _DEFAULT_ZAP = "http://localhost:8080"
 
 
 # ---- where things live (one predictable layout per app) ---------------------------------
 
-def authoring_dir(app_id: str) -> Path:
-    return OUT / app_id / "authoring"
+def resolve_out(config_dir, cli, env, root: Path = None) -> Path:
+    """Where this app's artifacts go: --out > $DAST_OUT > output.dir in app.yaml > <repo>/out.
+
+    `~` and `${VAR}` expand, so a COMMITTED app.yaml can still name a per-machine location, and
+    a relative value resolves against the repository root rather than the current directory —
+    running `dast` from a subdirectory must not scatter artifacts. An empty value is refused
+    rather than silently resolving to the repo root.
+    """
+    root = root or ROOT
+    chosen = next((v for v in (cli, env, config_dir) if v is not None), None)
+    if chosen is None:
+        return root / "out"
+    expanded = os.path.expanduser(os.path.expandvars(str(chosen))).strip()
+    if not expanded:
+        raise ValueError("output directory is empty; remove the setting to use the default")
+    p = Path(expanded)
+    return p if p.is_absolute() else root / p
 
 
-def bundle_dir(app_id: str) -> Path:
-    """The generated scan bundle: flow.py, scope.json, journey.json and the rest."""
-    return authoring_dir(app_id) / "bundle"
+def display(path: Path) -> str:
+    """A path for a human: repo-relative where that helps, absolute where it does not.
+
+    Path.relative_to RAISES outside its base, and every command ends with such a print, so
+    without this a redirected run dies at the last line after doing all the work.
+    """
+    try:
+        return path.relative_to(ROOT).as_posix()
+    except ValueError:
+        return str(path)
 
 
-def trace_dir(app_id: str) -> Path:
-    return authoring_dir(app_id) / "trace"
+@dataclass(frozen=True)
+class Paths:
+    """One app's artifact layout under a chosen root.
+
+    Built per command rather than read from a module global: a global keyed to "the current
+    app" cannot serve two applications at once, which is the shape anything long-running
+    (a service behind a UI) would need.
+    """
+    root: Path
+    app_id: str
+
+    @property
+    def authoring(self) -> Path:
+        return self.root / self.app_id / "authoring"
+
+    @property
+    def bundle(self) -> Path:
+        """The generated scan bundle: flow.py, scope.json, journey.json and the rest."""
+        return self.authoring / "bundle"
+
+    @property
+    def trace(self) -> Path:
+        return self.authoring / "trace"
+
+    @property
+    def scans(self) -> Path:
+        return self.root / self.app_id / "scans"
+
+    @property
+    def state(self) -> Path:
+        return self.root / self.app_id / "state.json"
+
+    def new_scan(self) -> Path:
+        d = self.scans / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def latest_scan(self) -> Path | None:
+        """Most recent scan directory, or None when the app has never been scanned."""
+        if not self.scans.is_dir():
+            return None
+        runs = sorted(p for p in self.scans.iterdir() if p.is_dir())
+        return runs[-1] if runs else None
 
 
-def scans_dir(app_id: str) -> Path:
-    return OUT / app_id / "scans"
+def _first_set(cli, env, config, default):
+    """The winning value and WHERE it came from, so a run can record its own provenance."""
+    for value, source in ((cli, "cli"), (env, "env"), (config, "config")):
+        if value:
+            return value, source
+    return default, "default"
 
 
-def state_path(app_id: str) -> Path:
-    return OUT / app_id / "state.json"
+def default_category(app_id: str) -> str:
+    """One analysis per application.
+
+    GitHub keys a code-scanning analysis by (tool, category, ref). Every app exports under the
+    same driver name, so without distinct categories a second application's upload REPLACES the
+    first one's alerts in the Security tab.
+    """
+    return f"dast/{app_id}"
 
 
-def new_scan_dir(app_id: str) -> Path:
-    d = scans_dir(app_id) / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+def output_source(args) -> str:
+    """Which rung of the precedence ladder decided where artifacts went.
+
+    Recomputed rather than threaded through Paths so the dataclass stays a plain description of
+    a layout; this is reporting, not behaviour.
+    """
+    configured = None
+    try:
+        configured = appconfig.output_dir(appconfig.load_app_config(args.app))
+    except Exception:
+        pass
+    return _first_set(getattr(args, "out", None), os.environ.get("DAST_OUT"),
+                      configured, None)[1]
 
 
-def latest_scan_dir(app_id: str) -> Path | None:
-    """Most recent scan directory, or None when the app has never been scanned."""
-    if not scans_dir(app_id).is_dir():
-        return None
-    runs = sorted(p for p in scans_dir(app_id).iterdir() if p.is_dir())
-    return runs[-1] if runs else None
+def paths_for(args) -> Paths:
+    """The artifact layout for this invocation, config included where one exists.
+
+    Best-effort on the config: `dast onboard` runs before any app.yaml exists, so an unreadable
+    or missing one falls through to env/CLI/default rather than failing the command.
+    """
+    configured = None
+    try:
+        configured = appconfig.output_dir(appconfig.load_app_config(args.app))
+    except Exception:
+        pass
+    return Paths(resolve_out(configured, getattr(args, "out", None),
+                             os.environ.get("DAST_OUT")), args.app)
 
 
 # ---- onboard ----------------------------------------------------------------------------
@@ -175,7 +268,7 @@ def _discover(args, path) -> int:
         app_id=args.app, base_url=args.base_url, login_url=args.login_url,
         steps=found["steps"], proof=found["proof"],
         authenticated_routes=found.get("authenticated_routes", []), model=found["model"]))
-    print(f"\nwrote {path.relative_to(ROOT)}")
+    print(f"\nwrote {display(path)}")
     print(f"  login:  {len(found['steps'])} steps against {args.login_url}")
     print(f"  proof:  {json.dumps(found['proof'])}")
     print(f"          verified: holds when logged in, fails when logged out")
@@ -191,7 +284,7 @@ def _write_skeleton(args, path) -> int:
         environment_class=args.environment_class,
         app_env=args.app.replace("-", "_").upper(),
     ))
-    print(f"wrote {path.relative_to(ROOT)}")
+    print(f"wrote {display(path)}")
     try:
         appconfig.load_app_config(args.app)
         print("config is already schema-valid; fill in the TODOs, then: "
@@ -220,7 +313,8 @@ def cmd_author(args) -> int:
 
     config = appconfig.load_app_config(args.app)
     base_url = appconfig.base_url(config)
-    traced, bundle = trace_dir(args.app), bundle_dir(args.app)
+    paths = paths_for(args)
+    traced, bundle = paths.trace, paths.bundle
 
     if args.explore:
         from authoring import explore as explore_mod
@@ -250,11 +344,11 @@ def cmd_author(args) -> int:
     rc = validate_mod.main([
         "--plan", str(bundle / "journey.json"), "--scope", str(bundle / "scope.json"),
         "--flow", str(bundle / "flow.py"), "--base-url", base_url,
-        "--zap-proxy", args.zap_proxy, "--report", str(authoring_dir(args.app) / "validation-report.json"),
+        "--zap-proxy", args.zap_proxy, "--report", str(paths.authoring / "validation-report.json"),
         *(["--no-replay"] if args.no_replay else []),
     ])
     if rc == 0:
-        print(f"\nbundle ready: {bundle.relative_to(ROOT)} — next: dast scan {args.app}")
+        print(f"\nbundle ready: {display(bundle)} — next: dast scan {args.app}")
     return rc
 
 
@@ -264,12 +358,13 @@ def cmd_scan(args) -> int:
     from runner import main as runner_main
 
     config = appconfig.load_app_config(args.app)
-    bundle = bundle_dir(args.app)
+    paths = paths_for(args)
+    bundle = paths.bundle
     if not (bundle / "flow.py").exists():
-        print(f"no bundle at {bundle.relative_to(ROOT)} — run: dast author {args.app}",
+        print(f"no bundle at {display(bundle)} — run: dast author {args.app}",
               file=sys.stderr)
         return 2
-    run_dir = new_scan_dir(args.app)
+    run_dir = paths.new_scan()
     rc = runner_main.main([
         "--flow", str(bundle / "flow.py"), "--scope", str(bundle / "scope.json"),
         "--base-url", appconfig.base_url(config),
@@ -278,7 +373,7 @@ def cmd_scan(args) -> int:
         "--records-out", str(run_dir / "records.json"),
         "--coverage-out", str(run_dir / "coverage.json"),
     ])
-    print(f"\nscan artifacts: {run_dir.relative_to(ROOT)} — next: dast report {args.app}")
+    print(f"\nscan artifacts: {display(run_dir)} — next: dast report {args.app}")
     return rc
 
 
@@ -287,14 +382,15 @@ def cmd_scan(args) -> int:
 def cmd_report(args) -> int:
     from detections import lifecycle_diff, sarif_export
 
-    run_dir = latest_scan_dir(args.app)
+    paths = paths_for(args)
+    run_dir = paths.latest_scan()
     if run_dir is None or not (run_dir / "records.json").exists():
         print(f"no scan to report on — run: dast scan {args.app}", file=sys.stderr)
         return 2
 
     labeled = run_dir / "labeled.json"
     rc = lifecycle_diff.main([str(run_dir / "records.json"), "--app-id", args.app,
-                              "--state", str(state_path(args.app)),
+                              "--state", str(paths.state),
                               "--coverage", str(run_dir / "coverage.json"),
                               "-o", str(labeled)])
     if rc:
@@ -307,7 +403,7 @@ def cmd_report(args) -> int:
     # Did the scan reach what the application actually offers? A route can be covered and a
     # rule can run to completion while the parameter carrying the finding was never sent
     # (W6-12) — without this line that gap is invisible.
-    trace_file = trace_dir(args.app) / "trace.json"
+    trace_file = paths.trace / "trace.json"
     cov_file = run_dir / "coverage.json"
     if trace_file.exists() and cov_file.exists():
         from detections import reachability
@@ -323,22 +419,48 @@ def cmd_report(args) -> int:
                 line += f" — never sent: {detail}"
             print(line)
 
+    # Where results are published, resolved the same way as the output root and recorded with
+    # its provenance: a layered precedence that cannot explain itself looks, from a UI, exactly
+    # like the tool ignoring what the operator asked for.
+    gh = {}
+    try:
+        gh = appconfig.github_publish(appconfig.load_app_config(args.app))
+    except Exception:
+        pass
+    owner, owner_src = _first_set(args.owner, os.environ.get("DAST_GH_OWNER"),
+                                  gh.get("owner"), None)
+    repo, repo_src = _first_set(args.repo, os.environ.get("DAST_GH_REPO"), gh.get("repo"), None)
+    ref, ref_src = _first_set(args.ref, None, gh.get("ref"), "refs/heads/main")
+    category, cat_src = _first_set(args.category, None, gh.get("category"),
+                                   default_category(args.app))
+
+    (run_dir / "settings.json").write_text(json.dumps({
+        "output_dir": {"value": str(paths.root), "source": output_source(args)},
+        "github": {"owner": {"value": owner, "source": owner_src},
+                   "repo": {"value": repo, "source": repo_src},
+                   "ref": {"value": ref, "source": ref_src},
+                   "category": {"value": category, "source": cat_src}},
+    }, indent=2) + "\n")
+
     # Coverage-aware publishing: the export drops `resolved` and carries `not_scanned`
     # forward, so GitHub never closes a finding this scan did not look for.
     sarif = run_dir / "results.sarif"
     rc = sarif_export.main([str(labeled), "--app-id", args.app,
-                            "--driver-version", args.driver_version, "-o", str(sarif)])
+                            "--driver-version", args.driver_version,
+                            "--category", category, "-o", str(sarif)])
     if rc:
         return rc
-    print(f"SARIF: {sarif.relative_to(ROOT)}")
+    print(f"SARIF: {display(sarif)}  (category {category})")
 
+    # Publishing stays an explicit act. Config states WHERE results would go; it never decides
+    # THAT they go, because a Security tab is a one-way door.
     if args.upload:
         from detections import github_upload
-        if not (args.owner and args.repo):
-            print("--upload needs --owner and --repo", file=sys.stderr)
+        if not (owner and repo):
+            print("--upload needs a destination: --owner/--repo, $DAST_GH_OWNER/$DAST_GH_REPO, "
+                  "or publish.github in app.yaml", file=sys.stderr)
             return 2
-        return github_upload.main([str(sarif), "--owner", args.owner, "--repo", args.repo,
-                                   "--ref", args.ref])
+        return github_upload.main([str(sarif), "--owner", owner, "--repo", repo, "--ref", ref])
     return 0
 
 
@@ -346,7 +468,8 @@ def cmd_explain(args) -> int:
     """Why did findings disappear between the last two scans? (W6-9)"""
     from detections import explain as explain_mod
 
-    runs = sorted(scans_dir(args.app).iterdir()) if scans_dir(args.app).is_dir() else []
+    paths = paths_for(args)
+    runs = sorted(paths.scans.iterdir()) if paths.scans.is_dir() else []
     runs = [r for r in runs if (r / "records.json").exists()]
     if len(runs) < 2:
         print(f"need two scans to compare; {args.app} has {len(runs)}", file=sys.stderr)
@@ -383,6 +506,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     def common(sp):
         sp.add_argument("app", help="App id (security/dast/<app>/app.yaml)")
+        sp.add_argument("--out", default=None,
+                        help="Where artifacts go, overriding output.dir in app.yaml and "
+                             "$DAST_OUT (default: <repo>/out)")
         return sp
 
     o = common(sub.add_parser("onboard", help="write an app.yaml skeleton to fill in"))
@@ -419,7 +545,11 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--upload", action="store_true", help="publish to GitHub code scanning")
     r.add_argument("--owner", default=None)
     r.add_argument("--repo", default=None)
-    r.add_argument("--ref", default="refs/heads/main")
+    r.add_argument("--ref", default=None)
+    r.add_argument("--category", default=None,
+                   help="Automation category for the Security tab (default: dast/<app>). Two "
+                        "applications must not share one, or the newer upload replaces the "
+                        "older one's alerts")
     r.set_defaults(func=cmd_report)
 
     e = common(sub.add_parser("explain",

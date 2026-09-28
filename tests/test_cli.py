@@ -7,6 +7,8 @@ GitHub is delegated to the module entry points those steps already have, and is 
 running them — not mocked here.
 """
 
+from pathlib import Path
+
 import pytest
 import yaml
 
@@ -36,21 +38,9 @@ def test_an_unknown_verb_is_rejected():
 # ---- artifact layout: one predictable place per app --------------------------------------
 
 def test_artifacts_are_grouped_under_the_app():
-    for path in (dast.bundle_dir("a"), dast.trace_dir("a"), dast.scans_dir("a"),
-                 dast.state_path("a")):
+    p = dast.Paths(dast.ROOT / "out", "a")
+    for path in (p.bundle, p.trace, p.scans, p.state):
         assert "/out/a/" in path.as_posix()
-
-
-def test_latest_scan_dir_is_none_before_any_scan(monkeypatch, tmp_path):
-    monkeypatch.setattr(dast, "OUT", tmp_path)
-    assert dast.latest_scan_dir("never-scanned") is None
-
-
-def test_latest_scan_dir_picks_the_newest_run(monkeypatch, tmp_path):
-    monkeypatch.setattr(dast, "OUT", tmp_path)
-    for stamp in ("20260101T000000Z", "20260301T000000Z", "20260201T000000Z"):
-        (tmp_path / "a" / "scans" / stamp).mkdir(parents=True)
-    assert dast.latest_scan_dir("a").name == "20260301T000000Z"
 
 
 # ---- onboard: the skeleton is real config, not prose -------------------------------------
@@ -109,9 +99,111 @@ def test_the_skeleton_validates_once_its_todos_are_filled(tmp_path, monkeypatch)
 
 
 def test_scan_without_a_bundle_tells_you_what_to_run(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(dast, "OUT", tmp_path)
     monkeypatch.setattr(appconfig, "_APPS_DIR", tmp_path)
     _onboard(tmp_path, monkeypatch, app="unbuilt", base="http://unbuilt")
-    args = dast.build_parser().parse_args(["scan", "unbuilt"])
+    args = dast.build_parser().parse_args(["scan", "unbuilt", "--out", str(tmp_path)])
     assert dast.cmd_scan(args) == 2
     assert "dast author unbuilt" in capsys.readouterr().err
+
+
+# ---- where artifacts go: config default, per-machine override ----------------------------
+
+def test_the_default_is_out_under_the_repo():
+    assert dast.resolve_out(None, None, None) == dast.ROOT / "out"
+
+
+def test_config_beats_the_default(tmp_path):
+    assert dast.resolve_out(str(tmp_path), None, None) == tmp_path
+
+
+def test_env_beats_config(tmp_path):
+    other = tmp_path / "env"
+    assert dast.resolve_out(str(tmp_path), None, str(other)) == other
+
+
+def test_cli_beats_env(tmp_path):
+    cli, env = tmp_path / "cli", tmp_path / "env"
+    assert dast.resolve_out(str(tmp_path), str(cli), str(env)) == cli
+
+
+def test_a_relative_value_resolves_from_the_repo_not_the_cwd(monkeypatch, tmp_path):
+    # Running `dast` from a subdirectory must not scatter artifacts.
+    monkeypatch.chdir(tmp_path)
+    assert dast.resolve_out("artifacts", None, None) == dast.ROOT / "artifacts"
+
+
+def test_a_home_relative_value_expands():
+    from pathlib import Path
+    assert dast.resolve_out("~/dast-out", None, None) == Path.home() / "dast-out"
+
+
+def test_an_environment_variable_in_the_value_expands(monkeypatch, tmp_path):
+    monkeypatch.setenv("DAST_TEST_BASE", str(tmp_path))
+    assert dast.resolve_out("${DAST_TEST_BASE}/scans", None, None) == tmp_path / "scans"
+
+
+def test_an_empty_value_is_refused_rather_than_writing_to_the_repo_root():
+    for bad in ("", "   "):
+        with pytest.raises(ValueError):
+            dast.resolve_out(bad, None, None)
+
+
+# ---- Paths: the whole workspace moves together, and instances do not interfere ------------
+
+def test_every_artifact_kind_sits_under_the_chosen_root(tmp_path):
+    p = dast.Paths(tmp_path, "a")
+    for path in (p.bundle, p.trace, p.scans, p.state, p.authoring):
+        assert tmp_path in path.parents or path == tmp_path
+
+
+def test_two_roots_do_not_interfere(tmp_path):
+    # The property a module-level global could not offer, and the reason for the dataclass.
+    a, b = dast.Paths(tmp_path / "a", "app"), dast.Paths(tmp_path / "b", "app")
+    assert a.bundle != b.bundle
+
+
+def test_latest_scan_dir_is_none_before_any_scan_with_paths(tmp_path):
+    assert dast.Paths(tmp_path, "never-scanned").latest_scan() is None
+
+
+def test_latest_scan_dir_picks_the_newest_run_with_paths(tmp_path):
+    for stamp in ("20260101T000000Z", "20260301T000000Z", "20260201T000000Z"):
+        (tmp_path / "a" / "scans" / stamp).mkdir(parents=True)
+    assert dast.Paths(tmp_path, "a").latest_scan().name == "20260301T000000Z"
+
+
+# ---- printing a path that is not under the repo must not raise ---------------------------
+
+def test_a_path_inside_the_repo_prints_relative():
+    assert dast.display(dast.ROOT / "out" / "x") == "out/x"
+
+
+def test_a_path_outside_the_repo_prints_absolute_instead_of_raising():
+    # Path.relative_to raises ValueError outside its base; every command ended with such a
+    # print, so a redirected run would have died after doing all the work.
+    shown = dast.display(Path("/tmp/dast-artifacts/x"))
+    assert shown == "/tmp/dast-artifacts/x"
+
+
+# ---- publish destination ------------------------------------------------------------------
+
+def test_publish_precedence_is_cli_then_env_then_config():
+    assert dast._first_set("cli", "env", "cfg", "default") == ("cli", "cli")
+    assert dast._first_set(None, "env", "cfg", "default") == ("env", "env")
+    assert dast._first_set(None, None, "cfg", "default") == ("cfg", "config")
+    assert dast._first_set(None, None, None, "default") == ("default", "default")
+
+
+def test_the_category_defaults_to_one_per_application():
+    assert dast.default_category("dvwa") != dast.default_category("juice-shop")
+    assert dast.default_category("dvwa") == "dast/dvwa"
+
+
+def test_the_recorded_output_source_names_the_rung_that_won(monkeypatch, tmp_path):
+    args = dast.build_parser().parse_args(["report", "someapp", "--out", str(tmp_path)])
+    assert dast.output_source(args) == "cli"
+    args = dast.build_parser().parse_args(["report", "someapp"])
+    monkeypatch.setenv("DAST_OUT", str(tmp_path))
+    assert dast.output_source(args) == "env"
+    monkeypatch.delenv("DAST_OUT")
+    assert dast.output_source(args) == "default"

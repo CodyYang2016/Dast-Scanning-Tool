@@ -159,3 +159,35 @@ def test_export_drops_resolved_but_keeps_not_scanned(records):
 def test_export_keeps_unlabeled_records(records):
     # Raw normalizer output (status "open") is unaffected.
     assert len(_results(to_sarif(records))) == len(records)
+
+
+# ---- Automation category: one analysis per application -----------------------------------
+#
+# GitHub keys a code-scanning analysis by (tool name, category, ref). Every app exports under
+# the same driver name, so with no category a second application's upload REPLACES the first
+# one's alerts in the Security tab. The category is carried in the SARIF itself as
+# runs[].automationDetails.id — the REST API has no such field.
+
+def test_a_category_is_carried_as_automation_details(records):
+    s = to_sarif(records, driver_version="2.17.0", category="dast/dvwa")
+    assert s["runs"][0]["automationDetails"]["id"] == "dast/dvwa"
+
+
+def test_a_categorised_document_still_validates_against_the_official_schema(records):
+    s = to_sarif(records, driver_version="2.17.0", category="dast/dvwa")
+    schema = json.loads(SARIF_SCHEMA.read_text())
+    validator_for(schema)(schema).validate(s)
+
+
+def test_two_applications_do_not_share_an_analysis(records):
+    # The regression test for the overwrite bug: these two ids must differ, or GitHub treats
+    # the uploads as the same analysis and the second deletes the first.
+    a = to_sarif(records, category="dast/dvwa")["runs"][0]["automationDetails"]["id"]
+    b = to_sarif(records, category="dast/juice-shop")["runs"][0]["automationDetails"]["id"]
+    assert a != b
+
+
+def test_no_category_leaves_automation_details_out(records):
+    # An empty id is worse than none: it is a category, and every app would share it.
+    assert "automationDetails" not in to_sarif(records)["runs"][0]
+    assert "automationDetails" not in to_sarif(records, category="")["runs"][0]

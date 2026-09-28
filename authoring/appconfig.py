@@ -293,3 +293,21 @@ def credentials(cfg: dict) -> tuple[str, str]:
     if missing:
         raise ValueError(f"credentials not in the environment: {', '.join(missing)}")
     return email, password
+
+
+def output_dir(cfg: dict) -> str | None:
+    """Where this app's artifacts are written, or None to use the default.
+
+    A per-machine override (--out, $DAST_OUT) takes precedence: this file is committed and
+    shared, so an absolute path in it is right on exactly one machine.
+    """
+    return cfg.get("output", {}).get("dir")
+
+
+def github_publish(cfg: dict) -> dict:
+    """The configured GitHub code-scanning destination, or {} when none is declared.
+
+    Publishing still requires an explicit --upload. Config states WHERE results would go; it
+    never decides THAT they go, because a Security tab is a one-way door.
+    """
+    return dict(cfg.get("publish", {}).get("github", {}))

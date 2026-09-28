@@ -131,8 +131,53 @@ What good looks like:
 - **scan** — a gate with `authenticated: true`, `scope_ok: true`, `blocked: 0`.
 - **report** — `lifecycle: new=…` on the first run, `open=…` on the next.
 
-Artifacts land under `out/<app>/`: `authoring/` (trace and bundle) and `scans/<scan_id>/`
-(records, coverage, labels, SARIF, redacted evidence).
+Artifacts land under `out/<app>/` by default: `authoring/` (trace and bundle) and
+`scans/<scan_id>/` (records, coverage, labels, SARIF, redacted evidence).
+
+### Sending them somewhere else
+
+Three ways, highest precedence first — `--out`, then `$DAST_OUT`, then config:
+
+```yaml
+output:
+  dir: ${DAST_ARTIFACTS}/dast    # ~ and ${VAR} expand; relative paths resolve from the repo root
+```
+
+`app.yaml` is committed and shared, so an absolute path in it is right on exactly one machine.
+Declare the portable form in config and let `$DAST_OUT` do the per-machine work. Two things to
+know before you move it:
+
+- **Nothing outside `out/` is gitignored.** Findings, coverage and a redacted HAR will sit
+  wherever you point them. Choose accordingly.
+- **`state.json` moves too, and it is the lifecycle history.** Scanning once with `$DAST_OUT`
+  set and once without silently compares against two different pasts, so every finding reads
+  `new`. Set it consistently — which is what the config key is for.
+
+Each run records what it resolved and **why**, in `settings.json` beside the scan:
+
+```json
+{"output_dir": {"value": "/mnt/scans", "source": "env"}}
+```
+
+### Publishing to a GitHub Security tab
+
+```yaml
+publish:
+  github:
+    owner: my-org
+    repo: my-app-repo
+    ref: refs/heads/main         # optional
+    category: dast/my-app        # optional, defaults to dast/<app_id>
+```
+
+Config says *where* results would go; it never says *that* they go. Publishing still needs an
+explicit `--upload`, because a Security tab is a one-way door.
+
+**The category is not cosmetic.** GitHub keys a code-scanning analysis by *(tool, category,
+ref)*, and every application here exports under the same tool name. Two applications sharing a
+repository with no category share one analysis, and the newer upload **replaces** the older
+one's alerts. The default of `dast/<app_id>` keeps them apart without any configuration; only
+override it if your organisation already has a naming convention.
 
 ---
 

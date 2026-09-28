@@ -90,7 +90,8 @@ def _result_for(rec: dict, rule_index: int) -> dict:
     return result
 
 
-def to_sarif(records: Iterable[dict], driver_version: str | None = None) -> dict:
+def to_sarif(records: Iterable[dict], driver_version: str | None = None,
+             category: str | None = None) -> dict:
     """Build one SARIF 2.1.0 log from detection records (single pass over the input).
 
     A deduped `rules` array is assembled as results stream by, keeping ruleId <-> ruleIndex
@@ -118,15 +119,25 @@ def to_sarif(records: Iterable[dict], driver_version: str | None = None) -> dict
     if driver_version:
         driver["version"] = driver_version
 
+    run = {"tool": {"driver": driver}, "results": results}
+    # GitHub keys a code-scanning analysis by (tool name, category, ref). Every application
+    # exports under the same driver name, so without a category the second app uploaded to a
+    # repository REPLACES the first one's alerts. The category travels in the document — the
+    # REST API has no field for it — as runs[].automationDetails.id, which is exactly what the
+    # CodeQL action's `category` input sets.
+    if category:
+        run["automationDetails"] = {"id": category}
+
     return {
         "version": SARIF_VERSION,
         "$schema": SARIF_SCHEMA,
-        "runs": [{"tool": {"driver": driver}, "results": results}],
+        "runs": [run],
     }
 
 
-def write_sarif(records: Iterable[dict], fh: TextIO, driver_version: str | None = None) -> None:
-    json.dump(to_sarif(records, driver_version), fh, indent=2)
+def write_sarif(records: Iterable[dict], fh: TextIO, driver_version: str | None = None,
+                category: str | None = None) -> None:
+    json.dump(to_sarif(records, driver_version, category), fh, indent=2)
     fh.write("\n")
 
 
@@ -152,15 +163,19 @@ def main(argv: list[str] | None = None) -> int:
                    help="Detection records (JSON array or NDJSON); - for stdin (default)")
     p.add_argument("--app-id", default=None, help="Application id (informational)")
     p.add_argument("--driver-version", default=None, help="Scanner version, e.g. ZAP 2.17.0")
+    p.add_argument("--category", default=None,
+                   help="Automation category, e.g. dast/<app>. Separates this application's "
+                        "analysis from another's in the GitHub Security tab; without one they "
+                        "share a slot and the newer upload replaces the older one's alerts")
     p.add_argument("-o", "--out", default="-", help="Output path, or - for stdout (default)")
     args = p.parse_args(argv)
 
     records = _read_records(sys.stdin if args.records == "-" else args.records)
     if args.out == "-":
-        write_sarif(records, sys.stdout, args.driver_version)
+        write_sarif(records, sys.stdout, args.driver_version, args.category)
     else:
         with open(args.out, "w") as fh:
-            write_sarif(records, fh, args.driver_version)
+            write_sarif(records, fh, args.driver_version, args.category)
     return 0
 
 
