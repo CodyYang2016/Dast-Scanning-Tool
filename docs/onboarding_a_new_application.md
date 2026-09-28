@@ -122,8 +122,11 @@ Artifacts land under `out/<app>/`: `authoring/` (trace and bundle) and `scans/<s
 so a committed bundle answers the question by itself:
 
 ```bash
-python -c "import json;m=json.load(open('out/my-app/authoring/bundle/manifest.json'));print(m['plan_source'], m.get('model',''))"
+python -c "import json;m=json.load(open('out/my-app/authoring/bundle/manifest.json'));print(m.get('plan_source','unrecorded — bundle predates W2-14'), m.get('model',''))"
 ```
+
+(Use `.get`: a bundle generated before provenance was recorded has no such field, and should
+read as *unrecorded* rather than crash or imply either answer.)
 
 `fallback` is not a failure — it is the deterministic planner, and it is the default with
 `--no-llm`. But it is also what you get **silently** when `ANTHROPIC_API_KEY` is unset or the
