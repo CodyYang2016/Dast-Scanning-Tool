@@ -159,20 +159,26 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
         cookies = appconfig.scan_cookies(app_cfg)
         probes = appconfig.state_probes(app_cfg)
 
+    # The scan's own session, collected from the browser so the state probes can see the app
+    # as the scan saw it. Never written to an artifact — only used to fetch the probes.
+    live_session: dict = {}
     if fresh:
         new_session(zap_api)                           # clean per-scan session
     if storage_state:
         try:
             result, guard = replay_seeded(scope, base_url, zap_proxy, storage_state,
-                                          seed_routes or [], evidence_dir=str(ev_dir))
+                                          seed_routes or [], evidence_dir=str(ev_dir),
+                                          on_session=live_session.update)
         except SessionDeadError as exc:
             print(f"SEEDED SESSION DEAD ({exc}); falling back to hand-authored flow",
                   file=sys.stderr)
             flow = load_flow(flow_path)
-            result, guard = replay(scope, flow, base_url, zap_proxy, evidence_dir=str(ev_dir))
+            result, guard = replay(scope, flow, base_url, zap_proxy, evidence_dir=str(ev_dir),
+                                   cookies=cookies, on_session=live_session.update)
     else:
         flow = load_flow(flow_path)
-        result, guard = replay(scope, flow, base_url, zap_proxy, evidence_dir=str(ev_dir))
+        result, guard = replay(scope, flow, base_url, zap_proxy, evidence_dir=str(ev_dir),
+                               cookies=cookies, on_session=live_session.update)
 
     # Redact the HAR immediately after capture — before it can be published (hard requirement).
     har = ev_dir / "active-scan.har"
@@ -189,8 +195,13 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
     for r in records:
         r["evidence_path"] = relpath
     # Capture the (route x rule) surface this scan exercised, for the coverage-aware diff (R2).
+    # Probes carry the scan's own session: without it they see the login page, and a digest of
+    # the login page is the same whatever changed behind it (measured: sha256("") twice over).
+    session = live_session or coverage_capture.session_cookies(storage_state, base_url)
+    probe_jar = {**session, **(cookies or {})}
     coverage = coverage_capture.capture(zap_api, base_url, scan_id=report.get("ascan_id"),
-                                        probes=probes)
+                                        probes=probes, cookies=probe_jar,
+                                        authenticated=bool(session))
     # Pin the policy that produced this coverage, so a later diff can tell "we fixed it" from
     # "we scanned it less hard this time" (R2).
     coverage["policy"] = resolved_policy(policy, max_scan_min, 1)

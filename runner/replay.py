@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 
 from runner.preflight import preflight
-from runner.scope_guard import ScopeGuard
+from runner.scope_guard import ScopeGuard, host_of
 
 _DEFAULT_SCHEMA = str(Path(__file__).resolve().parent.parent / "contracts" / "scope.schema.json")
 
@@ -154,8 +154,30 @@ def _seed_cookies(context, base_url: str, cookies: dict) -> None:
                          for k, v in cookies.items()])
 
 
+def _context_cookies(context, base_url: str) -> dict[str, str]:
+    """The live session the scan just established, for this host only.
+
+    Handed to the caller through a callback rather than returned in the result: a session
+    cookie is live credential material and must not reach an artifact. It exists so the state
+    probes can see the application as the SCAN saw it — probing without it returns the login
+    page, whose digest is the same whatever changed behind it.
+    """
+    host = host_of(base_url)
+    try:
+        jar = context.cookies()
+    except Exception:
+        return {}
+    out: dict[str, str] = {}
+    for c in jar or []:
+        domain = str(c.get("domain", "")).lstrip(".")
+        if host is None or domain == host or host.endswith("." + domain):
+            out[c["name"]] = c["value"]
+    return out
+
+
 def replay(scope: dict, flow_module, base_url: str, zap_proxy: str, headless: bool = True,
-           evidence_dir: str | None = None, cookies: dict | None = None):
+           evidence_dir: str | None = None, cookies: dict | None = None,
+           on_session=None):
     """Run the flow in Chromium proxied through ZAP, enforcing the scope guard. Returns
     (result, guard). Raises ScopeViolation if any out-of-scope request occurred.
 
@@ -190,6 +212,8 @@ def replay(scope: dict, flow_module, base_url: str, zap_proxy: str, headless: bo
         finally:
             if evidence_dir and "evidence_dir" not in inspect.signature(flow_module.run).parameters:
                 page.screenshot(path=str(Path(evidence_dir) / "screenshot.png"), full_page=True)
+            if on_session:
+                on_session(_context_cookies(context, base_url))
             context.close()  # writes the HAR
             browser.close()
 
@@ -199,7 +223,7 @@ def replay(scope: dict, flow_module, base_url: str, zap_proxy: str, headless: bo
 
 def replay_seeded(scope: dict, base_url: str, zap_proxy: str, storage_state: str,
                   seed_routes: list[str], headless: bool = True, evidence_dir: str | None = None,
-                  token_check: str | None = None):
+                  token_check: str | None = None, on_session=None):
     """Replay a SEEDED session through ZAP: start already authenticated from `storage_state` (no
     login flow), prove the session is live, then visit the seed routes so ZAP observes the
     authenticated traffic. Returns (result, guard).
@@ -234,6 +258,8 @@ def replay_seeded(scope: dict, base_url: str, zap_proxy: str, storage_state: str
         finally:
             if evidence_dir:
                 page.screenshot(path=str(Path(evidence_dir) / "screenshot.png"), full_page=True)
+            if on_session:
+                on_session(_context_cookies(context, base_url))
             context.close()  # writes the HAR
             browser.close()
 

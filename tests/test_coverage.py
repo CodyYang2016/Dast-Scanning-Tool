@@ -99,23 +99,23 @@ def test_an_unavailable_progress_view_does_not_break_the_scan(monkeypatch):
 # the artifact rather than a theory in someone's shell history.
 
 def test_a_state_fingerprint_is_stable_when_the_app_is_unchanged(monkeypatch):
-    monkeypatch.setattr(coverage, "_fetch_probe", lambda z, u: (200, "Security Level: low"))
+    monkeypatch.setattr(coverage, "_fetch_probe", lambda z, u, c=None: (200, "Security Level: low"))
     a = coverage.state_fingerprint("http://zap", "http://app", ["/security.php"])
     b = coverage.state_fingerprint("http://zap", "http://app", ["/security.php"])
     assert a == b and a["probes"]["/security.php"]["status"] == 200
 
 
 def test_a_state_fingerprint_changes_when_the_app_does(monkeypatch):
-    monkeypatch.setattr(coverage, "_fetch_probe", lambda z, u: (200, "Security Level: low"))
+    monkeypatch.setattr(coverage, "_fetch_probe", lambda z, u, c=None: (200, "Security Level: low"))
     low = coverage.state_fingerprint("http://zap", "http://app", ["/security.php"])
-    monkeypatch.setattr(coverage, "_fetch_probe", lambda z, u: (200, "Security Level: impossible"))
+    monkeypatch.setattr(coverage, "_fetch_probe", lambda z, u, c=None: (200, "Security Level: impossible"))
     impossible = coverage.state_fingerprint("http://zap", "http://app", ["/security.php"])
     assert low != impossible
 
 
 def test_the_fingerprint_stores_a_digest_not_the_page(monkeypatch):
     # Probe responses can contain anything; only a digest is kept.
-    monkeypatch.setattr(coverage, "_fetch_probe", lambda z, u: (200, "token=SECRET-VALUE"))
+    monkeypatch.setattr(coverage, "_fetch_probe", lambda z, u, c=None: (200, "token=SECRET-VALUE"))
     fp = coverage.state_fingerprint("http://zap", "http://app", ["/x"])
     assert "SECRET" not in json.dumps(fp)
     assert len(fp["probes"]["/x"]["digest"]) == 16
@@ -126,7 +126,7 @@ def test_no_probes_configured_means_no_fingerprint(monkeypatch):
 
 
 def test_an_unreachable_probe_is_recorded_rather_than_skipped(monkeypatch):
-    monkeypatch.setattr(coverage, "_fetch_probe", lambda z, u: (None, ""))
+    monkeypatch.setattr(coverage, "_fetch_probe", lambda z, u, c=None: (None, ""))
     fp = coverage.state_fingerprint("http://zap", "http://app", ["/gone"])
     assert fp["probes"]["/gone"]["status"] is None
 
@@ -160,3 +160,99 @@ def test_parameters_from_another_host_are_ignored(monkeypatch):
         "http://app/s?a=1", "http://elsewhere/s?secret=1",
     ]}}))
     assert coverage.accessed_params("http://zap", "http://app") == {"/s": ["a"]}
+
+
+# ---- authenticated state probes -------------------------------------------------------
+
+def _state(monkeypatch, pages, cookies=None):
+    """state_fingerprint over a fake app whose page depends on whether a session was sent."""
+    monkeypatch.setattr(coverage, "_fetch_probe",
+                        lambda z, u, c=None: (200, pages[bool(c)]))
+    return coverage.state_fingerprint("http://zap", "http://app", ["/security.php"],
+                                      cookies=cookies)
+
+
+def test_a_probe_carries_the_scans_session(monkeypatch):
+    sent = {}
+    monkeypatch.setattr(coverage, "_fetch_probe",
+                        lambda z, u, c=None: (sent.update(c or {}), (200, "ok"))[1])
+    coverage.state_fingerprint("http://zap", "http://app", ["/x"],
+                               cookies={"PHPSESSID": "abc", "security": "low"})
+    assert sent == {"PHPSESSID": "abc", "security": "low"}
+
+
+def test_the_authenticated_view_differs_from_the_anonymous_one(monkeypatch):
+    # The measured failure: probes without a session saw the login page every time, so the
+    # digest was constant and a changed app could never be detected.
+    pages = {False: "Please login", True: "Security Level: low"}
+    anon = _state(monkeypatch, pages)
+    authed = _state(monkeypatch, pages, cookies={"PHPSESSID": "abc"})
+    assert anon["probes"]["/security.php"]["digest"] != authed["probes"]["/security.php"]["digest"]
+
+
+def test_the_fingerprint_says_whether_it_was_authenticated(monkeypatch):
+    pages = {False: "Please login", True: "Security Level: low"}
+    assert _state(monkeypatch, pages)["authenticated"] is False
+    assert _state(monkeypatch, pages, cookies={"PHPSESSID": "a"})["authenticated"] is True
+
+
+def test_an_authenticated_probe_still_notices_the_app_changing(monkeypatch):
+    low = _state(monkeypatch, {True: "Security Level: low"}, cookies={"s": "1"})
+    high = _state(monkeypatch, {True: "Security Level: high"}, cookies={"s": "1"})
+    assert low["probes"]["/security.php"]["digest"] != high["probes"]["/security.php"]["digest"]
+
+
+# ---- where the probe's cookies come from ----------------------------------------------
+
+def _storage(tmp_path, cookies):
+    import json
+    p = tmp_path / "state.json"
+    p.write_text(json.dumps({"cookies": cookies, "origins": []}))
+    return str(p)
+
+
+def test_probe_cookies_come_from_the_recorded_session(tmp_path):
+    ss = _storage(tmp_path, [{"name": "PHPSESSID", "value": "abc", "domain": "app"}])
+    assert coverage.probe_cookies(ss, "http://app") == {"PHPSESSID": "abc"}
+
+
+def test_another_hosts_cookies_are_not_sent(tmp_path):
+    ss = _storage(tmp_path, [{"name": "PHPSESSID", "value": "abc", "domain": "app"},
+                             {"name": "tracker", "value": "x", "domain": "ads.example"}])
+    assert coverage.probe_cookies(ss, "http://app") == {"PHPSESSID": "abc"}
+
+
+def test_configured_state_cookies_are_added(tmp_path):
+    ss = _storage(tmp_path, [{"name": "PHPSESSID", "value": "abc", "domain": "app"}])
+    got = coverage.probe_cookies(ss, "http://app", extra={"security": "low"})
+    assert got == {"PHPSESSID": "abc", "security": "low"}
+
+
+def test_config_wins_over_a_stale_session_cookie(tmp_path):
+    # The config states the state the scan depends on; a cookie captured earlier does not.
+    ss = _storage(tmp_path, [{"name": "security", "value": "high", "domain": "app"}])
+    assert coverage.probe_cookies(ss, "http://app", extra={"security": "low"}) == {"security": "low"}
+
+
+def test_no_session_file_still_yields_the_configured_cookies():
+    assert coverage.probe_cookies(None, "http://app", extra={"security": "low"}) == {"security": "low"}
+
+
+def test_an_unreadable_session_file_does_not_break_the_scan(tmp_path):
+    p = tmp_path / "broken.json"; p.write_text("{not json")
+    assert coverage.probe_cookies(str(p), "http://app", extra={"a": "b"}) == {"a": "b"}
+
+
+def test_config_cookies_alone_are_not_a_session(tmp_path, monkeypatch):
+    # A scan with no recorded session still sends `security=low`; that is app state, not proof
+    # of a login, and the artifact must not imply the probe saw the authenticated app.
+    monkeypatch.setattr(coverage, "_fetch_probe", lambda z, u, c=None: (200, "Please login"))
+    fp = coverage.state_fingerprint("http://zap", "http://app", ["/x"],
+                                    cookies={"security": "low"}, authenticated=False)
+    assert fp["authenticated"] is False
+
+
+def test_session_cookies_are_separable_from_configured_state(tmp_path):
+    ss = _storage(tmp_path, [{"name": "PHPSESSID", "value": "abc", "domain": "app"}])
+    assert coverage.session_cookies(ss, "http://app") == {"PHPSESSID": "abc"}
+    assert coverage.session_cookies(None, "http://app") == {}

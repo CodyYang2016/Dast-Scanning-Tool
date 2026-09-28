@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from runner import replay
 from runner.replay import load_flow
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -141,3 +142,27 @@ def test_selector_proof_accepts_a_marker_that_is_present_but_hidden():
     page = HiddenMarkerPage(selector_count=0)      # present in the DOM, not visible
     wait_for_auth(page, BASE, {"selector": "a[href*='logout']"})
     assert page.waited_state == "attached"
+
+
+# ---- handing the scan's own session to the state probes --------------------------------
+
+class _FakeContext:
+    def __init__(self, cookies): self._c = cookies
+    def cookies(self): return self._c
+
+
+def test_the_scans_session_is_collected_for_this_host():
+    ctx = _FakeContext([{"name": "PHPSESSID", "value": "abc", "domain": "app", "path": "/"}])
+    assert replay._context_cookies(ctx, "http://app") == {"PHPSESSID": "abc"}
+
+
+def test_another_hosts_cookies_are_not_collected():
+    ctx = _FakeContext([{"name": "PHPSESSID", "value": "abc", "domain": "app"},
+                        {"name": "ad", "value": "x", "domain": "ads.example"}])
+    assert replay._context_cookies(ctx, "http://app") == {"PHPSESSID": "abc"}
+
+
+def test_a_context_that_cannot_report_cookies_is_not_fatal():
+    class Broken:
+        def cookies(self): raise RuntimeError("closed")
+    assert replay._context_cookies(Broken(), "http://app") == {}
