@@ -158,6 +158,12 @@ def safe_forms(cfg: dict) -> list[str]:
     return list(cfg.get("explore", {}).get("safe_forms", []))
 
 
+def submit_get_forms(cfg: dict) -> bool:
+    """May exploration submit read-only (GET) forms? Default yes — that is how parameters are
+    discovered — and state-changing verbs stay default-denied regardless."""
+    return bool(cfg.get("explore", {}).get("submit_get_forms", True))
+
+
 def avoid_actions(cfg: dict) -> list[str]:
     return list(cfg.get("scope", {}).get("avoid_actions", []))
 

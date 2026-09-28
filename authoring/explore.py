@@ -37,11 +37,13 @@ from runner.scope_guard import ScopeGuard, host_of
 _ROOT = Path(__file__).resolve().parent.parent
 _ACTION_SCHEMA = _ROOT / "contracts" / "action.schema.json"
 _DEFAULT_MODEL = "claude-opus-4-8"
+_MAX_STALLED_STEPS = 3   # consecutive actions that achieve nothing before giving up
 
 
 # ---- validation: schema + scope/deny policy (pure) --------------------------------------
 
-def validate_proposal(action: dict, scope: dict, deny_actions=None, safe_forms=None):
+def validate_proposal(action: dict, scope: dict, deny_actions=None, safe_forms=None,
+                      submit_get_forms: bool = True):
     """Validate a proposed action against the action schema AND the action policy.
     Returns (ok: bool, reason: str). Fail-closed: any schema or policy failure -> not ok."""
     try:
@@ -53,7 +55,8 @@ def validate_proposal(action: dict, scope: dict, deny_actions=None, safe_forms=N
     target = action.get("target") or {}
     if not (target.get("path") or target.get("selector")):
         return False, "no navigable target (empty path/selector)"
-    decision = validate_action(action, scope, deny_actions=deny_actions, safe_forms=safe_forms)
+    decision = validate_action(action, scope, deny_actions=deny_actions, safe_forms=safe_forms,
+                               submit_get_forms=submit_get_forms)
     return decision.allowed, decision.reason
 
 
@@ -96,6 +99,17 @@ def _normalize_action(action: dict) -> dict:
     return action
 
 
+def is_progress(url_before: str, url_after: str, before_links: int, after_links: int) -> bool:
+    """Did an executed action achieve anything?
+
+    Either it moved us somewhere new, or it revealed routes that were not visible before (an
+    expanded menu). Neither means the action was useless, and repeating a useless action is
+    how a loop burns its whole budget — observed live: the same unclickable form submitted
+    nineteen times.
+    """
+    return url_after != url_before or after_links > before_links
+
+
 def dispatch(action: dict) -> tuple[str, str] | None:
     """Map a validated action to what the browser does: ("goto", path) for follow_link /
     visit_api, ("click", selector) for expand_nav / submit_form. None = nothing executable
@@ -119,9 +133,10 @@ def _in_scope_path(path: str, scope: dict) -> bool:
 
 
 def propose_fallback(observation: dict, visited, scope: dict, deny_actions=None,
-                     safe_forms=None) -> dict:
+                     safe_forms=None, submit_get_forms: bool = True) -> dict:
     """Pick the next action deterministically: the first unvisited, in-scope, non-destructive link,
-    then an unvisited observed API GET; else stop. No LLM. Used as the D9 fallback and in tests."""
+    then an unvisited observed API GET, then an unsubmitted read-only form; else stop. No LLM.
+    Used as the D9 fallback and in tests."""
     visited = set(visited)
     for href in observation.get("links", []):
         if href and href not in visited and _in_scope_path(href, scope):
@@ -136,6 +151,17 @@ def propose_fallback(observation: dict, visited, scope: dict, deny_actions=None,
             candidate = {"action": "visit_api", "target": {"method": "GET", "path": path},
                          "reason": "unvisited observed API GET", "confidence": 1.0}
             if validate_proposal(candidate, scope, deny_actions, safe_forms)[0]:
+                return candidate
+    # Nothing left to navigate to: submitting a read-only form is what reveals an endpoint's
+    # parameters, and those are what the scanner can actually test.
+    for form in observation.get("forms", []):
+        sel = form.get("selector")
+        if sel and sel not in visited:
+            candidate = {"action": "submit_form",
+                         "target": {"method": form.get("method", "POST"), "selector": sel},
+                         "reason": "unsubmitted read-only form; reveals its parameters",
+                         "confidence": 1.0}
+            if validate_proposal(candidate, scope, deny_actions, safe_forms, submit_get_forms)[0]:
                 return candidate
     return {"action": "stop", "reason": "no unvisited in-scope non-destructive targets"}
 
@@ -155,9 +181,11 @@ def propose_llm(observation: dict, model: str, api_key: str) -> dict:
         "fences — validating against this JSON Schema:\n" + schema +
         "\nNever propose destructive actions (logout, delete, purchase, admin mutations). Prefer "
         "follow_link / visit_api on paths that appear in the observation's `links` / `api` and are "
-        "NOT in `visited`. Use expand_nav / submit_form (with a CSS `selector`) only when no "
-        "unvisited link or API path remains. Emit {\"action\":\"stop\"} when nothing useful "
-        "remains."
+        "NOT in `visited`. When a page has a search or filter form, submit_form with "
+        "target.method GET is valuable and permitted: it reveals the endpoint's query "
+        "parameters, which is what makes them testable. A submit_form without method GET is "
+        "treated as a write and will be refused. Use expand_nav when a menu hides routes. Emit "
+        "{\"action\":\"stop\"} when nothing useful remains."
     )
     user = "Redacted observation:\n" + json.dumps(observation, indent=2)
     client = anthropic.Anthropic(api_key=api_key)
@@ -189,13 +217,14 @@ def parse_action_text(text: str) -> dict:
 
 
 def next_action(observation: dict, visited, scope: dict, *, deny_actions=None, safe_forms=None,
-                use_llm: bool = True, model: str = _DEFAULT_MODEL, api_key: str | None = None):
+                submit_get_forms: bool = True, use_llm: bool = True,
+                model: str = _DEFAULT_MODEL, api_key: str | None = None):
     """Return (action, source). LLM-primary; on any LLM/validation failure, deterministic fallback."""
     api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
     if use_llm and api_key:
         try:
             action = _normalize_action(propose_llm(observation, model, api_key))
-            ok, reason = validate_proposal(action, scope, deny_actions, safe_forms)
+            ok, reason = validate_proposal(action, scope, deny_actions, safe_forms, submit_get_forms)
             if ok:
                 return action, "llm"
             t = action.get("target") or {}
@@ -204,7 +233,8 @@ def next_action(observation: dict, visited, scope: dict, *, deny_actions=None, s
                   file=sys.stderr)
         except Exception as exc:
             print(f"explore: LLM path failed ({exc}); using fallback", file=sys.stderr)
-    return propose_fallback(observation, visited, scope, deny_actions, safe_forms), "fallback"
+    return propose_fallback(observation, visited, scope, deny_actions, safe_forms,
+                            submit_get_forms), "fallback"
 
 
 # ---- browser loop -----------------------------------------------------------------------
@@ -221,10 +251,25 @@ def _observe(page, base_url: str, api_events: list[dict]) -> dict:
     links = _safe_eval(
         "() => Array.from(document.querySelectorAll('a[href]')).map(a => a.getAttribute('href'))",
         [])
+    # A form is only actionable if we know what to click and how it submits. Report an
+    # addressable selector, its submit control, its method and its field names — reporting
+    # the bare tag made every form on a page look identical and unclickable.
     forms = _safe_eval(
-        "() => Array.from(document.querySelectorAll('form')).map(f => ({selector: f.getAttribute('id')"
-        " ? '#' + f.getAttribute('id') : 'form', fields: Array.from(f.querySelectorAll('input,select,"
-        "textarea')).map(i => i.getAttribute('name')).filter(Boolean)}))",
+        "() => Array.from(document.querySelectorAll('form')).map((f, i) => {"
+        # f.id is NOT the id attribute when the form has a control named "id": a form's named
+        # controls shadow its properties, so f.id returns that element. getAttribute is immune.
+        "  const fid = f.getAttribute('id');"
+        "  const base = fid ? '#' + CSS.escape(fid) : 'form >> nth=' + i;"
+        "  const btn = f.querySelector('[type=submit], button');"
+        # One selector per form, and it is the CLICKABLE one. Reporting both the container
+        # and its submit control invited the model to copy the container, which submits
+        # nothing — an ambiguity the prompt should not have to resolve.
+        "  return {selector: btn ? base + ' >> ' + (btn.getAttribute('type') === 'submit'"
+        "                  ? '[type=submit]' : 'button') : null,"
+        "          method: (f.getAttribute('method') || 'GET').toUpperCase(),"
+        "          fields: Array.from(f.querySelectorAll('input,select,textarea'))"
+        "                   .map(i2 => i2.getAttribute('name')).filter(Boolean)};"
+        "})",
         [])
     seen: set[str] = set()
     clean: list[str] = []
@@ -255,6 +300,7 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
     # App-specific knowledge (how auth is proven, what counts as an API call) comes from the
     # app config; the loop itself names no application.
     api_patterns = appconfig.api_patterns(config) if config else ("/rest/", "/api/")
+    allow_get_forms = appconfig.submit_get_forms(config) if config else True
     proof = appconfig.proof(config) if config else None
     guard = ScopeGuard(scope, mode="discovery")  # block-and-continue during discovery (KI4)
     events: list[dict] = []
@@ -292,31 +338,52 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
         for route in seed_routes:
             _goto(route)
 
-        steps = 0
+        steps = stalled = 0
         while steps < max_pages:
             observation = redact(_observe(page, base_url, api_events))  # redact BEFORE the LLM
             observation["visited"] = sorted(visited)  # coverage so far, so the model doesn't repeat
             action, _src = next_action(observation, visited, scope, deny_actions=deny_actions,
-                                       safe_forms=safe_forms, use_llm=use_llm, model=model,
+                                       safe_forms=safe_forms, submit_get_forms=allow_get_forms,
+                                       use_llm=use_llm, model=model,
                                        api_key=api_key)
             if action.get("action") == "stop":
                 break
-            ok, _reason = validate_proposal(action, scope, deny_actions, safe_forms)
+            ok, _reason = validate_proposal(action, scope, deny_actions, safe_forms,
+                                            allow_get_forms)
             if not ok:  # fail-closed: never execute an action that didn't pass validation
                 break
             todo = dispatch(action)
             if todo is None:
                 break  # nothing executable (fail closed rather than guess)
             op, arg = todo
+            url_before, links_before = page.url, len(observation.get("links", []))
             if op == "goto":
                 _goto(arg)
-            else:  # click a selector (expand_nav / submit_form); never a navigation
+            else:  # click a selector (expand_nav / submit_form)
                 events.append({"type": "click", "selector": arg})
                 try:
                     page.click(arg, timeout=3000)
+                    page.wait_for_load_state("networkidle", timeout=5000)
                 except Exception:
                     pass
                 visited.add(arg)
+                # A submitted form navigates, usually to the same path carrying the query
+                # parameters it just revealed. Record where we landed: an URL the trace never
+                # saw is an endpoint the scanner will never test.
+                landed = page.url
+                if landed != url_before:
+                    events.append({"type": "goto", "url": landed})
+                    visited.add(landed)
+
+            # Refuse to keep paying for actions that change nothing (observed: the same
+            # unclickable form submitted nineteen times, burning the whole budget).
+            after_links = len(_observe(page, base_url, api_events).get("links", []))
+            if not is_progress(url_before, page.url, links_before, after_links):
+                stalled += 1
+                if stalled >= _MAX_STALLED_STEPS:
+                    break
+            else:
+                stalled = 0
             for f in observation.get("forms", []):
                 events.append({"type": "form", "url": observation.get("url"),
                                "fields": f.get("fields", [])})

@@ -7,7 +7,8 @@ never by the model's own "non-destructive" label. Three independent rules, all f
      (logout, delete, purchase, admin-mutation, ...), reject it.
   2. Default-deny state-changing verbs: any POST/PUT/PATCH/DELETE is rejected unless its target is
      on an explicit safe-form allow-list. GET-like navigation (follow_link/goto/expand_nav) is
-     allowed subject to scope.
+     allowed subject to scope, as is a form submit that explicitly states GET — reading a form
+     is how parameters are discovered. A submit with no stated method is assumed to write.
   3. Embedded off-scope URLs: an in-scope *path* whose query embeds an absolute URL to a host
      outside the allow-list (open-redirect style, e.g. `/redirect?to=https://github.com/...`) is
      rejected — following it would carry the browser off-scope on the app's 302.
@@ -40,14 +41,20 @@ class ActionDecision:
 
 
 def action_verb(action: dict) -> str:
-    """Effective HTTP verb an action would issue (upper-case)."""
+    """Effective HTTP verb an action would issue (upper-case).
+
+    A form submit with no stated method is assumed to POST: unknown must fail closed. One that
+    explicitly states GET is a read — submitting a search or filter form is how an endpoint's
+    parameters become visible at all, and refusing it costs real findings rather than buying
+    safety (measured on DVWA: four high-severity findings unreachable without it).
+    """
     kind = action.get("action")
-    method = (action.get("target", {}).get("method") or "GET").upper()
+    stated = action.get("target", {}).get("method")
     if kind in _GET_ACTIONS:
         return "GET"
     if kind == "submit_form":
-        return method if method != "GET" else "POST"  # a form submit defaults to POST
-    return method  # visit_api and anything else use the stated method
+        return stated.upper() if stated else "POST"
+    return (stated or "GET").upper()  # visit_api and anything else use the stated method
 
 
 def _target_str(action: dict) -> str:
@@ -61,11 +68,14 @@ def is_denied(action: dict, deny_actions) -> bool:
     return any(term.strip().lower() in hay for term in (deny_actions or []) if term.strip())
 
 
-def validate_action(action: dict, scope: dict, deny_actions=None, safe_forms=None) -> ActionDecision:
+def validate_action(action: dict, scope: dict, deny_actions=None, safe_forms=None,
+                    submit_get_forms: bool = True) -> ActionDecision:
     """Decide whether a proposed LLM action may execute. Fail-closed on every rule.
 
     `deny_actions` defaults to the scope's `avoid_action_list`. `safe_forms` is the explicit
-    allow-list of targets for which a state-changing submit is permitted.
+    allow-list of targets for which a state-changing submit is permitted. `submit_get_forms`
+    lets an application opt out of read-form submission entirely, for the case where GET is
+    known to mutate.
     """
     deny_actions = deny_actions if deny_actions is not None else scope.get("avoid_action_list", [])
     safe_forms = set(safe_forms or [])
@@ -77,6 +87,8 @@ def validate_action(action: dict, scope: dict, deny_actions=None, safe_forms=Non
     verb = action_verb(action)
     if verb in STATE_CHANGING and target not in safe_forms:
         return ActionDecision(False, f"state-changing {verb} not on the safe-form allow-list")
+    if action.get("action") == "submit_form" and verb == "GET" and not submit_get_forms:
+        return ActionDecision(False, "this application does not permit form submission")
 
     # Absolute targets must be in-scope by host; relative paths inherit the (in-scope) base host.
     allow = {h.strip().lower() for h in scope.get("fqdn_allow_list", [])}

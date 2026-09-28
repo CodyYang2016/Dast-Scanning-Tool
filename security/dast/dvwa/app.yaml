@@ -18,7 +18,9 @@ base_url: http://dvwa            # as ZAP resolves it on the `dast` network
 
 scope:
   allow: [dvwa]
-  avoid_actions: [logout, setup, phpinfo]   # logout ends the session; setup resets the database
+  avoid_actions: [logout, setup, phpinfo, captcha]
+  # logout ends the session; setup resets the database; the captcha lesson loads Google
+  # reCAPTCHA, and a third-party asset is an out-of-scope request the scan refuses (D4).
 
 auth:
   mode: form

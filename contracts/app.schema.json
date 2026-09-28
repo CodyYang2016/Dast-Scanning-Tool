@@ -351,6 +351,11 @@
               "exclusiveMinimum": 0
             }
           }
+        },
+        "submit_get_forms": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether exploration may submit forms that explicitly use GET. Submitting a search or filter form is how an endpoint's parameters become visible to the scanner, and a GET submit is a read. Set false for an application known to mutate on GET; state-changing verbs are default-denied either way."
         }
       }
     },

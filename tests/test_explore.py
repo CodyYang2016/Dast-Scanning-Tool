@@ -206,3 +206,77 @@ def test_parse_action_text_rejects_no_json():
     import pytest
     with pytest.raises(ValueError):
         parse_action_text("no json here")
+
+
+# ---- the deterministic proposer reads forms too, once links run out ---------------------
+
+def test_fallback_submits_a_read_only_form_when_no_links_remain():
+    obs = {"url": "/search", "links": [], "api": [],
+           "forms": [{"selector": "#search-form [type=submit]", "method": "GET", "fields": ["q"]}]}
+    action = propose_fallback(obs, visited=set(), scope=SCOPE)
+    assert action["action"] == "submit_form"
+    assert action["target"] == {"method": "GET", "selector": "#search-form [type=submit]"}
+
+
+def test_fallback_prefers_an_unvisited_link_over_a_form():
+    obs = {"url": "/", "links": ["/#/about"], "api": [],
+           "forms": [{"selector": "#f [type=submit]", "method": "GET"}]}
+    assert propose_fallback(obs, visited=set(), scope=SCOPE)["action"] == "follow_link"
+
+
+def test_fallback_does_not_resubmit_a_form_it_already_used():
+    obs = {"url": "/search", "links": [], "api": [],
+           "forms": [{"selector": "#f [type=submit]", "method": "GET"}]}
+    assert propose_fallback(obs, visited={"#f [type=submit]"}, scope=SCOPE)["action"] == "stop"
+
+
+def test_fallback_respects_an_app_that_forbids_form_submission():
+    obs = {"url": "/search", "links": [], "api": [],
+           "forms": [{"selector": "#f [type=submit]", "method": "GET"}]}
+    action = propose_fallback(obs, visited=set(), scope=SCOPE, submit_get_forms=False)
+    assert action["action"] == "stop"
+
+
+# ---- forms must be described well enough to actually submit -----------------------------
+# Observed live: _observe reported every DVWA form as the bare selector "form", so the loop
+# clicked the <form> element (which does nothing) nineteen times and discovered no
+# parameters. A form is only useful if the observation carries what to click and how it
+# submits.
+
+def test_fallback_clicks_the_submit_control_not_the_form_element():
+    obs = {"url": "/search", "links": [], "api": [],
+           "forms": [{"selector": "form >> nth=0 >> [type=submit]", "method": "GET",
+                      "fields": ["id"]}]}
+    a = propose_fallback(obs, visited=set(), scope=SCOPE)
+    assert a["target"]["selector"] == "form >> nth=0 >> [type=submit]"
+    assert a["target"]["method"] == "GET"
+
+
+def test_fallback_will_not_submit_a_post_form():
+    obs = {"url": "/transfer", "links": [], "api": [],
+           "forms": [{"selector": "form [type=submit]", "method": "POST", "fields": ["amount"]}]}
+    assert propose_fallback(obs, visited=set(), scope=SCOPE)["action"] == "stop"
+
+
+def test_fallback_skips_a_form_with_no_submit_control():
+    obs = {"url": "/x", "links": [], "api": [],
+           "forms": [{"selector": None, "method": "GET", "fields": ["q"]}]}
+    assert propose_fallback(obs, visited=set(), scope=SCOPE)["action"] == "stop"
+
+
+# ---- an action that achieves nothing must not be repeated -------------------------------
+
+from authoring.explore import is_progress
+
+
+def test_navigating_somewhere_new_is_progress():
+    assert is_progress("http://app/a", "http://app/b?id=1", before_links=1, after_links=1)
+
+
+def test_staying_put_with_nothing_new_is_not_progress():
+    assert not is_progress("http://app/a", "http://app/a", before_links=3, after_links=3)
+
+
+def test_staying_put_but_revealing_links_is_progress():
+    # expand_nav legitimately does not navigate; it uncovers routes.
+    assert is_progress("http://app/a", "http://app/a", before_links=3, after_links=9)

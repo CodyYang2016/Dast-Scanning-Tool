@@ -98,3 +98,46 @@ def test_embedded_url_check_is_case_insensitive_and_query_encoded():
     d = validate_action({"action": "follow_link", "target": {
         "path": "/go?next=HTTPS://Evil.Example.com/x&x=1"}}, SCOPE)
     assert not d.allowed
+
+
+# ---- reading a form is not writing to one -----------------------------------------------
+# Every submit_form was treated as a POST, even one the model explicitly marked GET, so the
+# exploration loop could never submit a search or filter form. That is where the interesting
+# parameters live: measured on DVWA, discovery found /vulnerabilities/sqli/ but never
+# ?id=1&Submit=Submit, and four high-severity findings went with it. A GET form submission is
+# a read; the write-path guarantee is about state-changing verbs, and it is untouched here.
+
+def test_an_explicit_get_form_submit_is_a_read():
+    d = validate_action({"action": "submit_form",
+                         "target": {"method": "GET", "selector": "#search"}}, SCOPE)
+    assert d.allowed
+
+
+def test_a_form_submit_with_no_stated_method_is_still_assumed_to_write():
+    # Unstated means unknown, and unknown must fail closed.
+    d = validate_action({"action": "submit_form", "target": {"selector": "#search"}}, SCOPE)
+    assert not d.allowed and "state-changing" in d.reason
+
+
+def test_a_post_form_still_needs_the_safe_form_allow_list():
+    action = {"action": "submit_form", "target": {"method": "POST", "selector": "#transfer"}}
+    assert not validate_action(action, SCOPE).allowed
+    assert validate_action(action, SCOPE, safe_forms=["#transfer"]).allowed
+
+
+def test_a_get_form_on_the_deny_list_is_still_refused():
+    # Plenty of applications mutate on GET; the deny-list is what protects those.
+    d = validate_action({"action": "submit_form",
+                         "target": {"method": "GET", "selector": "#logout-form"}}, SCOPE)
+    assert not d.allowed and "deny-list" in d.reason
+
+
+def test_an_app_can_switch_get_form_submission_off_entirely():
+    action = {"action": "submit_form", "target": {"method": "GET", "selector": "#search"}}
+    assert validate_action(action, SCOPE).allowed
+    assert not validate_action(action, SCOPE, submit_get_forms=False).allowed
+
+
+def test_get_verb_is_reported_for_an_explicit_get_form():
+    assert action_verb({"action": "submit_form", "target": {"method": "GET"}}) == "GET"
+    assert action_verb({"action": "submit_form", "target": {}}) == "POST"
