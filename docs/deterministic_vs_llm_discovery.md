@@ -105,37 +105,62 @@ All figures from DVWA, one application, same ZAP, same policy unless stated.
 | Path | Routes given by a human | Pages reached | High-severity findings |
 |---|---|---|---|
 | Hand-picked `record` | 5 | 5 | **5** |
-| LLM `explore`, best run | **0** | 27–29 | **8** |
+| LLM `explore`, earlier best run | **0** | 27–29 | 8 (but only **3 of the human's 5**) |
+| LLM `explore`, after W6-11 + W6-12 | **0** | 23 | **7 — including all 5 of the human's** |
 
-The autonomous run found **3 of the 5** the hand-picked run found, **plus 5 it never did**:
+**Autonomous discovery now contains the hand-picked result.** With zero routes supplied by a
+person, the run finds every finding the hand-picked list produced, plus two more:
 
 ```mermaid
 flowchart LR
-  subgraph H["Hand-picked only — 2"]
-    H1["XSS → sqli (id)"]
-    H2["SQLi MySQL → sqli (id)"]
-  end
-  subgraph B["Both — 3"]
+  subgraph B["Both — all 5 the human listed"]
     B1["XSS → xss_r (name)"]
     B2["XSS → brute (username)"]
     B3["SQLi MySQL → brute (username)"]
+    B4["XSS → sqli (id)"]
+    B5["SQLi MySQL → sqli (id)"]
   end
-  subgraph A["Autonomous only — 5"]
+  subgraph A["Autonomous only — 2"]
     A1["Path Traversal → fi (page)"]
     A2["SQLi → sqli_blind (id)"]
-    A3["SQLi → xss_d (default)"]
-    A4["SQLi → brute (password)"]
-    A5["SQLi → setup.php (create_db)"]
   end
-  H --- B --- A
+  B --- A
+  classDef won fill:#e6ffec,stroke:#1a7f37,color:#0a3069
+  class B4,B5 won
 ```
 
-`sqli_blind`, `xss_d` and `fi` are separate lessons nobody had listed. **Autonomous discovery
-does not strictly dominate:** the two it misses are both on `/vulnerabilities/sqli?id=`, and
-they are missing for a reason its own artifacts now explain — that pass never submitted that
-page's form, so the parameter never entered the journey. A different pass reaches it and
-misses something else. Each path has a blind spot; the autonomous one is wider and its blind
-spot moves.
+The two highlighted are the ones it used to miss, and they were not a model failure. Seed
+routes were walked *before* the exploration loop began, so only the **last** one was ever
+observed and `untried_form()` — which only judges the page in front of it — never saw the
+others. DVWA's seeds end with `xss_r`, which is exactly the page whose form was submitted;
+`/vulnerabilities/sqli` was walked straight past and visited bare, so `?id=` never entered the
+journey and no scan built from that bundle could reach it. Queue the seeds through the loop,
+remember forms on pages the model leaves, and the journey goes from **one** parameterised
+target to **seven**:
+
+```
+/vulnerabilities/sqli/?id=1&Submit=Submit          ← never present before
+/vulnerabilities/sqli_blind/?id=1&Submit=Submit
+/vulnerabilities/xss_r/?name=dast-test
+/vulnerabilities/xss_d/?default=English
+/vulnerabilities/brute/?username=admin&password=&Login=Login
+/vulnerabilities/fi/?page=include.php · ?page=file1.php
+```
+
+This is the one claim in this document that changed direction. It was previously written here
+that autonomous discovery "does not strictly dominate" and that its blind spot moves. On this
+application that is no longer true: the blind spot was an ordering bug in our loop, not an
+inherent property of letting a model choose. Three earlier autonomous findings are absent from the new run, each for a different and
+now-visible reason, which is the point of the whole measurement apparatus:
+
+| Absent finding | Why, from the artifacts |
+|---|---|
+| `SQLi → setup.php (create_db)` | The route is excluded by W6-11. A deliberate decision, reported as `route_excluded`, not lost |
+| `SQLi → brute (password)` | `route_params` shows `['Login', 'username']` — the journey submits the form with an empty password, so the parameter was never sent. Reported by the reachability line |
+| `SQLi → xss_d (default)` | `route_params` shows `['default']`, so it **was** exercised, and rule 40018 completed 467 requests and raised 3 alerts elsewhere. It simply did not reproduce — the one of the three that is a genuine finding-level difference rather than a coverage one |
+
+The first two are coverage facts the tool can state about itself. Only the third is a question
+about the finding, and that is the distinction this project exists to make.
 
 ### Two other things worth knowing
 
@@ -303,6 +328,8 @@ visible in a passing test suite, and several were invisible *because* the suite 
 | **The scan depended on state nobody set or recorded** | 5 highs became 0 with the rule running 660 requests | Coverage recorded which rules were *enabled*, never what they *did*, and nothing described the application's own condition |
 | **The state oracle could not see state** | Two runs differing by five highs produced identical fingerprints | Probes were fetched with no session, so every one digested the login page — `sha256("")`, forever equal |
 | **The scan attacked the app's own controls** | ~325 database resets and ~1,000 login POSTs in one scan; half of all responses redirected to login | `avoid_actions` was enforced during exploration only; ZAP was never told, and a passing suite cannot see what a scanner does to a live app |
+| **Only the last seed route was ever observed** | Two hand-picked findings unreachable from any autonomously authored bundle | Seed routes were walked *before* the loop; `untried_form()` judges only the current page. Every test was of a pure function, and the defect lived entirely in the loop's ordering |
+| **A form policy refuses stayed pending forever** | Exploration reached 6 pages instead of 28, returning to one page 23 times | Found only by reading the trace's own form records after a live run — the fix for one defect created it, and the suite was green throughout |
 
 The last one is the one to carry into any real environment. An autonomous loop submitted a
 password-change form and destroyed the credential the scan depended on, and the rule written
@@ -325,6 +352,8 @@ and logging itself out. Almost all of it turned out to be fixable rather than in
 | "Did the rule even run?" | **Fixed** — per-rule state, requests and alerts in `coverage.json` |
 | "Why did this finding go?" | **Answerable** — `dast explain`, attributed with evidence |
 | Route-level vs parameter-level coverage | **Fixed (W6-10)** — coverage records parameters; `fixed` requires the finding's own parameter |
+| Forms on every page but the last going unsubmitted | **Fixed (W6-12)** — seed routes are queued through the loop and forms on pages the model leaves are drained. This is what unlocked the last two hand-picked findings |
+| Parameters the app exposes but the scan never sends | **Now reported** — `dast report` prints the shortfall by name instead of it being a silent miss |
 | The model's route choices | **Inherent**, but far smaller than it looked. Two consecutive scans of one bundle are now identical; what still varies is which routes a *fresh authoring pass* proposes. The answer is protocol — compare unions of repeated passes, never single runs |
 
 The generalisable lesson is the first row. Any application has state a scan depends on, and if
@@ -338,21 +367,25 @@ become the same sentence.
 | Claim | Status |
 |---|---|
 | An application onboards from configuration alone | **Proven** — WebGoat, zero code diff, 4m32s |
-| The LLM can discover routes a human did not list | **Proven** — 4 highs unique to autonomous discovery |
+| The LLM can discover routes a human did not list | **Proven** — and it now *contains* the human's list: 5 of 5 hand-picked highs plus 2 more, from zero supplied routes |
 | The LLM can reach parameters behind forms | **Proven** — `sqli`, `sqli_blind`, `brute`, `xss_r`, `fi` |
 | Deterministic scanning is repeatable | **Proven twice** — byte-identical across two scans of one bundle, and again end-to-end after W6-11: 267 fingerprints, 80 routes, 5 highs, `nothing disappeared` |
 | Safety policy holds against an autonomous agent | **Partly** — five gates hold; one failed live (a password-change form) and is now fixed |
 | A disappeared finding can be explained | **Yes** — `dast explain` attributes it from recorded evidence, now at parameter granularity (`parameter_not_exercised`) and naming deliberate gaps (`route_excluded`). Measured: 80 disappearances correctly attributed to exclusions, 0 called `fixed` |
 | The scanner leaves the application it scans intact | **Now yes, and it did not before** — it was submitting DVWA's database-reset form ~325 times per scan |
 | The LLM beats the deterministic proposer | **Not established** — the best autonomous run wins on count, but run-to-run variance exceeds the difference |
-| Autonomous discovery dominates hand-picking | **No.** It found 5 the human missed and missed 2 the human found. Wider coverage, moving blind spot |
-| A single run is a reliable measure | **For a given bundle, now yes** — two consecutive scans are identical. Across fresh authoring passes, still no: repeat, or compare unions |
-| Every parameter on a reached route gets tested | **No — the open gap.** `/vulnerabilities/sqli` is reached, but the authored journey visits it bare, so `route_params` is empty and the two findings on `?id=` stay unreachable. Visible now instead of silent |
+| Autonomous discovery dominates hand-picking | **Now yes, on this application** — 7 highs including all 5 the human listed. The previous "no" was an ordering bug in our own loop (seed routes walked before the loop began), not a property of model-chosen routes |
+| A single run is a reliable measure | **For the findings, yes** — two consecutive scans of the new bundle produced the same 7 highs and `nothing disappeared`. Not byte-identical overall: 608 vs 626 records over 78 vs 80 routes, because the spider reached two more routes on the second pass. Findings are stable; total record count is not |
+| Every parameter on a reached route gets tested | **Not always, and it now says so.** `dast report` prints `reachability: 8/12 exposed parameters exercised` and names the misses. The two that remain on DVWA are `brute?password` and the `csrf` password fields — the latter is the credential-change form the action policy refuses, reported as a gap because it genuinely is one |
 
-**The defensible summary:** autonomous discovery finds more than a human's list, at zero
-marginal human cost, inside a policy that has now been tested by an agent actively trying to
-click everything — including once destroying the credential it depended on, which the policy
-now refuses. What it does not yet do is find everything *reliably in one run*.
+**The defensible summary:** autonomous discovery finds more than a human's list *and now
+contains it* — all five hand-picked highs plus two more, from zero supplied routes, at zero
+marginal human cost, inside a policy that has been tested by an agent actively trying to click
+everything, including once destroying the credential it depended on, which the policy now
+refuses. For a given bundle the findings repeat exactly. What it still cannot promise is that a
+*fresh authoring pass* proposes the same routes, so the protocol for a real comparison remains
+to repeat and compare unions — and `dast report` now names the parameters a pass left
+untouched, so the shortfall is a number rather than an unknown.
 
 The most transferable result is not a finding count. It is that "the scan found nothing" had
 several indistinguishable causes — the rule never ran; the rule ran and found nothing; the
@@ -371,6 +404,7 @@ handed to the scanner. On a shared environment that is not a lost finding; it is
 
 *Sources: runs on this machine 2026-09-27/28 against OWASP Juice Shop, DVWA and WebGoat
 through ZAP 2.17.0; artifacts under `out/<app>/scans/<scan_id>/`. Commits `622650c` through
-`0fe329c`. Test suite 475 passing. The before/after figures in §3 are scans `20260928T044101Z`
-(996 records, 1 high) and `20260928T044609Z` (617 records, 5 highs); the repeatability pair is
-`20260928T044609Z` and `20260928T044940Z`.*
+`ce43e27`. Test suite 499 passing. The before/after figures in §3 are scans `20260928T044101Z`
+(996 records, 1 high) and `20260928T044609Z` (617 records, 5 highs); the repeatability pair for that
+change is `20260928T044609Z` and `20260928T044940Z`. The 7-high autonomous result in §3 is
+`20260928T155332Z`, repeated as `20260928T155811Z`.*

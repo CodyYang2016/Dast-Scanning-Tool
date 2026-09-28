@@ -170,6 +170,21 @@ record:
 On DVWA that single class of change took a scan from **0 high-severity findings to 5**. If your
 scan finds only headers and cookies, this is almost always why.
 
+**You no longer have to guess whether you got this right.** `dast report` compares the parameters
+your application exposes against the ones the scan actually sent:
+
+```
+reachability: 8/12 exposed parameters exercised — never sent: /vulnerabilities/brute?password
+```
+
+A route can be crawled, appear in coverage, and have a rule run to completion against it while
+the parameter carrying the vulnerability was never sent — that is how two high-severity findings
+stayed invisible on an application we knew well. Treat a non-empty "never sent" list as the first
+thing to fix: either the walk is not submitting that form, or the parameter needs listing under
+`record.authenticated_routes`. Exploration submits the forms on every page it visits, so in
+practice the remaining entries are usually forms the safety policy deliberately refuses, such as
+a password-change form.
+
 **State — what does the application need to be in for a scan to mean anything?** This is the
 one that cost us most. DVWA keeps its security level in a cookie; the scanner never set it,
 and a deliberately vulnerable application produced **zero** findings while the SQL-injection
