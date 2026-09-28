@@ -88,6 +88,12 @@ explore:
     ip: 127.0.0.1
     username: admin
     id: "1"
+    # Without this the brute-force lesson's form submits `password=` empty, so the parameter
+    # never reaches the scanner: `dast report` named it as the one remaining un-exercised
+    # parameter, and the one high-severity finding on it was seen in a single run out of
+    # sixteen. A throwaway value, never a real credential — and it is a LOGIN field, not a
+    # password-change field, so the credential guard (_CREDENTIAL_FIELDS) is unaffected.
+    password: dast-test-password
   budgets:
     max_pages: 30
 
