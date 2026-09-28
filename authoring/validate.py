@@ -63,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--plan", required=True, help="journey.json from generate")
     p.add_argument("--scope", required=True, help="scope.json from generate")
     p.add_argument("--flow", default=None, help="generated flow.py (needed unless --no-replay)")
-    p.add_argument("--base-url", default="http://juice:3000")
+    p.add_argument("--base-url", default=None, help="Target as ZAP resolves it (required unless --no-replay)")
     p.add_argument("--zap-proxy", default="http://localhost:8080")
     p.add_argument("--no-replay", action="store_true", help="Skip the live auth replay (FR-V2/V3 only)")
     p.add_argument("--report", default="validation-report.json")
