@@ -79,7 +79,7 @@ pytest -q          # 107 tests
 ```
 
 Objective / test-first philosophy and the "does it bite?" checks: see
-`validation_and_testing.md`. Safety-critical modules (preflight, scope guard, lifecycle diff)
+`../validation_and_testing.md`. Safety-critical modules (preflight, scope guard, lifecycle diff)
 were committed **red** first, then implemented to green.
 
 ## 5. Verification checklist — the four proof points
@@ -104,7 +104,7 @@ were committed **red** first, then implemented to green.
 Issues 2 and 3 were fixed **preemptively** (predicted before the first build); issue 1 was
 found by the first `docker compose up` and fixed on the second — which passed.
 
-## 7. Known gaps (out of POC scope — see `decisions_and_known_issues.md`)
+## 7. Known gaps (out of POC scope — see `../decisions_and_known_issues.md`)
 - `endpoint_pattern` id-collapsing heuristic (KI1); scope-matching edge cases (KI2);
   Juice Shop container exit-133 flakiness between sessions (KI3).
 - Evidence persistence in compose (add a volume) and durable/governed evidence hosting.

@@ -1,7 +1,7 @@
 # Junior Engineer (Engineer 1) — Setup + Working Plan
 
-A focused guide distilled from `dast_poc_requirements.md`, `../archive/dast_poc_3week_plan.md`,
-and `../archive/dast_poc_day1_runbook.md`. Read those for full detail; this is your on-ramp.
+A focused guide distilled from `../../dast_poc_requirements.md`, `../../archive/dast_poc_3week_plan.md`,
+and `../../archive/dast_poc_day1_runbook.md`. Read those for full detail; this is your on-ramp.
 
 ## Your role in one line
 

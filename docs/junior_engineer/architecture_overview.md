@@ -375,7 +375,7 @@ python -m authoring.explore --seed security/dast/juice-shop/seed.json --scope se
 ```
 
 Full run/verify guide (both paths, containerization gotchas, troubleshooting):
-`testing_and_running_roadmap.md`.
+`archive/testing_and_running_roadmap.md`.
 
 ---
 

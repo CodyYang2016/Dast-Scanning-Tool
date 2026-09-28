@@ -361,7 +361,7 @@ stack: the runner authenticated, stayed in scope (0 blocked), scanned, normalize
 **0 with the gate passed** (1351 detections); `./out/records.json` was produced. Runner
 wall-clock ≈ **3m36s** — well under the 15-minute budget (FR-S5). Three packaging issues were
 found and fixed (distroless healthcheck, Chromium root/sandbox, Playwright pin) — see
-`testing_and_running_roadmap.md` §6 for the full report.
+`archive/testing_and_running_roadmap.md` §6 for the full report.
 
 ### Files
 - `Containerfile` — runner image: base `mcr.microsoft.com/playwright/python:v1.62.0-jammy`
@@ -391,4 +391,4 @@ via PR when upgrading, and re-verify the fingerprint worked examples if ZAP outp
 
 ### Verified run
 `docker compose up --build --abort-on-container-exit --exit-code-from runner` → runner exits 0
-(gate passed), `out/records.json` written, ~3m36s. See `testing_and_running_roadmap.md`.
+(gate passed), `out/records.json` written, ~3m36s. See `archive/testing_and_running_roadmap.md`.
