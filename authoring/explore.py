@@ -154,6 +154,62 @@ def untried_form(observation: dict, visited, scope: dict, deny_actions=None, saf
     return None
 
 
+def unsubmitted_forms(observation: dict, visited, allowed=None) -> dict[str, str]:
+    """The forms on THIS page we have not submitted, as {form_key: page_url} (W6-12).
+
+    `untried_form` only ever judges the page in front of it, so a form on a page the loop
+    then navigates away from was never returned to. Remembering them is what turns "we saw a
+    form there" into "we can go back and submit it".
+
+    `allowed` filters to forms policy would actually permit. Without it a form that can never
+    be submitted stays pending forever: measured, a POST form under write_mode=deny had the
+    loop return to its page 23 times and reach 6 pages instead of 28.
+    """
+    here = observation.get("url", "")
+    out: dict[str, str] = {}
+    for form in observation.get("forms", []):
+        sel = form.get("selector")
+        if not sel:
+            continue
+        if allowed is not None and not allowed(form):
+            continue
+        key = form_key(here, sel)
+        if key not in visited:
+            out[key] = here
+    return out
+
+
+def queued_action(dest: str, reason: str) -> dict:
+    """A deterministic navigation proposal, in the shape policy and dispatch both expect.
+
+    Built here rather than inline because the shape is contractual: `target` is an object, and
+    emitting the bare string refused every proposal and silently ended exploration after one
+    page.
+    """
+    return {"action": "follow_link", "target": {"method": "GET", "path": dest},
+            "reason": reason, "confidence": 1.0}
+
+
+def next_destination(queue, pending: dict, visited) -> str | None:
+    """Where to go when this page has nothing left to submit, or None to ask the model.
+
+    Queued entry points come first — they are the operator's stated starting points, and
+    walking them all up front was the bug: only the LAST seed route was ever observed, so
+    every form on the others was skipped. Measured on DVWA, whose seeds end with xss_r: that
+    page's form was submitted and /vulnerabilities/sqli/, carrying two high-severity findings
+    on ?id=, was visited bare.
+
+    After the queue, return to a page we left holding an unsubmitted form: a form we have seen
+    and not submitted is a parameter nothing has tested.
+    """
+    if queue:
+        return queue[0]
+    for key, url in pending.items():
+        if key not in visited:
+            return url
+    return None
+
+
 def merge_traces(traces: list[dict]) -> dict:
     """Union several exploration runs into one trace.
 
@@ -447,24 +503,63 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
             except Exception:
                 pass
 
-        for route in seed_routes:
-            _goto(route)
+        # Seed routes are QUEUED, not walked up front: walking them meant only the last one was
+        # ever observed, so every form on the others went unsubmitted (W6-12).
+        queue = list(seed_routes)
+        _goto(queue.pop(0))
+        pending_forms: dict[str, str] = {}
 
         steps = stalled = 0
         while steps < max_pages:
             observation = redact(_observe(page, base_url, api_events))  # redact BEFORE the LLM
             observation["visited"] = sorted(visited)  # coverage so far, so the model doesn't repeat
+            # Remember this page's unsubmitted forms before we can be navigated away from it,
+            # but only the ones policy would actually let us submit.
+            def _permitted(form, _here=observation.get("url", "")):
+                sel = form.get("selector")
+                if not sel:
+                    return False
+                candidate = {"action": "submit_form",
+                             "target": {"method": form.get("method", "POST"), "selector": sel,
+                                        "field_bindings": list(form.get("fields") or [])},
+                             "reason": "remembered for later", "confidence": 1.0}
+                return validate_proposal(candidate, scope, deny_actions, safe_forms,
+                                         allow_get_forms, allow_writes, page_url=_here)[0]
+
+            pending_forms.update(unsubmitted_forms(observation, visited, allowed=_permitted))
             # Deterministic first: try this page's own inputs before asking where to go next.
             action = untried_form(observation, visited, scope, deny_actions, safe_forms,
                                   allow_get_forms, allow_writes)
             if action is None:
-                action, _src = next_action(observation, visited, scope,
-                                           deny_actions=deny_actions, safe_forms=safe_forms,
-                                           submit_get_forms=allow_get_forms,
-                                           allow_writes=allow_writes, use_llm=use_llm,
-                                           model=model, api_key=api_key)
+                dest = next_destination(queue, pending_forms, visited)
+                if dest is not None:
+                    if queue and dest == queue[0]:
+                        queue.pop(0)
+                    else:
+                        # Heading there now. Drop it so a form that still refuses to submit
+                        # cannot send us back indefinitely.
+                        for k, u in list(pending_forms.items()):
+                            if u == dest:
+                                pending_forms.pop(k)
+                    action = queued_action(
+                        dest, "queued entry point, or a page left holding an unsubmitted form")
+                else:
+                    action, _src = next_action(observation, visited, scope,
+                                               deny_actions=deny_actions, safe_forms=safe_forms,
+                                               submit_get_forms=allow_get_forms,
+                                               allow_writes=allow_writes, use_llm=use_llm,
+                                               model=model, api_key=api_key)
             if action.get("action") == "stop":
-                break
+                # Before ending the run, spend what is left of the budget on forms we saw and
+                # never submitted — each one is an untested parameter.
+                dest = next_destination([], pending_forms, visited)
+                if dest is None:
+                    break
+                for k, u in list(pending_forms.items()):
+                    if u == dest:
+                        pending_forms.pop(k)
+                action = queued_action(
+                    dest, "returning to an unsubmitted form before stopping")
             ok, _reason = validate_proposal(action, scope, deny_actions, safe_forms,
                                             allow_get_forms, allow_writes,
                                             page_url=observation.get("url"))
@@ -512,11 +607,16 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
             if not is_progress(url_before, page.url, links_before, after_links):
                 stalled += 1
                 if stalled >= _MAX_STALLED_STEPS:
-                    break
+                    # Stalling here does not mean there is nothing left anywhere: a page we
+                    # left may still hold an unsubmitted form.
+                    if next_destination(queue, pending_forms, visited) is None:
+                        break
+                    stalled = 0
             else:
                 stalled = 0
             for f in observation.get("forms", []):
                 events.append({"type": "form", "url": observation.get("url"),
+                               "method": f.get("method", "GET"),
                                "fields": f.get("fields", [])})
             steps += 1
 

@@ -46,7 +46,10 @@ def build_trace(app_id: str, base_url: str, events: list[dict]) -> dict:
         elif etype in ("fill", "click", "login"):
             interactions.append(dict(ev))
         elif etype == "form":
-            forms.append({"url": url, "fields": list(ev.get("fields", []))})
+            # `method` decides whether this form's parameters can ever appear in a URL, and
+            # so whether coverage can see them at all (W6-12).
+            forms.append({"url": url, "method": str(ev.get("method", "GET")).upper(),
+                          "fields": list(ev.get("fields", []))})
         elif etype == "request":
             api.append({"method": ev.get("method", "GET"), "url": url,
                         "params": list(ev.get("params", []))})

@@ -304,6 +304,25 @@ def cmd_report(args) -> int:
         counts[rec["status"]] = counts.get(rec["status"], 0) + 1
     print("lifecycle: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
 
+    # Did the scan reach what the application actually offers? A route can be covered and a
+    # rule can run to completion while the parameter carrying the finding was never sent
+    # (W6-12) — without this line that gap is invisible.
+    trace_file = trace_dir(args.app) / "trace.json"
+    cov_file = run_dir / "coverage.json"
+    if trace_file.exists() and cov_file.exists():
+        from detections import reachability
+        summary = reachability.summarize(
+            reachability.exposed_params(json.loads(trace_file.read_text())),
+            json.loads(cov_file.read_text()))
+        if summary["exposed"]:
+            line = (f"reachability: {summary['exercised']}/{summary['exposed']} exposed "
+                    f"parameters exercised")
+            if summary["gaps"]:
+                detail = "; ".join(f"{r}?{'&'.join(p)}" for r, p in
+                                   sorted(summary["gaps"].items())[:4])
+                line += f" — never sent: {detail}"
+            print(line)
+
     # Coverage-aware publishing: the export drops `resolved` and carries `not_scanned`
     # forward, so GitHub never closes a finding this scan did not look for.
     sarif = run_dir / "results.sarif"

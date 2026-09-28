@@ -6,6 +6,7 @@ fallback proposer, and next_action's fallback when no LLM key is present. Oracle
 observations/actions with known-correct answers.
 """
 
+from authoring import explore
 from authoring.explore import next_action, propose_fallback, validate_proposal
 
 SCOPE = {"app_id": "juice-shop", "fqdn_allow_list": ["juice"],
@@ -457,3 +458,86 @@ def test_a_password_change_form_is_never_taken_automatically():
            "forms": [{"selector": "form >> nth=0 >> [type=submit]", "method": "GET",
                       "fields": ["password_new", "password_conf", "Change"]}]}
     assert untried_form(obs, visited=set(), scope=SCOPE) is None
+
+
+# ---- W6-12: a page we walked past is a parameter we never tested -----------------------
+
+OBS = {"url": "http://app/sqli/",
+       "forms": [{"selector": "form >> nth=0 >> [type=submit]", "method": "GET",
+                  "fields": ["id", "Submit"]}]}
+
+
+def test_a_form_we_have_not_submitted_is_remembered():
+    assert explore.unsubmitted_forms(OBS, set()) == {
+        explore.form_key("http://app/sqli/", "form >> nth=0 >> [type=submit]"): "http://app/sqli/"}
+
+
+def test_a_form_we_already_submitted_is_not_remembered():
+    key = explore.form_key("http://app/sqli/", "form >> nth=0 >> [type=submit]")
+    assert explore.unsubmitted_forms(OBS, {key}) == {}
+
+
+def test_a_form_with_no_selector_is_not_remembered():
+    obs = {"url": "http://app/x", "forms": [{"method": "GET", "fields": ["a"]}]}
+    assert explore.unsubmitted_forms(obs, set()) == {}
+
+
+def test_every_seed_route_is_visited_not_only_the_last():
+    # The measured bug: seed routes were all walked before the loop, so only the last one was
+    # ever observed. DVWA seeds [index, sqli, xss_r]; xss_r got its form submitted and sqli,
+    # holding two high-severity findings on ?id=, was walked straight past.
+    queue = ["/index.php", "/vulnerabilities/sqli/", "/vulnerabilities/xss_r/"]
+    seen = []
+    while (dest := explore.next_destination(queue, {}, set())) is not None:
+        seen.append(dest)
+        queue.pop(0)
+    assert seen == ["/index.php", "/vulnerabilities/sqli/", "/vulnerabilities/xss_r/"]
+
+
+def test_a_page_left_with_an_unsubmitted_form_is_returned_to():
+    pending = {"http://app/sqli/::form >> nth=0": "http://app/sqli/"}
+    assert explore.next_destination([], pending, set()) == "http://app/sqli/"
+
+
+def test_seed_routes_come_before_returning_to_a_left_page():
+    pending = {"http://app/sqli/::form >> nth=0": "http://app/sqli/"}
+    assert explore.next_destination(["/next"], pending, set()) == "/next"
+
+
+def test_a_pending_form_that_has_since_been_submitted_is_not_returned_to():
+    key = "http://app/sqli/::form >> nth=0"
+    assert explore.next_destination([], {key: "http://app/sqli/"}, {key}) is None
+
+
+def test_nothing_queued_and_nothing_pending_means_ask_the_model():
+    assert explore.next_destination([], {}, set()) is None
+
+
+def test_a_queued_destination_is_proposed_in_a_shape_policy_accepts():
+    # Regression: the loop synthesized {"target": "/path"} and every proposal was refused as
+    # "not of type 'object'", so exploration stopped after one page.
+    scope = {"app_id": "a", "environment_class": "dev", "fqdn_allow_list": ["app"],
+             "fqdn_deny_list": [], "avoid_action_list": []}
+    for dest in ("/vulnerabilities/sqli/", "http://app/vulnerabilities/sqli/"):
+        action = explore.queued_action(dest, "queued entry point")
+        ok, reason = explore.validate_proposal(action, scope, [], [], True, False,
+                                               page_url="http://app/index.php")
+        assert ok, f"{dest}: {reason}"
+        assert explore.dispatch(action) == ("goto", dest)
+
+
+def test_a_form_policy_will_never_allow_is_not_remembered():
+    # Measured: a POST form under write_mode=deny stayed pending forever and the loop returned
+    # to its page 23 times, spending the whole budget and reaching 6 pages instead of 28.
+    obs = {"url": "http://app/exec/",
+           "forms": [{"selector": "form >> nth=0 >> [type=submit]", "method": "POST",
+                      "fields": ["ip", "Submit"]}]}
+    assert explore.unsubmitted_forms(obs, set(), allowed=lambda f: False) == {}
+
+
+def test_a_form_policy_allows_is_still_remembered():
+    assert explore.unsubmitted_forms(OBS, set(), allowed=lambda f: True) != {}
+
+
+def test_no_predicate_remembers_everything_as_before():
+    assert explore.unsubmitted_forms(OBS, set()) != {}
