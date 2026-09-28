@@ -170,6 +170,23 @@ record:
 On DVWA that single class of change took a scan from **0 high-severity findings to 5**. If your
 scan finds only headers and cookies, this is almost always why.
 
+**State — what does the application need to be in for a scan to mean anything?** This is the
+one that cost us most. DVWA keeps its security level in a cookie; the scanner never set it,
+and a deliberately vulnerable application produced **zero** findings while the SQL-injection
+rule ran 660 requests. Declare it:
+
+```yaml
+auth:
+  cookies: {security: low}      # state the scan depends on, not left to chance
+scan:
+  state_probes:                 # hashed into coverage.json so two scans are comparable
+    - /security.php
+```
+
+If your app has a feature flag, a tenant setting or a seeded dataset that decides whether the
+interesting code paths are reachable, it belongs here. Without it, *"we found nothing"* and
+*"there was nothing to find"* are the same sentence.
+
 **Posture — every exclusion is a disclosed detection gap.**
 
 ```yaml
@@ -192,6 +209,7 @@ when there is no XHR surface; a wrong pattern quietly records nothing.
 
 | Symptom | Cause | Fix |
 |---|---|---|
+| The scan passes but finds nothing interesting on an app you know is vulnerable | Either the parameters were never discovered (see §5) or the app was not in a testable state | `dast explain <app>` after a second scan; check `coverage.json` for the rule's `requests`/`alerts` — a rule that sent hundreds of requests and raised nothing points at app state, not at the scanner |
 | Everything returns **400**, body `Bad Format`; `docker logs zap` shows `No enum constant …Format.<APP>` | The target is on **8080**, ZAP's own port, so ZAP answers as its API and the app never sees the request (W4-7) | Move the app off 8080 (`-e WEBGOAT_PORT=8083`), or run ZAP's proxy elsewhere. **Silent** — the scan "succeeds" against nothing |
 | `AuthProofError: authentication not proven (selector)` while the login clearly worked | The marker is absent on the authenticated page, or you picked one that exists on the login page too | Load both pages and compare; presence-only is enough, visibility is not required |
 | `AuthProofError … (route)` | The route 302s to login, or returns 4xx/5xx | Check the route by hand with a logged-in session; add `forbid_redirect_to` |
