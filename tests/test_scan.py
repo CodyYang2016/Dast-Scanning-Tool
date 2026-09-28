@@ -167,3 +167,26 @@ def test_a_daemon_that_stops_answering_raises_something_actionable(monkeypatch):
     with pytest.raises(ZapUnavailableError) as exc:
         _poll("http://zap", "/JSON/ascan/view/status/", "0", poll_s=0, max_polls=10)
     assert "stopped responding" in str(exc.value)
+
+
+def test_scan_reports_the_active_scan_id_so_its_rules_can_be_read_back(monkeypatch):
+    """Per-rule outcomes are fetched by scan id; without it, coverage cannot say whether a
+    rule ran, ran and found nothing, or was skipped for time (W6-2)."""
+    calls = []
+
+    def fake(zap_api, path, params=None, timeout=30.0):
+        calls.append(path)
+        if path == "/JSON/ascan/action/scan/":
+            return {"scan": "7"}
+        if path.endswith("/view/status/"):
+            return {"status": "100"}
+        if path == "/JSON/ascan/view/policies/":
+            return {"policies": [{"id": "0"}]}
+        if path == "/JSON/core/view/alerts/":
+            return {"alerts": []}
+        return {"Result": "OK"}
+
+    monkeypatch.setattr("runner.scan._api", fake)
+    monkeypatch.setattr("runner.scan.time.sleep", lambda s: None)
+    report = scan("http://zap", "http://app", ["app"], do_spider=False)
+    assert report["ascan_id"] == "7"

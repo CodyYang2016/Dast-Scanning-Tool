@@ -165,8 +165,8 @@ def export_alerts(zap_api: str, target: str) -> dict:
 
 def scan(zap_api: str, target: str, allow_hosts, do_spider: bool = True,
          max_scan_min: int = 4, policy: dict | None = None) -> dict:
-    """Spider + bounded active-scan `target`, return raw ZAP alerts. Refuses out-of-scope
-    targets before touching ZAP (safety pre-check)."""
+    """Spider + bounded active-scan `target`; return raw ZAP alerts plus the active scan's
+    id. Refuses out-of-scope targets before touching ZAP (safety pre-check)."""
     host = host_of(target)
     allow = {h.strip().lower() for h in allow_hosts}
     if host is None or host not in allow:
@@ -177,8 +177,12 @@ def scan(zap_api: str, target: str, allow_hosts, do_spider: bool = True,
     _api(zap_api, "/JSON/core/action/accessUrl/", {"url": target, "followRedirects": "true"})
     if do_spider:
         spider(zap_api, target)
-    active_scan(zap_api, target)
-    return export_alerts(zap_api, target)
+    ascan_id = active_scan(zap_api, target)
+    report = export_alerts(zap_api, target)
+    # Carried so coverage can read back what each rule did (W6-2): "ran and found nothing"
+    # and "never ran" are otherwise the same sentence.
+    report["ascan_id"] = ascan_id
+    return report
 
 
 def main(argv: list[str] | None = None) -> int:

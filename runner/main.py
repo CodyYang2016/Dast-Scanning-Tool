@@ -89,6 +89,21 @@ def resolve_max_scan_min(cli_value: int | None, policy: dict | None, default: in
     return default
 
 
+def bundle_app_config(scope_path: str) -> dict | None:
+    """The app.yaml for the application this bundle belongs to, if it can be found.
+
+    The bundle carries app_id; the config lives at security/dast/<app_id>/app.yaml. It is
+    optional — a hand-written bundle has none — and supplies the state a scan depends on:
+    cookies to seed and probes to fingerprint (W6-8).
+    """
+    try:
+        from authoring import appconfig
+        scope = json.loads(Path(scope_path).read_text())
+        return appconfig.load_app_config(scope["app_id"])
+    except Exception:
+        return None
+
+
 def bundle_policy(scope_path: str) -> dict | None:
     """The `zap-policy.yaml` that `generate` emitted beside this scope, if any (W2-4).
 
@@ -137,6 +152,13 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
     ev_dir = resolve_evidence_dir(scope_path, evidence_dir, scan_id)   # FR-E1
     ev_dir.mkdir(parents=True, exist_ok=True)
 
+    app_cfg = bundle_app_config(scope_path)
+    cookies = probes = None
+    if app_cfg:
+        from authoring import appconfig
+        cookies = appconfig.scan_cookies(app_cfg)
+        probes = appconfig.state_probes(app_cfg)
+
     if fresh:
         new_session(zap_api)                           # clean per-scan session
     if storage_state:
@@ -167,7 +189,8 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
     for r in records:
         r["evidence_path"] = relpath
     # Capture the (route x rule) surface this scan exercised, for the coverage-aware diff (R2).
-    coverage = coverage_capture.capture(zap_api, base_url)
+    coverage = coverage_capture.capture(zap_api, base_url, scan_id=report.get("ascan_id"),
+                                        probes=probes)
     # Pin the policy that produced this coverage, so a later diff can tell "we fixed it" from
     # "we scanned it less hard this time" (R2).
     coverage["policy"] = resolved_policy(policy, max_scan_min, 1)

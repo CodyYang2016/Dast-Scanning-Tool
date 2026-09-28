@@ -45,6 +45,12 @@ auth:
     email_env: DVWA_USER
     password_env: DVWA_PASS
   storage_state: .secrets/dvwa-storageState.json
+  # DVWA keeps its security level in a cookie. Without it the app defaults to a hardened
+  # mode and a deliberately vulnerable application yields nothing — measured: the SQL
+  # injection rule completed 660 requests and raised no alerts. State the scan depends on
+  # belongs here, not in whatever the browser happened to inherit (W6-8).
+  cookies:
+    security: low
 
 record:
   # Routes visited after login. The query strings matter as much as the paths: ZAP can only
@@ -99,3 +105,8 @@ scan:
     disabled_rules: ["40026"]
   budgets:
     max_scan_min: 10
+  # Hashed into coverage.json so two scans can be compared for "was the app in the same
+  # condition?" — the question that cost an hour when five highs became zero.
+  state_probes:
+    - /security.php
+    - /vulnerabilities/sqli/?id=1&Submit=Submit

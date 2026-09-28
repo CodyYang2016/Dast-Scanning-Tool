@@ -17,6 +17,7 @@ See R2 in docs/junior_engineer/seeded_session_exploration_design.md.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import urllib.parse
 import urllib.request
@@ -73,9 +74,92 @@ def enabled_rule_ids(zap_api: str) -> set[str]:
     return out
 
 
-def capture(zap_api: str, target: str) -> dict:
-    """Return this scan's coverage as {"routes": [...], "rules": [...]} (sorted, JSON-friendly)."""
-    return {
+def _fetch_probe(zap_api: str, url: str) -> tuple[int | None, str]:
+    """Fetch a probe URL THROUGH ZAP, so it is seen exactly as the scan sees the app."""
+    q = urllib.parse.urlencode({"url": url, "followRedirects": "true"})
+    try:
+        data = _api(zap_api, "/JSON/core/action/accessUrl/?" + q if False else
+                    "/JSON/core/action/accessUrl/", {"url": url, "followRedirects": "true"})
+        entry = (data.get("accessUrl") or [{}])[0]
+        header = entry.get("responseHeader", "")
+        status = int(header.split()[1]) if header.startswith("HTTP/") else None
+        return status, entry.get("responseBody", "")
+    except Exception:
+        return None, ""
+
+
+def state_fingerprint(zap_api: str, base_url: str, probes) -> dict:
+    """A digest of what a few chosen URLs returned, so two scans can be compared for
+    "was the application even in the same condition?" (W6-8).
+
+    Findings depend on state the scanner does not own — a security level, a feature flag, a
+    seeded dataset. Measured here: one scan found five high-severity findings and the next
+    found none, with the SQL-injection rule completing 660 requests, because the application
+    had changed underneath. Only a digest is stored: a probe response may contain anything.
+    """
+    probes = list(probes or [])
+    if not probes:
+        return {}
+    out = {}
+    for path in probes:
+        status, body = _fetch_probe(zap_api, base_url.rstrip("/") + path)
+        out[path] = {"status": status,
+                     "digest": hashlib.sha256((body or "").encode()).hexdigest()[:16]}
+    return {"probes": out}
+
+
+def rule_outcomes(zap_api: str, scan_id: str) -> dict:
+    """What each active-scan rule actually did: state, requests sent, alerts raised.
+
+    Coverage used to record which rules were ENABLED, which cannot tell "ran and found
+    nothing" from "never ran". ZAP knows: scanProgress reports per-rule state — Complete, or
+    Skipped with a reason such as exceeding the per-rule time budget. Recording it is what
+    makes a disappeared finding explainable instead of a mystery (W6-2).
+
+    Returns {} if the view is unavailable: a scan must not fail because its bookkeeping did.
+    """
+    try:
+        data = _api(zap_api, "/JSON/ascan/view/scanProgress/", {"scanId": scan_id})
+    except Exception:
+        return {}
+    out: dict[str, dict] = {}
+    for entry in data.get("scanProgress", []):
+        if not isinstance(entry, dict) or "HostProcess" not in entry:
+            continue
+        for row in entry["HostProcess"]:
+            p = row.get("Plugin") if isinstance(row, dict) else row
+            if not p or len(p) < 7:
+                continue
+            name, rule_id, _quality, state, reqs, _total, alerts = p[:7]
+            out[str(rule_id)] = {"name": name, "state": state,
+                                 "requests": int(reqs or 0), "alerts": int(alerts or 0)}
+    return out
+
+
+def truncated_rules(outcomes: dict) -> list[str]:
+    """Rule ids that ZAP stopped early for time — the honest definition of a truncated scan."""
+    return sorted(rid for rid, o in outcomes.items()
+                  if "skip" in o["state"].lower() and "time" in o["state"].lower())
+
+
+def capture(zap_api: str, target: str, scan_id: str | None = None, probes=None) -> dict:
+    """This scan's coverage: what it exercised, what each rule did, and what state the
+    application was in while it did so.
+
+    The last two exist because "no finding" had three indistinguishable causes — the rule did
+    not run, the rule ran and found nothing, or the application was not vulnerable at the
+    time (W6-2, W6-8).
+    """
+    out = {
         "routes": sorted(accessed_routes(zap_api, target)),
         "rules": sorted(enabled_rule_ids(zap_api)),
     }
+    if scan_id is not None:
+        outcomes = rule_outcomes(zap_api, scan_id)
+        if outcomes:
+            out["rule_outcomes"] = outcomes
+            out["truncated_rules"] = truncated_rules(outcomes)
+    state = state_fingerprint(zap_api, target, probes)
+    if state:
+        out["app_state"] = state
+    return out

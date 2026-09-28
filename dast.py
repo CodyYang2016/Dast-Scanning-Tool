@@ -323,6 +323,39 @@ def cmd_report(args) -> int:
     return 0
 
 
+def cmd_explain(args) -> int:
+    """Why did findings disappear between the last two scans? (W6-9)"""
+    from detections import explain as explain_mod
+
+    runs = sorted(scans_dir(args.app).iterdir()) if scans_dir(args.app).is_dir() else []
+    runs = [r for r in runs if (r / "records.json").exists()]
+    if len(runs) < 2:
+        print(f"need two scans to compare; {args.app} has {len(runs)}", file=sys.stderr)
+        return 2
+    prev, cur = runs[-2], runs[-1]
+
+    def _load(run, name):
+        path = run / name
+        return json.loads(path.read_text()) if path.exists() else {}
+
+    out = explain_mod.explain_disappearance(
+        _load(prev, "records.json"), _load(cur, "records.json"),
+        _load(cur, "coverage.json"), _load(prev, "coverage.json"))
+    print(f"comparing {prev.name} -> {cur.name}")
+    if not out:
+        print("nothing disappeared.")
+        return 0
+    print("what happened to the findings that are gone:",
+          ", ".join(f"{k}={v}" for k, v in sorted(explain_mod.summarize(out).items())))
+    shown = [e for e in out if e["severity"] in ("critical", "high", "medium")] or out
+    for e in shown[:args.limit]:
+        print(f"\n  [{e['severity']}] {e['title']} -> {e['endpoint']}")
+        print(f"    {e['reason']}: {e['detail']}")
+    if len(shown) > args.limit:
+        print(f"\n  … and {len(shown) - args.limit} more (use --limit)")
+    return 0
+
+
 # ---- argument surface ----------------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
@@ -369,6 +402,11 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--repo", default=None)
     r.add_argument("--ref", default="refs/heads/main")
     r.set_defaults(func=cmd_report)
+
+    e = common(sub.add_parser("explain",
+                              help="why did findings disappear between the last two scans?"))
+    e.add_argument("--limit", type=int, default=10)
+    e.set_defaults(func=cmd_explain)
     return p
 
 

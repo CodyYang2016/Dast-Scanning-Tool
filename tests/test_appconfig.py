@@ -330,3 +330,16 @@ def test_test_data_is_empty_unless_provided():
     assert appconfig.test_data(MINIMAL) == {}
     cfg = {**json.loads(json.dumps(MINIMAL)), "explore": {"test_data": {"email": "a@b.test"}}}
     assert appconfig.test_data(cfg) == {"email": "a@b.test"}
+
+
+def test_scan_cookies_and_state_probes_default_to_nothing():
+    assert appconfig.scan_cookies(MINIMAL) == {} and appconfig.state_probes(MINIMAL) == []
+
+
+def test_an_app_can_declare_the_state_its_scan_depends_on(tmp_path):
+    cfg = json.loads(json.dumps(MINIMAL))
+    cfg["auth"]["cookies"] = {"security": "low"}
+    cfg["scan"] = {"state_probes": ["/security.php"]}
+    loaded = appconfig.load_app_config(_write(tmp_path, cfg))
+    assert appconfig.scan_cookies(loaded) == {"security": "low"}
+    assert appconfig.state_probes(loaded) == ["/security.php"]

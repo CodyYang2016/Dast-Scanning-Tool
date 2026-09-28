@@ -257,6 +257,13 @@
               }
             }
           }
+        },
+        "cookies": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Cookies to seed into the scanning browser before replay, e.g. {security: low}. Some applications keep test-relevant state in a cookie the scanner would otherwise never set \u2014 DVWA's security level is one, and not setting it silently changed a five-finding scan into a zero-finding one. State the scan depends on belongs in configuration, not in luck. Never put a credential or a session token here (W6-8)."
         }
       },
       "oneOf": [
@@ -427,6 +434,14 @@
               "minimum": 1
             }
           }
+        },
+        "state_probes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Paths fetched before the scan whose responses are hashed into the coverage artifact, so two scans can be compared for whether the application was in the same condition. Only a digest is stored (W6-8)."
         }
       }
     },

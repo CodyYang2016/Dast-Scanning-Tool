@@ -138,8 +138,24 @@ def load_flow(flow_path: str):
     return module
 
 
+def _seed_cookies(context, base_url: str, cookies: dict) -> None:
+    """Put configured cookies on the scanning context before the flow runs.
+
+    Some applications keep test-relevant state in a cookie the scanner would never set on its
+    own. DVWA's security level is one: without it a scan of a deliberately vulnerable
+    application found nothing, with the injection rule completing 660 requests and raising no
+    alerts. State a scan depends on belongs in configuration (W6-8).
+    """
+    if not cookies:
+        return
+    from urllib.parse import urlsplit
+    host = urlsplit(base_url).hostname
+    context.add_cookies([{"name": k, "value": str(v), "domain": host, "path": "/"}
+                         for k, v in cookies.items()])
+
+
 def replay(scope: dict, flow_module, base_url: str, zap_proxy: str, headless: bool = True,
-           evidence_dir: str | None = None):
+           evidence_dir: str | None = None, cookies: dict | None = None):
     """Run the flow in Chromium proxied through ZAP, enforcing the scope guard. Returns
     (result, guard). Raises ScopeViolation if any out-of-scope request occurred.
 
@@ -161,6 +177,7 @@ def replay(scope: dict, flow_module, base_url: str, zap_proxy: str, headless: bo
             Path(evidence_dir).mkdir(parents=True, exist_ok=True)
             ctx_kwargs["record_har_path"] = str(Path(evidence_dir) / "active-scan.har")
         context = browser.new_context(**ctx_kwargs)
+        _seed_cookies(context, base_url, cookies or {})
         page = context.new_page()
         # Safety layer 2: every browser request passes the scope guard before the proxy.
         page.route("**/*", lambda route: guard.route_handler(route))

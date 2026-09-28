@@ -224,6 +224,17 @@ def avoid_actions(cfg: dict) -> list[str]:
     return list(cfg.get("scope", {}).get("avoid_actions", []))
 
 
+def scan_cookies(cfg: dict) -> dict:
+    """Cookies the scanning browser must carry — state the scan depends on, stated in config
+    rather than left to chance (W6-8)."""
+    return dict(cfg.get("auth", {}).get("cookies", {}))
+
+
+def state_probes(cfg: dict) -> list[str]:
+    """Paths whose responses are hashed into coverage to describe the app's condition."""
+    return list(cfg.get("scan", {}).get("state_probes", []))
+
+
 def storage_state(cfg: dict) -> str | None:
     return cfg["auth"].get("storage_state")
 
