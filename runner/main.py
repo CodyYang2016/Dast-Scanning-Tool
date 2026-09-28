@@ -144,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--seed", default=None,
                    help="Seed config (Phase A): replay a seeded storageState + seed routes instead "
                         "of the login flow; falls back to --flow if the session is dead")
-    p.add_argument("--base-url", default="http://juice:3000", help="Target as ZAP resolves it")
+    p.add_argument("--base-url", required=True, help="Target as ZAP resolves it")
     p.add_argument("--zap-api", default="http://localhost:8080")
     p.add_argument("--zap-proxy", default="http://localhost:8080")
     p.add_argument("--records-out", default=None, help="Write detection records here")

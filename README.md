@@ -73,6 +73,46 @@ Builds the runner, starts Juice Shop + ZAP + the runner on one network, runs a s
 authenticated scan, and exits with the **Phase 1 gate** as its code (0 = pass). Detection
 records land in `./out/records.json`. Images are pinned by digest (`versions.lock`).
 
+### Option A (Podman) — Nationwide lower environment
+
+Podman is the supported container runtime in Nationwide lower environments; the compose file,
+network, bind mount and env var are all OCI-standard, so the same command runs under Podman.
+The commands below use Podman only — do not substitute Docker.
+
+```bash
+# One-time on a Nationwide Windows/WSL workstation: start the machine, fix the stale proxy,
+# and pre-pull the Playwright + ZAP images through the ntr.nwie.net mirror (Git Bash):
+./prepull_playwright_podman_nationwide.sh
+
+# Same single-command run as Option A, on Podman:
+podman compose up --build --abort-on-container-exit --exit-code-from runner
+#   (older Podman: `podman-compose up --build --abort-on-container-exit --exit-code-from runner`)
+
+# On RHEL with SELinux, if the runner cannot write ./out, relabel the bind mount once:
+#   add `:Z` to the volume in compose.yaml  ->  ./out:/app/out:Z
+```
+
+### Onboarding a new application (configuration only)
+
+A second application is **one file** — `security/dast/<app>/app.yaml` — never a code change.
+`tests/test_no_app_specifics.py` fails the build if any application name leaks into
+`authoring/`, `runner/` or `dast.py`. The `dast` facade is a thin wrapper over the existing
+`authoring.*` / `runner.main` CLIs.
+
+```bash
+python -m dast onboard my-app --base-url http://my-app:8443   # writes app.yaml to fill in
+$EDITOR security/dast/my-app/app.yaml                         # login shape, proof, credentials
+
+export MY_APP_USER=…  MY_APP_PASS=…        # the env-var NAMES you put in auth.credentials
+python -m dast author my-app               # record → generate → validate (bundle in out/my-app/)
+python -m dast scan   my-app               # preflight → replay → ZAP → normalize → coverage
+python -m dast report my-app               # lifecycle diff → SARIF   (--upload to publish)
+```
+
+The login (`selectors` shorthand or a `steps` list), the proof of authentication (`js`,
+`route` or `selector`), the API URL patterns, scope and scan posture all come from `app.yaml`
+and are validated against `contracts/app.schema.json`. Nothing is inherited from the pilot.
+
 ### Option B — local dev loop
 
 ```bash

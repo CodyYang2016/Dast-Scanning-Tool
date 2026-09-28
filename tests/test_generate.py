@@ -57,11 +57,30 @@ PLAN = {
     ],
 }
 
+# App config the deterministic transforms read (tests are exempt from the no-app-specifics
+# guard; core modules take all app specifics from a config exactly like this).
+CONFIG = {
+    "app_id": "juice-shop",
+    "environment_class": "dev",
+    "base_url": "http://juice:3000",
+    "scope": {"allow": ["juice"], "deny": ["*.google-analytics.com"],
+              "avoid_actions": ["logout", "delete-account"]},
+    "auth": {
+        "mode": "form",
+        "login_url": "/#/login",
+        "selectors": {"email": "#email", "password": "#password", "submit": "#loginButton"},
+        "proof": {"js": "window.localStorage.getItem('token')"},
+        "credentials": {"email_env": "AUTH_EMAIL", "password_env": "AUTH_PASSWORD"},
+    },
+    "ui": {"dismiss_selectors": ["button[aria-label='Close Welcome Banner']"]},
+    "api": {"patterns": ["/rest/", "/api/"]},
+}
+
 
 # ---- FR-G2: scope emission ---------------------------------------------------------------
 
 def test_emit_scope_validates_and_allowlists_host():
-    scope = emit_scope(TRACE)
+    scope = emit_scope(TRACE, CONFIG)
     Draft202012Validator(json.loads(SCOPE_SCHEMA.read_text())).validate(scope)
     assert "juice" in scope["fqdn_allow_list"]
     assert scope["environment_class"] != "prod"
@@ -70,16 +89,16 @@ def test_emit_scope_validates_and_allowlists_host():
 # ---- FR-G4 + safety: deterministic render of a validated plan ----------------------------
 
 def test_journey_from_trace_is_schema_valid():
-    plan = journey_from_trace(TRACE)
+    plan = journey_from_trace(TRACE, CONFIG)
     Draft202012Validator(json.loads(JOURNEY_SCHEMA.read_text())).validate(plan)
 
 
 def test_render_flow_is_deterministic():
-    assert render_flow(PLAN) == render_flow(PLAN)
+    assert render_flow(PLAN, CONFIG) == render_flow(PLAN, CONFIG)
 
 
 def test_rendered_flow_compiles_and_defines_run():
-    src = render_flow(PLAN)
+    src = render_flow(PLAN, CONFIG)
     tree = ast.parse(src)  # raises SyntaxError if not valid Python
     funcs = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
     assert "run" in funcs
@@ -87,7 +106,7 @@ def test_rendered_flow_compiles_and_defines_run():
 
 def test_rendered_flow_has_no_hardcoded_secrets():
     # Creds must come from env (auth.json), never baked into generated code (NFR-3).
-    src = render_flow(PLAN)
+    src = render_flow(PLAN, CONFIG)
     assert "os.environ" in src
 
 
@@ -113,7 +132,7 @@ def test_parse_plan_text_raises_on_garbage():
 # ---- FR-G3: policy / manifest / lock emission (parse correctly) --------------------------
 
 def test_zap_policy_has_intensity():
-    assert emit_zap_policy()["intensity"] in ("low", "medium", "high")
+    assert emit_zap_policy(CONFIG)["intensity"] in ("low", "medium", "high")
 
 
 def test_manifest_and_lock_are_json_serializable():
