@@ -37,6 +37,26 @@ python -m dast onboard my-app --base-url http://my-app:8443
 $EDITOR security/dast/my-app/app.yaml       # every TODO is a decision you must make
 ```
 
+**Or have it written for you.** `--discover` reads the login page, has a model propose the
+login steps and several candidate proofs, and then *verifies* the proposal by logging in:
+
+```bash
+export MYAPP_USER=…  MYAPP_PASS=…  ANTHROPIC_API_KEY=…
+python -m dast onboard my-app --base-url http://my-app:8443 --login-url /login \
+  --zap-proxy http://localhost:8080 --discover
+```
+
+A proof is written into the config only after it has been observed to hold while logged in
+**and to fail while logged out** — the second half is what a plausible-sounding guess cannot
+fake. Candidates are each checked in a fresh session, and one that would navigate somewhere
+session-ending is refused before it is evaluated rather than after. If nothing survives, the
+command says what it tried and writes the skeleton instead, so you are never handed a config
+that looks finished and is not.
+
+Measured on DVWA: **11 seconds**, three login steps and a verified `selector` proof, and the
+resulting config passed `dast author` (live auth replay) unchanged. You still review it — it
+is a starting point, not an authority — and the `record`/`api`/`ui` TODOs remain yours.
+
 The skeleton is a valid config with TODOs, not prose — fill them in and it loads. Three keys
 carry all the judgement: the **login shape** (§3), the **proof** (§3), and the **identity**.
 

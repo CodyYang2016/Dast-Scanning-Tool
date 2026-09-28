@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nationwide.com/ssd-dast-poc/contracts/auth_discovery.schema.json",
+  "title": "Proposed authentication block",
+  "description": "What the model may return when asked how to log into an application (dast onboard --discover). It proposes DATA — which fields to fill, what to click, and candidate ways to prove the session is real — and deterministic code then VERIFIES the proposal by executing it: a proof is accepted only if it holds after logging in and does NOT hold on the login page. The model's confidence is never the reason anything is accepted. No credential values appear here; `value` names which credential to type.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["steps", "proof_candidates"],
+  "properties": {
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "description": "The login as ordered browser actions, same shape as app.yaml auth.steps.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["action", "selector"],
+        "properties": {
+          "action": {"type": "string", "enum": ["fill", "click", "press", "wait_for"]},
+          "selector": {"type": "string", "minLength": 1},
+          "value": {"type": "string", "enum": ["identifier", "secret"]},
+          "key": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "proof_candidates": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 5,
+      "description": "Ordered best-first. Each is tried against the running application and the first one that actually discriminates between logged-in and logged-out is kept; the rest are discarded. Proposing several is cheap and raises the chance one survives verification.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "minProperties": 1,
+        "maxProperties": 1,
+        "properties": {
+          "js": {
+            "type": "string",
+            "minLength": 1,
+            "description": "A JS expression truthy only when authenticated, e.g. window.localStorage.getItem('token')."
+          },
+          "selector": {
+            "type": "string",
+            "minLength": 1,
+            "description": "A CSS selector for an element present only when authenticated."
+          },
+          "route": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path"],
+            "properties": {
+              "path": {"type": "string", "minLength": 1},
+              "expect_status": {"type": "integer", "minimum": 100, "maximum": 599},
+              "forbid_redirect_to": {"type": "string", "minLength": 1}
+            }
+          }
+        }
+      }
+    },
+    "authenticated_routes": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "description": "Optional: routes the model believes are worth visiting once logged in. Suggestions only — exploration finds routes for itself."
+    },
+    "notes": {
+      "type": "string",
+      "description": "Optional free text for the operator, e.g. an observed password policy. Never acted on."
+    }
+  }
+}
