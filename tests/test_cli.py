@@ -38,7 +38,7 @@ def test_an_unknown_verb_is_rejected():
 def test_artifacts_are_grouped_under_the_app():
     for path in (dast.bundle_dir("a"), dast.trace_dir("a"), dast.scans_dir("a"),
                  dast.state_path("a")):
-        assert "/out/a/" in str(path)
+        assert "/out/a/" in path.as_posix()
 
 
 def test_latest_scan_dir_is_none_before_any_scan(monkeypatch, tmp_path):
