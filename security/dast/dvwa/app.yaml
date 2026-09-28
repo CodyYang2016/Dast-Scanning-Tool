@@ -83,7 +83,7 @@ explore:
     username: admin
     id: "1"
   budgets:
-    max_pages: 10
+    max_pages: 30
 
 scan:
   # Posture is a choice, not a default (readiness SP-1..SP-5), and every exclusion here is a
@@ -98,4 +98,4 @@ scan:
     alert_threshold: low
     disabled_rules: ["40026"]
   budgets:
-    max_scan_min: 6
+    max_scan_min: 10

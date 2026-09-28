@@ -203,3 +203,45 @@ def test_write_mode_does_not_loosen_scope():
     action = {"action": "submit_form",
               "target": {"method": "POST", "selector": "http://evil.test/x"}}
     assert not validate_action(action, SCOPE, allow_writes=True).allowed
+
+
+# ---- judge an action by its context, not just its selector ------------------------------
+# The autonomous loop destroyed its own credential and the session guard did not fire. It
+# submitted DVWA's CSRF lesson — a password-change form — and the only thing the guard saw
+# was the selector "form >> nth=0 >> [type=submit]", which says nothing. The page URL
+# (/vulnerabilities/csrf/) and the field names (password_new, password_conf) both said
+# exactly what the form did. An action has to be judged by where it is and what it carries.
+
+def _form(selector="form >> nth=0 >> [type=submit]", method="GET", fields=None):
+    t = {"method": method, "selector": selector}
+    if fields:
+        t["field_bindings"] = fields
+    return {"action": "submit_form", "target": t}
+
+
+def test_a_password_change_form_is_refused_by_its_field_names():
+    d = validate_action(_form(fields=["password_new", "password_conf", "Change"]), SCOPE)
+    assert not d.allowed and "credential" in d.reason
+
+
+def test_the_variants_applications_actually_use_are_covered():
+    for fields in (["new_password", "confirm_password"], ["current_password", "password1"],
+                   ["oldPassword", "newPassword"], ["passwordConfirm"]):
+        assert not validate_action(_form(fields=fields), SCOPE).allowed, fields
+
+
+def test_a_form_on_a_password_change_page_is_refused_by_its_url():
+    d = validate_action(_form(), SCOPE, page_url="http://app/account/change-password")
+    assert not d.allowed and ("session" in d.reason or "credential" in d.reason)
+
+
+def test_the_login_form_itself_is_not_mistaken_for_a_credential_change():
+    # Logging in is the whole point; only CHANGING a credential is refused.
+    d = validate_action(_form(fields=["username", "password", "Login"]), SCOPE,
+                        page_url="http://app/login.php")
+    assert d.allowed
+
+
+def test_an_ordinary_search_form_is_unaffected():
+    assert validate_action(_form(fields=["id", "Submit"]), SCOPE,
+                           page_url="http://app/vulnerabilities/sqli/").allowed

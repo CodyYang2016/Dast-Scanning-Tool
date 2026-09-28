@@ -228,13 +228,13 @@ def storage_state(cfg: dict) -> str | None:
     return cfg["auth"].get("storage_state")
 
 
-def max_pages(cfg: dict, default: int = 50) -> int:
+def max_pages(cfg: dict, default: int = 30) -> int:
     return int(cfg.get("explore", {}).get("budgets", {}).get("max_pages", default))
 
 
 _DEFAULT_POLICY = {"attack_strength": "medium", "alert_threshold": "medium",
                    "disabled_rules": ["40026"]}   # DOM-XSS is browser-driven and slow
-_DEFAULT_BUDGETS = {"max_scan_min": 4, "max_rule_min": 1}
+_DEFAULT_BUDGETS = {"max_scan_min": 10, "max_rule_min": 1}
 
 
 def scan_policy(cfg: dict) -> dict:

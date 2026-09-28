@@ -45,6 +45,14 @@ _NEVER = ("logout", "log-out", "signout", "sign-out", "delete-account", "delete_
 # is least comforting for the one verb whose whole purpose is destruction.
 _ALWAYS_EXPLICIT = {"DELETE"}
 
+# A form that carries these fields changes a credential, whatever its selector looks like.
+# The selector of a submit button ("form >> nth=0 >> [type=submit]") says nothing at all, so
+# the fields and the page are the only honest evidence of what a submission does.
+_CREDENTIAL_FIELDS = ("password_new", "password_conf", "new_password", "newpassword",
+                      "confirm_password", "passwordconfirm", "password_confirm",
+                      "current_password", "currentpassword", "old_password", "oldpassword",
+                      "password1", "password2")
+
 # Navigation actions are read-only by nature; visit_api/submit_form carry an explicit method.
 _GET_ACTIONS = {"follow_link", "goto", "expand_nav"}
 
@@ -83,14 +91,36 @@ def is_denied(action: dict, deny_actions) -> bool:
     return any(term.strip().lower() in hay for term in (deny_actions or []) if term.strip())
 
 
-def never_allowed(action: dict) -> bool:
-    """True for an action that ends the session or the credential, at any posture."""
-    hay = f"{action.get('action', '')} {_target_str(action)}".lower()
-    return any(term in hay for term in _NEVER)
+def changes_a_credential(action: dict) -> bool:
+    """True when a form's own fields show it sets or confirms a password.
+
+    Two password-ish fields, or any explicit new/confirm/current naming, means the submission
+    changes a credential. A login form (one password field alongside a username) does not
+    qualify — logging in is the point.
+    """
+    fields = [str(f).lower() for f in action.get("target", {}).get("field_bindings", [])]
+    if any(f in _CREDENTIAL_FIELDS for f in fields):
+        return True
+    return sum(1 for f in fields if "password" in f or "passwd" in f) > 1
+
+
+def never_allowed(action: dict, page_url: str | None = None) -> bool:
+    """True for an action that ends the session or the credential, at any posture.
+
+    Judged on everything available: the action kind, its target, the page it is on, and the
+    fields it would submit. Looking at the target alone let an autonomous run submit a
+    password-change form whose selector was an anonymous "[type=submit]", which destroyed the
+    credential the scan depended on.
+    """
+    hay = f"{action.get('action', '')} {_target_str(action)} {page_url or ''}".lower()
+    if any(term in hay for term in _NEVER):
+        return True
+    return changes_a_credential(action)
 
 
 def validate_action(action: dict, scope: dict, deny_actions=None, safe_forms=None,
-                    submit_get_forms: bool = True, allow_writes: bool = False) -> ActionDecision:
+                    submit_get_forms: bool = True, allow_writes: bool = False,
+                    page_url: str | None = None) -> ActionDecision:
     """Decide whether a proposed LLM action may execute. Fail-closed on every rule.
 
     `deny_actions` defaults to the scope's `avoid_action_list`. `safe_forms` is the explicit
@@ -102,7 +132,9 @@ def validate_action(action: dict, scope: dict, deny_actions=None, safe_forms=Non
     safe_forms = set(safe_forms or [])
     target = _target_str(action)
 
-    if never_allowed(action):
+    if changes_a_credential(action):
+        return ActionDecision(False, "submits a credential change; refused at any posture")
+    if never_allowed(action, page_url):
         return ActionDecision(False, "ends the session or the credential; refused at any posture")
 
     if is_denied(action, deny_actions):

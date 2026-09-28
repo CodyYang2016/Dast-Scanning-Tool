@@ -184,7 +184,7 @@ def cmd_author(args) -> int:
         rc = explore_mod.main(["--app", args.app,
                                *(["--seed", args.seed] if args.seed else []),
                                "--zap-proxy", args.zap_proxy, "--out-dir", str(traced),
-                               "--max-pages", str(appconfig.max_pages(config, 25)),
+                               "--max-pages", str(appconfig.max_pages(config, 30)),
                                *(["--no-llm"] if args.no_llm else []),
                                *(["--headed"] if args.headed else [])])
     else:

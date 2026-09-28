@@ -223,13 +223,9 @@ def test_fallback_submits_a_read_only_form_when_no_links_remain():
            "forms": [{"selector": "#search-form [type=submit]", "method": "GET", "fields": ["q"]}]}
     action = propose_fallback(obs, visited=set(), scope=SCOPE)
     assert action["action"] == "submit_form"
-    assert action["target"] == {"method": "GET", "selector": "#search-form [type=submit]"}
-
-
-def test_fallback_prefers_an_unvisited_link_over_a_form():
-    obs = {"url": "/", "links": ["/#/about"], "api": [],
-           "forms": [{"selector": "#f [type=submit]", "method": "GET"}]}
-    assert propose_fallback(obs, visited=set(), scope=SCOPE)["action"] == "follow_link"
+    # the fields travel with the action so policy can judge what would be submitted
+    assert action["target"] == {"method": "GET", "selector": "#search-form [type=submit]",
+                                "field_bindings": ["q"]}
 
 
 def test_fallback_does_not_resubmit_a_form_it_already_used():
@@ -307,3 +303,157 @@ def test_nothing_is_invented_when_no_test_data_is_configured():
 
 def test_a_form_with_no_fields_is_handled():
     assert fill_values(None, {"email": "x@y.test"}) == []
+
+
+# ---- a page is not finished until its inputs have been tried ----------------------------
+# Measured on DVWA: exploration VISITED /vulnerabilities/brute/ twice and never submitted its
+# form, so ?username= was never discovered and two high-severity findings stayed invisible.
+# The cause was priority — the fallback only reached for a form once no unvisited link
+# remained, and with 29 pages of links that never happened. A human tester lands on a page,
+# tries its inputs, and only then moves on.
+
+def test_a_form_on_the_current_page_outranks_a_link_elsewhere():
+    obs = {"url": "/brute", "links": ["/#/about", "/#/contact"], "api": [],
+           "forms": [{"selector": "#brute [type=submit]", "method": "GET",
+                      "fields": ["username", "password"]}]}
+    a = propose_fallback(obs, visited=set(), scope=SCOPE)
+    assert a["action"] == "submit_form"
+
+
+def test_links_are_followed_once_the_page_has_no_untried_forms():
+    obs = {"url": "/brute", "links": ["/#/about"], "api": [],
+           "forms": [{"selector": "#brute [type=submit]", "method": "GET"}]}
+    a = propose_fallback(obs, visited={"#brute [type=submit]"}, scope=SCOPE)
+    assert a["action"] == "follow_link" and a["target"]["path"] == "/#/about"
+
+
+def test_a_page_with_no_form_still_follows_links():
+    obs = {"url": "/", "links": ["/#/about"], "api": [], "forms": []}
+    assert propose_fallback(obs, visited=set(), scope=SCOPE)["action"] == "follow_link"
+
+
+# ---- relative hrefs must resolve, or the same route is explored twice -------------------
+# DVWA's menu links are "../../vulnerabilities/brute/". Prefixing a slash produced
+# /../../vulnerabilities/brute/, which a browser normalizes but the trace does not — so the
+# same page entered the index twice, burned two steps of budget, and produced two different
+# endpoint_patterns for one route, which would split it across a lifecycle diff.
+
+def test_a_dot_dot_href_resolves_against_the_current_page():
+    assert normalize_href("../../vulnerabilities/brute/",
+                          "http://dvwa/dvwa/includes/x.php") == "/vulnerabilities/brute/"
+
+
+def test_a_sibling_relative_href_resolves():
+    assert normalize_href("about.php", "http://dvwa/docs/index.php") == "/docs/about.php"
+
+
+def test_an_absolute_path_is_unchanged_by_resolution():
+    assert normalize_href("/vulnerabilities/sqli/", "http://dvwa/index.php") == "/vulnerabilities/sqli/"
+
+
+def test_a_hash_route_is_unchanged_by_resolution():
+    assert normalize_href("#/basket", "http://juice:3000/#/") == "/#/basket"
+
+
+def test_resolution_keeps_an_off_host_url_absolute_so_scope_can_judge_it():
+    assert normalize_href("https://evil.test/x", "http://dvwa/index.php") == "https://evil.test/x"
+
+
+# ---- one exploration run is a sample, not a measurement ---------------------------------
+# Measured on DVWA with identical config: one run reached sqli, sqli_blind, xss_r and fi and
+# the scan found 7 highs; the next spent its budget on five instructions.php?doc= variants,
+# never reached sqli, and found 2. ZAP itself is deterministic (two scans of one bundle were
+# byte-identical), so the variance is the model's route choices. Repeating exploration and
+# taking the union costs a minute per pass and removes the coin-flip.
+
+from authoring.explore import merge_traces
+
+
+def test_merging_unions_the_routes_two_runs_found():
+    a = {"app_id": "x", "base_url": "http://x", "hosts": ["x"], "index": ["http://x/a"],
+         "interactions": [{"type": "goto", "url": "http://x/a"}], "forms": [], "api": []}
+    b = {**a, "index": ["http://x/b"], "interactions": [{"type": "goto", "url": "http://x/b"}]}
+    merged = merge_traces([a, b])
+    assert merged["index"] == ["http://x/a", "http://x/b"]
+
+
+def test_merging_does_not_duplicate_a_route_both_runs_found():
+    a = {"app_id": "x", "base_url": "http://x", "hosts": ["x"], "index": ["http://x/a"],
+         "interactions": [{"type": "goto", "url": "http://x/a"}], "forms": [], "api": []}
+    assert merge_traces([a, dict(a)])["index"] == ["http://x/a"]
+
+
+def test_merging_unions_api_calls_and_hosts():
+    a = {"app_id": "x", "base_url": "http://x", "hosts": ["x"], "index": [], "interactions": [],
+         "forms": [], "api": [{"method": "GET", "url": "http://x/api/1", "params": []}]}
+    b = {**a, "api": [{"method": "GET", "url": "http://x/api/2", "params": []}]}
+    merged = merge_traces([a, b])
+    assert len(merged["api"]) == 2 and merged["hosts"] == ["x"]
+
+
+def test_merging_one_trace_returns_it_unchanged():
+    a = {"app_id": "x", "base_url": "http://x", "hosts": ["x"], "index": ["http://x/a"],
+         "interactions": [], "forms": [], "api": []}
+    assert merge_traces([a]) == a
+
+
+def test_a_repeat_pass_starts_from_what_earlier_passes_already_covered(monkeypatch):
+    """Without this, repeated passes re-decide the same way and their union adds nothing."""
+    import inspect
+    from authoring import explore as mod
+    assert "already_seen" in inspect.signature(mod.explore).parameters
+
+
+# ---- mechanical decisions belong in code, not in a prompt -------------------------------
+# The prompt told the model to submit an untried form before following a link. Measured: it
+# did so 3 times in 28 pages, walking past sqli, brute and exec without touching their
+# inputs. "Is there an untried form here?" needs no judgement, so it stops being a request
+# and becomes a rule — the deterministic-first principle from the discovery proposal (§5.2):
+# code for the common case, the model for what actually needs semantics.
+
+from authoring.explore import form_key, untried_form
+
+
+def test_an_untried_form_on_this_page_is_taken_without_asking():
+    obs = {"forms": [{"selector": "#f [type=submit]", "method": "GET", "fields": ["id"]}]}
+    a = untried_form(obs, visited=set(), scope=SCOPE)
+    assert a and a["action"] == "submit_form" and a["target"]["selector"] == "#f [type=submit]"
+
+
+def test_no_untried_form_means_the_model_decides():
+    obs = {"url": "http://app/x", "forms": [{"selector": "#f [type=submit]", "method": "GET"}]}
+    assert untried_form(obs, visited={form_key("http://app/x", "#f [type=submit]")},
+                        scope=SCOPE) is None
+    assert untried_form({"forms": []}, visited=set(), scope=SCOPE) is None
+
+
+def test_a_form_the_policy_refuses_is_not_taken_automatically():
+    # Automation must not become a way around the action policy.
+    obs = {"forms": [{"selector": "#f [type=submit]", "method": "POST"}]}
+    assert untried_form(obs, visited=set(), scope=SCOPE) is None          # writes denied
+    assert untried_form(obs, visited=set(), scope=SCOPE, allow_writes=True) is not None
+
+
+def test_a_form_is_tracked_per_page_not_globally():
+    """Every page's first form has the same selector (`form >> nth=0`), so a global
+    visited-set marked them all tried after the first submission — which is why only two or
+    three forms were ever submitted per run no matter how the budget was raised."""
+    obs = {"url": "http://app/b", "forms": [{"selector": "form >> nth=0", "method": "GET"}]}
+    already = {form_key("http://app/a", "form >> nth=0")}      # submitted on a DIFFERENT page
+    assert untried_form(obs, visited=already, scope=SCOPE) is not None
+
+
+def test_the_same_form_on_the_same_page_is_not_resubmitted():
+    obs = {"url": "http://app/a", "forms": [{"selector": "form >> nth=0", "method": "GET"}]}
+    already = {form_key("http://app/a", "form >> nth=0")}
+    assert untried_form(obs, visited=already, scope=SCOPE) is None
+
+
+def test_a_password_change_form_is_never_taken_automatically():
+    """The loop submits untried forms without asking; that must not become a way to change
+    a credential. DVWA's CSRF lesson is a password-change form whose submit selector looks
+    like any other — it emptied the admin password and broke every later login."""
+    obs = {"url": "http://dvwa/vulnerabilities/csrf/",
+           "forms": [{"selector": "form >> nth=0 >> [type=submit]", "method": "GET",
+                      "fields": ["password_new", "password_conf", "Change"]}]}
+    assert untried_form(obs, visited=set(), scope=SCOPE) is None
