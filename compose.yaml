@@ -25,6 +25,45 @@ services:
       -config api.addrs.addr.regex=true
     networks: [dast]
 
+  # ---- Additional onboarded targets -------------------------------------------------------
+  #
+  # Behind profiles, so `docker compose up` still brings up only the pilot app. Bring one up
+  # alongside ZAP with, e.g.:
+  #
+  #   docker compose --profile dvwa up -d dvwa zap
+  #   docker compose --profile webgoat up -d webgoat zap
+  #
+  # then author and scan it with `dast author <app> --explore` / `dast scan <app>`.
+  #
+  # Deliberately NO `ports:` on either. These are intentionally vulnerable applications; they
+  # are reachable on the `dast` network — which is all ZAP and the runner need — and not from
+  # anywhere else. Publish a port by hand only if you want to click around in a browser, and
+  # only on a machine where that is acceptable.
+  #
+  # Environment prep is NOT configuration and is not automated here, because it is the same
+  # work a person does by hand the first time: DVWA needs its database created (browse to
+  # /setup.php -> "Create / Reset Database"), and WebGoat needs an account registered through
+  # its signup form (its passwords cap at 10 characters). See
+  # docs/onboarding_a_new_application.md §1.
+
+  dvwa:
+    profiles: [dvwa]
+    image: vulnerables/web-dvwa@sha256:dae203fe11646a86937bf04db0079adef295f426da68a92b40e3b181f337daa7
+    networks: [dast]
+    # Serves on port 80, so `base_url: http://dvwa` in its app.yaml needs no port.
+
+  webgoat:
+    profiles: [webgoat]
+    image: webgoat/webgoat@sha256:d4ac9fc2b0a41b68d64dedde684f4783aa60cc785838435a6d5bd5a25b387497
+    networks: [dast]
+    environment:
+      # WebGoat defaults to 8080, which is ZAP's own port: ZAP claims proxied requests arriving
+      # there as API calls and the application never sees them, so the scan silently sees
+      # nothing (W4-7). Moving it to 8083 is what makes this app scannable at all, and it must
+      # match `base_url: http://webgoat:8083` in its app.yaml.
+      WEBGOAT_HOST: "0.0.0.0"
+      WEBGOAT_PORT: "8083"
+
   runner:
     build:
       context: .
