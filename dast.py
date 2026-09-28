@@ -179,11 +179,14 @@ def cmd_author(args) -> int:
         rc = seed_mod.main(["--app", args.app, "--zap-proxy", args.zap_proxy, "--assisted"])
         if rc:
             return rc
-        rc = explore_mod.main(["--app", args.app, "--seed", args.seed or str(
-            appconfig.app_config_path(args.app).parent / "seed.json"),
-            "--scope", str(appconfig.app_config_path(args.app).parent / "scope.json"),
-            "--zap-proxy", args.zap_proxy, "--out-dir", str(traced),
-            *(["--no-llm"] if args.no_llm else []), *(["--headed"] if args.headed else [])])
+        # Everything explore needs — scope, seeded session, entry points, budgets — comes
+        # from app.yaml; --seed remains for a hand-written legacy bundle.
+        rc = explore_mod.main(["--app", args.app,
+                               *(["--seed", args.seed] if args.seed else []),
+                               "--zap-proxy", args.zap_proxy, "--out-dir", str(traced),
+                               "--max-pages", str(appconfig.max_pages(config, 25)),
+                               *(["--no-llm"] if args.no_llm else []),
+                               *(["--headed"] if args.headed else [])])
     else:
         rc = record_mod.main(["--app", args.app, "--zap-proxy", args.zap_proxy,
                               "--out-dir", str(traced),

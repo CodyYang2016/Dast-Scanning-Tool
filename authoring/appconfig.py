@@ -59,6 +59,46 @@ def load_app_config(path_or_app_id: str) -> dict:
     return cfg
 
 
+# ---- derived artifacts: the config is the single source, nothing else is authored --------
+
+def scope_from_config(cfg: dict) -> dict:
+    """The scan boundary, derived from the app config (contracts/scope.schema.json shape).
+
+    `explore` used to demand a hand-written scope.json even though every field is already in
+    app.yaml — which meant the autonomous path was the only one that could not be driven from
+    configuration alone. The derived scope goes through exactly the same fail-closed preflight
+    check as a file-based one; nothing about the safety model changes.
+    """
+    from runner.scope_guard import host_of
+    target = host_of(cfg["base_url"])
+    if not target:
+        raise ValueError(f"cannot determine the target host from base_url {cfg['base_url']!r}")
+    sc = cfg.get("scope", {})
+    return {
+        "app_id": cfg["app_id"],
+        "environment_class": cfg["environment_class"],
+        "target_fqdn": target,
+        "fqdn_allow_list": sorted(set(sc.get("allow", [])) | {target}),
+        "fqdn_deny_list": list(sc.get("deny", [])),
+        "avoid_action_list": list(sc.get("avoid_actions", [])),
+    }
+
+
+def seed_from_config(cfg: dict) -> dict:
+    """The exploration seed (contracts/seed.schema.json shape), derived from the app config."""
+    state = storage_state(cfg)
+    if not state:
+        raise ValueError("no auth.storage_state in the app config; run `dast author --explore` "
+                         "or seed a session first")
+    routes = seed_routes(cfg) or ["/"]   # one entry point is enough; discovery finds the rest
+    return {
+        "target": {"base_url": cfg["base_url"]},
+        "session": {"storage_state": state},
+        "seed_routes": routes,
+        "deny_actions": avoid_actions(cfg),
+    }
+
+
 # ---- accessors: one place for every default, so callers never invent one -----------------
 
 def base_url(cfg: dict) -> str:

@@ -29,7 +29,7 @@ from authoring import appconfig
 from authoring.record import build_trace, write_trace
 from authoring.seed import load_seed
 from runner.action_policy import validate_action
-from runner.preflight import preflight
+from runner.preflight import check_scope, preflight
 from runner.replay import SessionDeadError, prove_auth_live
 from runner.redact import redact
 from runner.scope_guard import ScopeGuard, host_of
@@ -399,9 +399,12 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="LLM-driven authenticated exploration -> trace (Phase B).")
-    p.add_argument("--app", default=None, help="App id or path to security/dast/<app>/app.yaml")
-    p.add_argument("--seed", required=True, help="Seed config (storage_state + seed_routes)")
-    p.add_argument("--scope", required=True, help="App scope.json (preflight-validated first)")
+    p.add_argument("--app", default=None,
+                   help="App id or path to security/dast/<app>/app.yaml — supplies the scope, "
+                        "the seeded session and the entry points, so --seed/--scope are only "
+                        "needed for a hand-written legacy bundle")
+    p.add_argument("--seed", default=None, help="Override: seed config (storage_state + routes)")
+    p.add_argument("--scope", default=None, help="Override: a scope.json file")
     p.add_argument("--schema", default=str(_ROOT / "contracts" / "scope.schema.json"))
     p.add_argument("--base-url", default=None, help="Override the seed's target.base_url")
     p.add_argument("--zap-proxy", default=None, help="Proxy through ZAP so hosts match the runner (D7)")
@@ -415,9 +418,19 @@ def main(argv: list[str] | None = None) -> int:
                    help="Delay each browser action by MS milliseconds (for headed demos/recordings)")
     args = p.parse_args(argv)
 
-    scope = preflight(args.scope, args.schema)  # safety layer 1 before any traffic
+    if not (args.app or (args.seed and args.scope)):
+        p.error("give --app, or both --seed and --scope for a hand-written bundle")
     config = appconfig.load_app_config(args.app) if args.app else None
-    seed = load_seed(args.seed)
+
+    # Safety layer 1 runs either way: a scope derived from app.yaml goes through the same
+    # fail-closed check as one read from disk (D2/NFR-2).
+    if args.scope:
+        scope = preflight(args.scope, args.schema)
+    else:
+        scope = appconfig.scope_from_config(config)
+        check_scope(scope)
+
+    seed = load_seed(args.seed) if args.seed else appconfig.seed_from_config(config)
     base_url = args.base_url or seed["target"]["base_url"]
     app_id = args.app_id or scope["app_id"]
     try:

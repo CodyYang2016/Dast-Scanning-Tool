@@ -249,3 +249,58 @@ def test_an_unknown_posture_value_is_rejected(tmp_path):
     cfg["scan"] = {"policy": {"attack_strength": "ludicrous"}}
     with pytest.raises(jsonschema.ValidationError):
         appconfig.load_app_config(_write(tmp_path, cfg))
+
+
+# ---- the autonomous path must run from app.yaml alone -----------------------------------
+# `explore` — the one authoring path whose whole purpose is removing human route-picking —
+# was the only one still demanding hand-built seed.json and scope.json. Onboarding DVWA and
+# WebGoat produced neither, so the autonomous path could not be driven at all without a
+# human writing legacy files first. Everything it needs is already in app.yaml.
+
+def test_scope_is_derivable_from_the_app_config():
+    scope = appconfig.scope_from_config(MINIMAL)
+    assert scope["app_id"] == "example"
+    assert scope["environment_class"] == "dev"
+    assert scope["target_fqdn"] == "example"          # the base_url's host
+    assert "example" in scope["fqdn_allow_list"]
+
+
+def test_a_derived_scope_satisfies_the_frozen_scope_contract():
+    import json as _json
+    from jsonschema import Draft202012Validator
+    from pathlib import Path as _P
+    schema = _json.loads((_P(appconfig._ROOT) / "contracts" / "scope.schema.json").read_text())
+    Draft202012Validator(schema).validate(appconfig.scope_from_config(MINIMAL))
+
+
+def test_a_derived_scope_carries_deny_and_avoid_lists():
+    cfg = json.loads(json.dumps(MINIMAL))
+    cfg["scope"].update({"deny": ["*.cdn.test"], "avoid_actions": ["logout"]})
+    scope = appconfig.scope_from_config(cfg)
+    assert scope["fqdn_deny_list"] == ["*.cdn.test"]
+    assert scope["avoid_action_list"] == ["logout"]
+
+
+def test_a_derived_scope_is_refused_by_preflight_if_it_would_be_unsafe():
+    # The derived scope goes through the same fail-closed check as a file-based one.
+    from runner.preflight import PreflightError, check_scope
+    check_scope(appconfig.scope_from_config(MINIMAL))          # no raise
+    unsafe = {**appconfig.scope_from_config(MINIMAL), "environment_class": "prod"}
+    with pytest.raises(PreflightError):
+        check_scope(unsafe)
+
+
+def test_seed_config_is_derivable_from_the_app_config():
+    cfg = json.loads(json.dumps(MINIMAL))
+    cfg["auth"]["storage_state"] = ".secrets/example.json"
+    cfg["explore"] = {"seed_routes": ["/home", "/account"]}
+    seed = appconfig.seed_from_config(cfg)
+    assert seed["session"]["storage_state"] == ".secrets/example.json"
+    assert seed["seed_routes"] == ["/home", "/account"]
+
+
+def test_seed_derivation_falls_back_to_the_site_root():
+    # An app that lists no seed routes still has one entry point worth starting from.
+    cfg = json.loads(json.dumps(MINIMAL))
+    cfg["auth"]["storage_state"] = ".secrets/example.json"
+    assert appconfig.seed_from_config(cfg)["seed_routes"] == ["/"]
