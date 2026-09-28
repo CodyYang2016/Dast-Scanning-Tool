@@ -3,7 +3,7 @@
 This is the **operator's runbook** for the whole Phase 2 demo: every window to open, every
 command to run, every click, what appears on screen, and what to say — in order. It merges the
 Phase 2 script (`dast_poc_phase2_demo_script.md`, which has the talking points and Q&A) with
-the Playwright screen-recording runbook (`dast_poc_playwright_demo_runbook.md`) and works on
+the target's Playwright setup guidance and works on
 **both** demo machines: the **macOS laptop** (Docker Desktop, `$PY`) and the
 **Windows workstation** (Git Bash + Podman in WSL, `.venv/Scripts/python`, images via the
 Nationwide Trusted Registry). Every command below is bash — on Windows run them in **Git Bash
@@ -55,7 +55,7 @@ machines. Paste the block for your OS as the **first thing in Terminal A and Ter
 
 **macOS (Docker Desktop):**
 ```bash
-cd /Users/codyyang/Dast-Scanning-Tool
+cd /path/to/ssd-dast-tool-poc
 PY=.venv/bin/python
 CT=docker                                   # container tool
 JUICE_IMG=bkimminich/juice-shop@sha256:73c53fbf442e8337b3ea3d98c7e8550308854701ebdfce4cc39768f36b75430e
@@ -89,11 +89,11 @@ ZAP_IMG=ntr.nwie.net/docker.io/zaproxy/zap-stable
 | Fact | Detail | Why it matters |
 |---|---|---|
 | Python | `$PY` = the repo venv (mac: 3.12.14; win: 3.11+) with playwright 1.62.0, anthropic, jsonschema, pytest | bare `python`/`python3` is the wrong interpreter on both machines (mac ships 3.9; Windows may pick the Store stub) — **always** use `$PY` |
-| Tests | `$PY -m pytest -q` → **213 passed** in <1s | your fallback evidence (§9) |
+| Tests | `$PY -m pytest -q` → current target suite must pass before the demo | your fallback evidence (§9) |
 | Container tool (mac) | Docker Desktop is at `/Applications/Docker.app`, **but** `/usr/local/bin/docker` is a broken symlink (→ `/Volumes/Docker 1/…`), so `docker` is **not on PATH** in a fresh shell | fix once, see below |
 | Container tool (win) | Podman runs in a WSL VM; the VM may ship a dead `127.0.0.1:8888` proxy that breaks pulls | run `bash ./prepull_playwright_podman_nationwide.sh`; it repairs the VM, restarts it, and verifies cached Playwright/ZAP images |
 | Compose file | `compose.yaml` (project `ssd-dast-poc`) does **not publish ports** for `juice`/`zap` — it's for the all-in-container runner | for a host-side demo you need `localhost:3000` / `localhost:8080`, so start juice+zap with `$CT run -p …` (README "Option B"), not compose |
-| GitHub | `gh` must be authenticated against the account/token that has write access to `Nationwide/ssd-dast-tool-poc`; run `gh auth status` the day before. The **current HEAD commit must be pushed to that remote** (`git push` to `Nationwide/ssd-dast-tool-poc`, not just a personal fork), and the repo must have code scanning / GitHub Advanced Security enabled. | live SARIF upload only works once these are true; running it live is the default for this demo. If they are not met, show a previous live upload's result and state that the command was not run |
+| GitHub | `gh` must be authenticated against the approved repository with code scanning enabled; run `gh auth status` the day before. | live SARIF upload only works once these are true; otherwise run without `--upload` |
 | LLM backend | `explore`/`generate` pick the backend via `LLM_PROVIDER` (`copilot` — Nationwide-approved, or `anthropic` — blocked on the corporate network). Copilot uses `COPILOT_GITHUB_TOKEN`; Anthropic uses `ANTHROPIC_API_KEY`. Keep tokens in gitignored `.secrets/`. | this demo runs the LLM live (Part D2 + Part E); export per §1.7 in both terminals. Without a backend, `--no-llm` gives the same artifact shape |
 | Legacy helper scripts | This checkout includes `compose.demo.yaml`, `cleanup_demo_ports.sh`, `demo_full_scan.sh`, and `demo_replay_flow.sh`, but this Phase 2 demo uses the explicit host-side commands below. | Use the commands in this runbook unless you are intentionally rehearsing one of those helper scripts. |
 
@@ -233,7 +233,7 @@ which is exactly what `wait_ready()` in `runner/main.py` checks before scanning.
 
 ```bash
 $PY -c "from playwright.sync_api import sync_playwright as s; b=s().start().chromium.launch(); b.close(); print('chromium ok')"
-$PY -m pytest -q          # SEE: 213 passed
+$PY -m pytest -q          # SEE: all target tests pass
 ```
 
 ### 1.5 RUN — clean scratch dir + pick demo credentials
@@ -256,7 +256,7 @@ a live take. A fresh timestamped email sidesteps it.
 ### 1.6 RUN — warm-up headed record (throwaway, so Chromium is snappy on camera)
 
 ```bash
-$PY -m authoring.record --app-id juice-shop \
+$PY -m authoring.record --app juice-shop \
   --base-url http://juice:3000 --zap-proxy http://localhost:8080 \
   --out-dir out/phase2-demo/warmup --headed --slow-mo 300
 ```
@@ -332,8 +332,7 @@ the demo degrades rather than stopping (see §9).
 ### 1.8 RUN — seed the authenticated session once (needed by Part D2)
 
 ```bash
-$PY -m authoring.seed --base-url http://juice:3000 --zap-proxy http://localhost:8080 \
-  --assisted --storage-state .secrets/storageState.json
+$PY -m authoring.seed --app juice-shop --zap-proxy http://localhost:8080 --assisted
 ```
 **SEE** `seeded session saved -> .secrets/storageState.json` (~2 s, headless). This is the
 "human logs in once" step; `--assisted` auto-fills the Juice Shop form with `AUTH_EMAIL` /
@@ -488,8 +487,8 @@ the target — OWASP Juice Shop, an Angular SPA," then **close that tab**.
 rm -rf out/phase2-demo/trace
 
 $PY -m authoring.record \
-  --app-id juice-shop \
-  --base-url http://juice:3000 --zap-proxy http://localhost:8080 \
+  --app juice-shop \
+  --zap-proxy http://localhost:8080 \
   --out-dir out/phase2-demo/trace \
   --headed --slow-mo 700
 ```
@@ -531,8 +530,7 @@ trace.
 
 If you seeded in §1.8 you can skip this, or re-run it headed for the visual:
 ```bash
-$PY -m authoring.seed --base-url http://juice:3000 --zap-proxy http://localhost:8080 \
-  --assisted --headed --storage-state .secrets/storageState.json
+$PY -m authoring.seed --app juice-shop --zap-proxy http://localhost:8080 --assisted --headed
 ```
 **SEE** Chromium opens on the login page, fills it, closes; `seeded session saved -> …`.
 **SAY** "On a real target this is where a person handles SSO/MFA/CAPTCHA once. Playwright saves
@@ -546,6 +544,7 @@ trivial, so the win here is *breadth*, not auth; the seeding value shows on ente
 cat security/dast/juice-shop/seed.json         # the whole human input: 5 seed routes + a deny-list + a page budget
 
 $PY -m authoring.explore \
+  --app juice-shop \
   --seed  security/dast/juice-shop/seed.json \
   --scope security/dast/juice-shop/scope.json \
   --zap-proxy http://localhost:8080 \
@@ -607,7 +606,7 @@ identical.)
 
 **RUN** (Terminal A)
 ```bash
-$PY -m authoring.generate --trace out/phase2-demo/explore/trace.json \
+$PY -m authoring.generate --app juice-shop --trace out/phase2-demo/explore/trace.json \
   --out-dir out/phase2-demo/gen
 ```
 **SEE** (~6 s)
@@ -655,8 +654,8 @@ baked in."
 
 **RUN** (Terminal A)
 ```bash
-$PY -m authoring.generate --trace out/phase2-demo/explore/trace.json --out-dir out/phase2-demo/gen-det  --no-llm
-$PY -m authoring.generate --trace out/phase2-demo/explore/trace.json --out-dir out/phase2-demo/gen-det2 --no-llm
+$PY -m authoring.generate --app juice-shop --trace out/phase2-demo/explore/trace.json --out-dir out/phase2-demo/gen-det  --no-llm
+$PY -m authoring.generate --app juice-shop --trace out/phase2-demo/explore/trace.json --out-dir out/phase2-demo/gen-det2 --no-llm
 diff out/phase2-demo/gen-det/flow.py out/phase2-demo/gen-det2/flow.py && echo "IDENTICAL"
 ```
 **SEE** no diff output, then `IDENTICAL`.
@@ -861,7 +860,7 @@ Q&A cheat-sheet: bottom of `docs/dast_poc_phase2_demo_script.md`.
 today, and the suite that backs every piece." Then:
 
 ```bash
-$PY -m pytest -q                          # 213 passed
+$PY -m pytest -q                          # all target tests pass
 sed -n '/## Verification/,/## Out of scope/p' docs/authoring_clis_design.md
 ls out/phase2-demo/warmup/                             # the trace you recorded in §1.6
 ```
@@ -877,8 +876,7 @@ rm -rf out/phase2-demo/trace out/phase2-demo/explore out/phase2-demo/gen out/pha
        out/phase2-demo/live-* out/phase2-demo/*report.json out/phase2-demo/bad_plan.json
 export AUTH_EMAIL="dast-demo-$(date +%H%M%S)@juice-sh.op"      # fresh user => clean register beat
 # re-export the same AUTH_EMAIL in Terminal B, then RE-SEED (the storageState belongs to the old user):
-$PY -m authoring.seed --base-url http://juice:3000 --zap-proxy http://localhost:8080 \
-  --assisted --storage-state .secrets/storageState.json
+$PY -m authoring.seed --app juice-shop --zap-proxy http://localhost:8080 --assisted
 ```
 (`record` in Part D must run before `seed` — it's what registers the new user. Or keep the same
 `AUTH_EMAIL` across takes; re-registering no-ops and the seed stays valid until Juice Shop
@@ -909,6 +907,7 @@ Full teardown at the end of the day: `$CT rm -f juice zap; $CT network rm dast`
 | `Passw0rd!` / `dast-poc@juice-sh.op` login times out | that email already exists with `Dast-POC-passw0rd!` | don't use it; timestamped email (§1.5) |
 | `services not ready within 120s` from `runner.main` | ZAP can't reach `juice:3000` (different networks / juice exited 133 — KI3 / stale container IPs on Podman) | `$CT exec zap curl … http://juice:3000/`; do the full §1.2 reset (rm both, rm+create network, run both) |
 | `curl: (52) Empty reply` from ZAP API | ZAP started without `api.addrs.addr.name=.*` | restart ZAP with the exact §1.2 command (note the quotes) |
+| A target **on port 8080** returns 400 through the proxy, body `Bad Format`; `docker logs zap` shows `Bad request to API endpoint [...]: No enum constant ...Format.<APP>` | The same `api.addrs.addr.name=.*` that makes ZAP's API reachable also makes ZAP claim **any** proxied request arriving on its own port — so a target on 8080 never reaches the app. Hit onboarding WebGoat, 2026-09-27 | Move the target off 8080 (WebGoat: `-e WEBGOAT_PORT=8083`), or run ZAP's proxy on a different port, or narrow `api.addrs` to the runner's address (W4-4). **Expect this on internal Java apps, which commonly listen on 8080.** |
 | `github_upload` rejected | HEAD commit not on the remote, or token lacks `security_events`/`repo` | `git push` first; `gh auth status` |
 | Bare `python` → `ModuleNotFoundError` | wrong interpreter (mac 3.9 / Windows Store stub) | `$PY` everywhere |
 | Anthropic smoke test fails with `CERTIFICATE_VERIFY_FAILED` | Python/httpx does not trust the corporate TLS inspection CA yet; `NODE_EXTRA_CA_CERTS` only fixes Node/Playwright | export `SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE` to the same PEM bundle as `NODE_EXTRA_CA_CERTS`, then rerun the smoke test |
@@ -937,11 +936,11 @@ curl -s -o /dev/null -w "juice %{http_code}\n" http://localhost:3000; curl -s -o
 $PY -m pytest -q
 rm -rf out/phase2-demo && mkdir -p out/phase2-demo
 export AUTH_EMAIL="dast-demo-$(date +%H%M%S)@juice-sh.op" AUTH_PASSWORD="Dast-Demo-passw0rd!"; echo $AUTH_EMAIL
-$PY -m authoring.record --app-id juice-shop --base-url http://juice:3000 --zap-proxy http://localhost:8080 --out-dir out/phase2-demo/warmup --headed --slow-mo 300
+$PY -m authoring.record --app juice-shop --zap-proxy http://localhost:8080 --out-dir out/phase2-demo/warmup --headed --slow-mo 300
 if [ -f "$HOME/nw-ca-all.pem" ]; then export NODE_EXTRA_CA_CERTS="$(cygpath -w "$HOME/nw-ca-all.pem")"; export SSL_CERT_FILE="$NODE_EXTRA_CA_CERTS" REQUESTS_CA_BUNDLE="$NODE_EXTRA_CA_CERTS"; fi
 # LLM backend: prefer Copilot (Nationwide-approved). Falls back to --no-llm if neither is set.
 if command -v copilot >/dev/null && [ -f .secrets/copilot.token ]; then export LLM_PROVIDER=copilot COPILOT_GITHUB_TOKEN="$(cat .secrets/copilot.token)"; elif [ -f .secrets/anthropic.key ]; then export LLM_PROVIDER=anthropic ANTHROPIC_API_KEY="$(cat .secrets/anthropic.key)"; else echo "No LLM backend; add --no-llm to explore/generate."; fi
-$PY -m authoring.seed --base-url http://juice:3000 --zap-proxy http://localhost:8080 --assisted --storage-state .secrets/storageState.json
+$PY -m authoring.seed --app juice-shop --zap-proxy http://localhost:8080 --assisted
 
 # ---- Part B (Terminal B) ----
 $PY -m detections.normalizer contracts/sample_zap_output.json --app-id juice-shop --scan-id demo-fixture-1 -o out/phase2-demo/records.json
@@ -949,14 +948,14 @@ $PY -m detections.sarif_export out/phase2-demo/records.json --app-id juice-shop 
 # (optional) $PY -m detections.github_upload out/phase2-demo/results.sarif --owner Nationwide --repo ssd-dast-tool-poc --ref refs/heads/main
 
 # ---- Part D (Terminal A) ----
-$PY -m authoring.record --app-id juice-shop --base-url http://juice:3000 --zap-proxy http://localhost:8080 --out-dir out/phase2-demo/trace --headed --slow-mo 700
+$PY -m authoring.record --app juice-shop --zap-proxy http://localhost:8080 --out-dir out/phase2-demo/trace --headed --slow-mo 700
 
 # ---- Part D2 (Terminal A; key exported per §1.7; seeded per §1.8) ----
-$PY -m authoring.explore --seed security/dast/juice-shop/seed.json --scope security/dast/juice-shop/scope.json --zap-proxy http://localhost:8080 --out-dir out/phase2-demo/explore --max-pages 12 --headed --slow-mo 500
+$PY -m authoring.explore --app juice-shop --seed security/dast/juice-shop/seed.json --scope security/dast/juice-shop/scope.json --zap-proxy http://localhost:8080 --out-dir out/phase2-demo/explore --max-pages 12 --headed --slow-mo 500
 
 # ---- Part E (LLM live; --no-llm twin for the idempotency diff) ----
-$PY -m authoring.generate --trace out/phase2-demo/explore/trace.json --out-dir out/phase2-demo/gen
-$PY -m authoring.generate --trace out/phase2-demo/explore/trace.json --out-dir out/phase2-demo/gen-det --no-llm && $PY -m authoring.generate --trace out/phase2-demo/explore/trace.json --out-dir out/phase2-demo/gen-det2 --no-llm && diff out/phase2-demo/gen-det/flow.py out/phase2-demo/gen-det2/flow.py && echo IDENTICAL
+$PY -m authoring.generate --app juice-shop --trace out/phase2-demo/explore/trace.json --out-dir out/phase2-demo/gen
+$PY -m authoring.generate --app juice-shop --trace out/phase2-demo/explore/trace.json --out-dir out/phase2-demo/gen-det --no-llm && $PY -m authoring.generate --app juice-shop --trace out/phase2-demo/explore/trace.json --out-dir out/phase2-demo/gen-det2 --no-llm && diff out/phase2-demo/gen-det/flow.py out/phase2-demo/gen-det2/flow.py && echo IDENTICAL
 
 # ---- Part F ----
 $PY -m authoring.validate --plan out/phase2-demo/gen/journey.json --scope out/phase2-demo/gen/scope.json --flow out/phase2-demo/gen/flow.py --base-url http://juice:3000 --zap-proxy http://localhost:8080 --report out/phase2-demo/validation-report.json; echo exit=$?

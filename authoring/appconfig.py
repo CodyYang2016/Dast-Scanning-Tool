@@ -59,6 +59,36 @@ def load_app_config(path_or_app_id: str) -> dict:
     return cfg
 
 
+def scope_from_config(cfg: dict) -> dict:
+    """Derive the runner scope from the single app configuration."""
+    from runner.scope_guard import host_of
+    target = host_of(cfg["base_url"])
+    if not target:
+        raise ValueError(f"cannot determine target host from base_url {cfg['base_url']!r}")
+    scope = cfg.get("scope", {})
+    return {
+        "app_id": cfg["app_id"],
+        "environment_class": cfg["environment_class"],
+        "target_fqdn": target,
+        "fqdn_allow_list": sorted(set(scope.get("allow", [])) | {target}),
+        "fqdn_deny_list": list(scope.get("deny", [])),
+        "avoid_action_list": list(scope.get("avoid_actions", [])),
+    }
+
+
+def seed_from_config(cfg: dict) -> dict:
+    """Derive the seeded exploration input from app.yaml."""
+    state = storage_state(cfg)
+    if not state:
+        raise ValueError("no auth.storage_state in app config; seed a session first")
+    return {
+        "target": {"base_url": cfg["base_url"]},
+        "session": {"storage_state": state},
+        "seed_routes": seed_routes(cfg) or ["/"],
+        "deny_actions": avoid_actions(cfg),
+    }
+
+
 # ---- accessors: one place for every default, so callers never invent one -----------------
 
 def base_url(cfg: dict) -> str:
@@ -158,6 +188,19 @@ def safe_forms(cfg: dict) -> list[str]:
     return list(cfg.get("explore", {}).get("safe_forms", []))
 
 
+def submit_get_forms(cfg: dict) -> bool:
+    return bool(cfg.get("explore", {}).get("submit_get_forms", True))
+
+
+def writes_allowed(cfg: dict) -> bool:
+    return (cfg.get("data_policy") == "disposable"
+            and cfg.get("explore", {}).get("write_mode") == "allow")
+
+
+def test_data(cfg: dict) -> dict:
+    return dict(cfg.get("explore", {}).get("test_data", {}))
+
+
 def avoid_actions(cfg: dict) -> list[str]:
     return list(cfg.get("scope", {}).get("avoid_actions", []))
 
@@ -170,6 +213,14 @@ def scope_allow(cfg: dict) -> list[str]:
 def scope_deny(cfg: dict) -> list[str]:
     """Host patterns that must never be contacted, even if otherwise allowed."""
     return list(cfg.get("scope", {}).get("deny", []))
+
+
+def scan_cookies(cfg: dict) -> dict:
+    return dict(cfg.get("auth", {}).get("cookies", {}))
+
+
+def state_probes(cfg: dict) -> list[str]:
+    return list(cfg.get("scan", {}).get("state_probes", []))
 
 
 def storage_state(cfg: dict) -> str | None:
@@ -230,3 +281,11 @@ def credentials(cfg: dict) -> tuple[str, str]:
     if missing:
         raise ValueError(f"credentials not in the environment: {', '.join(missing)}")
     return email, password
+
+
+def output_dir(cfg: dict) -> str | None:
+    return cfg.get("output", {}).get("dir")
+
+
+def github_publish(cfg: dict) -> dict:
+    return dict(cfg.get("publish", {}).get("github", {}))
