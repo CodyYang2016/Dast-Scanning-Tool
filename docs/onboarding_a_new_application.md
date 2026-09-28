@@ -173,7 +173,8 @@ scan finds only headers and cookies, this is almost always why.
 **State — what does the application need to be in for a scan to mean anything?** This is the
 one that cost us most. DVWA keeps its security level in a cookie; the scanner never set it,
 and a deliberately vulnerable application produced **zero** findings while the SQL-injection
-rule ran 660 requests. Declare it:
+rule ran 660 requests. (It was not the whole story — see *Destructive controls* below — but it
+was real, and it is the half you control from config.) Declare it:
 
 ```yaml
 auth:
@@ -186,6 +187,36 @@ scan:
 If your app has a feature flag, a tenant setting or a seeded dataset that decides whether the
 interesting code paths are reachable, it belongs here. Without it, *"we found nothing"* and
 *"there was nothing to find"* are the same sentence.
+
+**Destructive controls — what must the scanner never touch?** This is the field most worth
+getting right, and the one whose absence cost us the most. A scanner pointed at your application
+will find its administrative controls and *use* them. On DVWA, one 10-minute scan submitted the
+"Create / Reset Database" form about **325 times** and POSTed to the login form about **1,000**
+times; roughly half of all subsequent responses were redirects to the login page, and the scan
+read that silence as "no vulnerabilities here". Findings swung between 0 and 8 between runs for
+this reason alone.
+
+```yaml
+scope:
+  avoid_actions: [logout, setup, phpinfo, captcha]
+```
+
+These terms are matched as substrings anywhere in the URL, case-insensitively, and are excluded
+from **both** the spider and the active scan. The login page is excluded automatically whether or
+not you name it — attacking the form that holds the session is how a scan loses its session.
+
+List anything that resets, seeds, migrates, exports, logs out, deletes, or sends mail. On an
+internal application, one of these submitted a few hundred times is not a lost finding; it is an
+incident. When a finding disappears because of one of these, `dast explain` says so by name:
+
+```
+route_excluded: /setup.php was excluded from this scan by '(?i).*setup.*',
+so nothing tested it; remove the exclusion to scan it again
+```
+
+Adding exclusions to DVWA took the same bundle from **996 records and 1 high** to **617 records
+and 5 highs** — five times the high-severity findings for half the requests, because the requests
+finally landed on a logged-in application.
 
 **Posture — every exclusion is a disclosed detection gap.**
 

@@ -175,7 +175,7 @@ flowchart LR
   SET --> SCAN["Scan"]
   SCAN --> REC["Record what happened<br/>per-rule state · requests · alerts<br/>truncated rules · app-state digest"]
   REC --> COV["coverage.json"]
-  COV --> EXP["dast explain<br/>route_not_covered · rule_not_enabled<br/>rule_truncated · app_state_changed<br/>scan_changed_the_app · fixed"]
+  COV --> EXP["dast explain<br/>route_excluded · route_not_covered<br/>parameter_not_exercised · rule_not_enabled<br/>rule_truncated · app_state_changed<br/>scan_changed_the_app · fixed"]
   classDef new fill:#e6f4ff,stroke:#0969da,color:#0a3069
   class SET,REC,EXP new
 ```
@@ -186,12 +186,78 @@ it, then "we found nothing" and "there was nothing to find" are the same sentenc
 a lab curiosity; it is the difference between a scan report an internal team can act on and
 one they cannot.
 
-**What is still weak here, stated plainly:** coverage is recorded per *route*, not per
-*parameter*. `/vulnerabilities/sqli` counts as covered even when it was only ever visited
-without `?id=`, so `explain` would call the two findings on that parameter `fixed` when the
-truth is that nothing ever tested them. The same flaw sits under `resolved`. It is recorded as
-W6-10, and until it is closed a `fixed` verdict is only as trustworthy as route granularity
-allows.
+**That was the smaller half of the problem.** The cookie was real, and setting it did move
+five findings from invisible to visible — but it did not make the results stable, and the
+section below is what finally did.
+
+---
+
+### The larger half: the scan was attacking the application's own controls
+
+After the state fix, results still moved: 8 highs, then 2, then 1. `explain` said `fixed` for
+six findings against an application nobody had fixed. The state probes could not contradict it,
+because they were fetched **without the scan's session** — `/security.php` answered `302` to the
+login page and digested to `sha256("")` on every run, so `app_state_changed` was unreachable by
+construction. A state oracle that always matches is worse than none: it lends confidence.
+
+With the probes given the scan's own session, they answered, and ZAP's message store explained
+the rest. Over one 10-minute scan:
+
+| What the scan was doing to the app it was scanning | Count |
+|---|---|
+| Submissions of DVWA's **"Create / Reset Database"** form (`setup.php?create_db`) | **~325** |
+| POSTs to the **login form** (`/login.php`) | **~1,000** |
+| `/vulnerabilities/*` responses that were redirects to the login page | **~half** |
+
+The scan was resetting the database and logging itself out, mid-scan, repeatedly. Findings
+depended on whether the session happened to be alive when a given rule ran. `scope.avoid_actions`
+had named `logout` and `setup` all along — but it was only ever enforced during *exploration*.
+ZAP was never told.
+
+Telling it (W6-11) changed the result more than any tuning did:
+
+| Same bundle, same app, same policy | Before | After |
+|---|---|---|
+| Records | 996 | 617 |
+| **High-severity findings** | **1** | **5** |
+| Rule 40018 (SQL Injection) | 868 requests, **0 alerts** | 468 requests, **2 alerts** |
+| Rule 40012 (Reflected XSS) | 97 requests, **0 alerts** | 50 requests, **2 alerts** |
+
+**Five times the high-severity findings for half the requests** — because the requests now land
+on a logged-in application instead of a login page. The 379 records that went away are the
+excluded routes' own findings; `explain` attributes 80 of them to `route_excluded`, and none of
+them to `fixed`.
+
+And the result stopped moving. Two consecutive scans produced **identical** output: 267
+fingerprints, 80 routes, identical `route_params`, the same five highs, and `dast explain`
+reporting `nothing disappeared`. The instability that had been written off as model variance
+was, in the end, the scanner sabotaging itself.
+
+```mermaid
+flowchart TB
+  A["Findings moved between runs<br/>5 → 0 → 8 → 2 → 1"] --> B{"Why?"}
+  B --> C["First answer: model variance"]
+  C -.->|"disproved by per-rule data"| D["Second answer: app state<br/>(DVWA security cookie)"]
+  D -->|"real, but results still moved"| E["Probes could not detect state<br/>— fetched with no session,<br/>digest = sha256('') every time"]
+  E --> F["Third answer: the scan was<br/>resetting the DB and logging itself out"]
+  F --> G["Exclude the app's own controls<br/>from spider and active scan"]
+  G --> H["Two scans, identical results"]
+  classDef fix fill:#e6ffec,stroke:#1a7f37,color:#0a3069
+  classDef bad fill:#ffebe9,stroke:#cf222e,color:#0a3069
+  class G,H fix
+  class C,E bad
+```
+
+**Coverage had to follow the exclusions**, or the fix would have caused the exact bug this
+project exists to prevent: a route the scanner is told to skip would still appear in
+`accessed_routes`, so every finding on it would have resolved itself the moment the exclusion
+was added. Excluded routes are subtracted from coverage and `explain` names the pattern
+responsible.
+
+**Parameter-level coverage is now closed too (W6-10).** Coverage records the query parameters
+ZAP actually sent per route, `resolved` requires the finding's own parameter, and `explain` has a
+`parameter_not_exercised` reason. It fired on real data immediately: `/vulnerabilities/brute` was
+visited but never with `password`, which the old code would have called `fixed`.
 
 ---
 
@@ -235,26 +301,31 @@ visible in a passing test suite, and several were invisible *because* the suite 
 | Every page's first form looked "already tried" | 2–3 form submissions per run regardless of budget | The selector `form >> nth=0` is page-relative; `visited` was global |
 | **The loop changed DVWA's admin password** | Every later login failed | The guard judged the *selector*, which was anonymous; the page URL and field names both said "password change" |
 | **The scan depended on state nobody set or recorded** | 5 highs became 0 with the rule running 660 requests | Coverage recorded which rules were *enabled*, never what they *did*, and nothing described the application's own condition |
+| **The state oracle could not see state** | Two runs differing by five highs produced identical fingerprints | Probes were fetched with no session, so every one digested the login page — `sha256("")`, forever equal |
+| **The scan attacked the app's own controls** | ~325 database resets and ~1,000 login POSTs in one scan; half of all responses redirected to login | `avoid_actions` was enforced during exploration only; ZAP was never told, and a passing suite cannot see what a scanner does to a live app |
 
 The last one is the one to carry into any real environment. An autonomous loop submitted a
 password-change form and destroyed the credential the scan depended on, and the rule written
 to prevent precisely that did not fire. Actions are now judged by where they are and what they
 carry, not only by what they target.
 
-### The measurement problem, half solved
+### The measurement problem, now mostly solved
 
 That same spread — 7 highs, then 2, then 0 — was originally written off here as variance. It
-was not. Pushed on the claim, the data disproved it in ten minutes: the rule had run to
-completion and the application simply was not vulnerable at the time. Two thirds of the
-problem turned out to be fixable rather than inherent:
+was not — and it took three passes to reach the bottom of it. The rule had run to completion, so
+it was not budget. The application was not in a vulnerable state, so the cookie mattered. But the
+results still moved after that, and the real cause was that the scan was resetting the database
+and logging itself out. Almost all of it turned out to be fixable rather than inherent:
 
 | Source of variation | Status |
 |---|---|
+| **The scan attacking the app's own controls** | **Fixed (W6-11)** — `avoid_actions` and the login page are excluded from spider and active scan. This was the dominant cause |
 | Application state | **Fixed** — set it (`auth.cookies`) and record it (`scan.state_probes`) |
+| State probes that could not see state | **Fixed** — probes carry the scan's session; the digest was `sha256("")` before |
 | "Did the rule even run?" | **Fixed** — per-rule state, requests and alerts in `coverage.json` |
 | "Why did this finding go?" | **Answerable** — `dast explain`, attributed with evidence |
-| The model's route choices | **Inherent.** 5–29 pages across runs; the answer is protocol, not code — compare unions of repeated passes, never single runs |
-| Route-level vs parameter-level coverage | **Open (W6-10)** — a parameter never exercised still looks covered, so `fixed` can be wrong |
+| Route-level vs parameter-level coverage | **Fixed (W6-10)** — coverage records parameters; `fixed` requires the finding's own parameter |
+| The model's route choices | **Inherent**, but far smaller than it looked. Two consecutive scans of one bundle are now identical; what still varies is which routes a *fresh authoring pass* proposes. The answer is protocol — compare unions of repeated passes, never single runs |
 
 The generalisable lesson is the first row. Any application has state a scan depends on, and if
 the tool neither sets it nor records it, *"we found nothing"* and *"there was nothing to find"*
@@ -269,12 +340,14 @@ become the same sentence.
 | An application onboards from configuration alone | **Proven** — WebGoat, zero code diff, 4m32s |
 | The LLM can discover routes a human did not list | **Proven** — 4 highs unique to autonomous discovery |
 | The LLM can reach parameters behind forms | **Proven** — `sqli`, `sqli_blind`, `brute`, `xss_r`, `fi` |
-| Deterministic scanning is repeatable | **Proven** — byte-identical across two scans |
+| Deterministic scanning is repeatable | **Proven twice** — byte-identical across two scans of one bundle, and again end-to-end after W6-11: 267 fingerprints, 80 routes, 5 highs, `nothing disappeared` |
 | Safety policy holds against an autonomous agent | **Partly** — five gates hold; one failed live (a password-change form) and is now fixed |
-| A disappeared finding can be explained | **Yes, with a caveat** — `dast explain` attributes it from recorded evidence, but route-level coverage can still mislabel a parameter-level miss as `fixed` (W6-10) |
+| A disappeared finding can be explained | **Yes** — `dast explain` attributes it from recorded evidence, now at parameter granularity (`parameter_not_exercised`) and naming deliberate gaps (`route_excluded`). Measured: 80 disappearances correctly attributed to exclusions, 0 called `fixed` |
+| The scanner leaves the application it scans intact | **Now yes, and it did not before** — it was submitting DVWA's database-reset form ~325 times per scan |
 | The LLM beats the deterministic proposer | **Not established** — the best autonomous run wins on count, but run-to-run variance exceeds the difference |
 | Autonomous discovery dominates hand-picking | **No.** It found 5 the human missed and missed 2 the human found. Wider coverage, moving blind spot |
-| A single run is a reliable measure | **No.** Repeat, or compare unions |
+| A single run is a reliable measure | **For a given bundle, now yes** — two consecutive scans are identical. Across fresh authoring passes, still no: repeat, or compare unions |
+| Every parameter on a reached route gets tested | **No — the open gap.** `/vulnerabilities/sqli` is reached, but the authored journey visits it bare, so `route_params` is empty and the two findings on `?id=` stay unreachable. Visible now instead of silent |
 
 **The defensible summary:** autonomous discovery finds more than a human's list, at zero
 marginal human cost, inside a policy that has now been tested by an agent actively trying to
@@ -282,12 +355,22 @@ click everything — including once destroying the credential it depended on, wh
 now refuses. What it does not yet do is find everything *reliably in one run*.
 
 The most transferable result is not a finding count. It is that "the scan found nothing" had
-three indistinguishable causes — the rule never ran, the rule ran and found nothing, or the
-application was not in a testable state — and the tool now tells them apart from its own
-artifacts. Before any pilot argues about detection rates, that distinction is what makes the
-numbers mean anything.
+several indistinguishable causes — the rule never ran; the rule ran and found nothing; the
+application was not in a testable state; the parameter was never sent; the route was excluded on
+purpose; or **the scan had broken the application underneath itself** — and the tool now tells
+them apart from its own artifacts. Before any pilot argues about detection rates, that
+distinction is what makes the numbers mean anything.
+
+The sharpest lesson for a nationwide rollout is the last cause. A scanner pointed at an internal
+application will find that application's administrative controls, and it will use them. Ours
+reset a database ~325 times in ten minutes and read the resulting silence as "no vulnerabilities
+here". The configuration that would have prevented it already existed and was simply never
+handed to the scanner. On a shared environment that is not a lost finding; it is an incident.
 
 ---
 
 *Sources: runs on this machine 2026-09-27/28 against OWASP Juice Shop, DVWA and WebGoat
-through ZAP 2.17.0; artifacts under `out/<app>/scans/<scan_id>/`. Commits `622650c` through `dd3aab6`. Test suite 436 passing.*
+through ZAP 2.17.0; artifacts under `out/<app>/scans/<scan_id>/`. Commits `622650c` through
+`0fe329c`. Test suite 475 passing. The before/after figures in §3 are scans `20260928T044101Z`
+(996 records, 1 high) and `20260928T044609Z` (617 records, 5 highs); the repeatability pair is
+`20260928T044609Z` and `20260928T044940Z`.*
