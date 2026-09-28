@@ -28,6 +28,62 @@ its database created (`setup.php` → *Create / Reset Database*), WebGoat needs 
 registered through its signup form (its passwords cap at 10 characters). Do that first, by
 hand, exactly as a person would.
 
+### 1a. Trying it on a bundled target first
+
+Three applications are already onboarded, and two of them exist precisely to prove this works
+on something that is not the pilot app. If you want to see the whole loop before pointing it at
+your own application, start one of them:
+
+`compose.yaml` publishes **no** host ports, on purpose. But `dast author` drives a real Chromium
+**on your machine** through ZAP, so for authoring both ZAP and the app have to be reachable from
+there. Add a local override — compose picks the file up automatically, and it is yours, not the
+repo's:
+
+```bash
+cat > compose.override.yaml <<'YAML'
+services:
+  zap:  { ports: ["8080:8080"] }
+  dvwa: { ports: ["8081:80"] }
+YAML
+echo compose.override.yaml >> .git/info/exclude     # keep it local
+
+docker compose --profile dvwa up -d dvwa zap
+docker compose logs -f dvwa                          # wait for it to serve
+```
+
+Then do the prep by hand, once — browse to `http://localhost:8081/setup.php` and press
+*Create / Reset Database* — and run the loop:
+
+```bash
+export DVWA_USER=admin DVWA_PASS=password
+python -m dast author dvwa --explore --zap-proxy http://localhost:8080
+python -m dast scan   dvwa
+python -m dast report dvwa
+```
+
+Both apps are pinned by digest in `versions.lock`, so you get the images these results were
+measured on rather than whatever `:latest` points at today.
+
+Three things that will otherwise cost you an afternoon:
+
+- **Publish ports only where that is acceptable.** These are deliberately vulnerable
+  applications. The override above binds them on your machine; do not commit it, and do not do
+  this on a host anyone else can reach. Without the override they are reachable only on the
+  `dast` network, which is all the containerised runner needs.
+- **WebGoat runs on 8083, not its default 8080.** 8080 is ZAP's own port: ZAP claims proxied
+  requests arriving there as API calls, the application never sees them, and the scan finishes
+  clean having tested nothing. The compose service sets `WEBGOAT_PORT=8083` for this reason, and
+  it must match `base_url: http://webgoat:8083`. This is §6's most confusing failure, and it is
+  silent.
+- **`--profile` is required to start it.** Without it compose does not treat the service as
+  part of the run, so a bare `docker compose up` brings up only the pilot app — which is the
+  point, but it surprises people. If a later command seems not to see the container, pass the
+  profile again.
+
+Reading their configs side by side is the fastest way to understand the contract: `dvwa` logs in
+with a username and proves the session by visiting a page, `webgoat` needs a registered account,
+`juice-shop` self-registers and proves the session from `localStorage`. §8 compares all three.
+
 ---
 
 ## 2. Write the config
