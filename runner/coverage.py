@@ -96,6 +96,11 @@ def state_fingerprint(zap_api: str, base_url: str, probes) -> dict:
     seeded dataset. Measured here: one scan found five high-severity findings and the next
     found none, with the SQL-injection rule completing 660 requests, because the application
     had changed underneath. Only a digest is stored: a probe response may contain anything.
+
+    Limitation worth knowing: probes are fetched through ZAP WITHOUT the scan's session, so
+    they describe the application's unauthenticated state. That catches a redeploy, a wiped
+    database or a flipped feature flag; it will not catch a change visible only behind the
+    login. Probing through the authenticated session is the obvious next step.
     """
     probes = list(probes or [])
     if not probes:
