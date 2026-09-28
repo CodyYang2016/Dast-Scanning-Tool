@@ -76,10 +76,9 @@ def enabled_rule_ids(zap_api: str) -> set[str]:
 
 def _fetch_probe(zap_api: str, url: str) -> tuple[int | None, str]:
     """Fetch a probe URL THROUGH ZAP, so it is seen exactly as the scan sees the app."""
-    q = urllib.parse.urlencode({"url": url, "followRedirects": "true"})
     try:
-        data = _api(zap_api, "/JSON/core/action/accessUrl/?" + q if False else
-                    "/JSON/core/action/accessUrl/", {"url": url, "followRedirects": "true"})
+        data = _api(zap_api, "/JSON/core/action/accessUrl/",
+                    {"url": url, "followRedirects": "true"})
         entry = (data.get("accessUrl") or [{}])[0]
         header = entry.get("responseHeader", "")
         status = int(header.split()[1]) if header.startswith("HTTP/") else None
