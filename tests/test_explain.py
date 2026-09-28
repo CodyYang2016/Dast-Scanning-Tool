@@ -88,3 +88,37 @@ def test_the_summary_counts_by_reason():
     cov = {**BASE_COV, "routes": ["/a"]}
     out = explain.explain_disappearance(findings, [], cov, BASE_COV)
     assert explain.summarize(out) == {"fixed": 1, "route_not_covered": 1}
+
+
+# ---- W6-10: "fixed" must not be said about a parameter nobody tested --------------------
+
+PARAM_COV = {**BASE_COV, "routes": ["/sqli"], "route_params": {"/sqli": ["id"]}}
+
+
+def _sqli(param):
+    return _rec("f1", endpoint="/sqli", rule="40018")| {"parameter": param}
+
+
+def test_a_parameter_that_was_exercised_can_be_called_fixed():
+    (why,) = explain.explain_disappearance([_sqli("id")], [], PARAM_COV, PARAM_COV)
+    assert why["reason"] == "fixed"
+
+
+def test_a_parameter_that_was_never_exercised_is_not_a_fix():
+    # The measured case: /vulnerabilities/sqli visited bare, so ?id= was never tested.
+    cov = {**PARAM_COV, "route_params": {"/sqli": []}}
+    (why,) = explain.explain_disappearance([_sqli("id")], [], cov, PARAM_COV)
+    assert why["reason"] == "parameter_not_exercised"
+    assert "id" in why["detail"]
+
+
+def test_a_finding_without_a_parameter_is_unaffected():
+    cov = {**PARAM_COV, "route_params": {"/sqli": []}}
+    (why,) = explain.explain_disappearance([_sqli(None)], [], cov, PARAM_COV)
+    assert why["reason"] == "fixed"
+
+
+def test_coverage_predating_parameter_recording_keeps_its_old_answer():
+    old = {k: v for k, v in PARAM_COV.items() if k != "route_params"}
+    (why,) = explain.explain_disappearance([_sqli("id")], [], old, old)
+    assert why["reason"] == "fixed"

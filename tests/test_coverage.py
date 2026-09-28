@@ -129,3 +129,34 @@ def test_an_unreachable_probe_is_recorded_rather_than_skipped(monkeypatch):
     monkeypatch.setattr(coverage, "_fetch_probe", lambda z, u: (None, ""))
     fp = coverage.state_fingerprint("http://zap", "http://app", ["/gone"])
     assert fp["probes"]["/gone"]["status"] is None
+
+
+# ---- W6-10: a parameter nobody exercised is not covered ---------------------------------
+# Coverage recorded routes, and a finding's identity includes its PARAMETER. So
+# /vulnerabilities/sqli visited without ?id= counted as covered, and the two findings on that
+# parameter would have been labelled `fixed` when nothing had ever tested them. ZAP's URL
+# list carries the query strings; endpoint_pattern was throwing them away.
+
+def test_parameters_are_recorded_per_route(monkeypatch):
+    monkeypatch.setattr(coverage, "_api", _fake_api({"/JSON/core/view/urls/": {"urls": [
+        "http://app/search?q=x&page=2",
+        "http://app/orders/7",
+        "http://app/search",
+    ]}}))
+    params = coverage.accessed_params("http://zap", "http://app")
+    assert params["/search"] == ["page", "q"]          # sorted, deduped
+    assert params.get("/orders/{id}", []) == []        # visited, no parameters seen
+
+
+def test_the_same_route_unions_parameters_across_visits(monkeypatch):
+    monkeypatch.setattr(coverage, "_api", _fake_api({"/JSON/core/view/urls/": {"urls": [
+        "http://app/s?a=1", "http://app/s?b=2",
+    ]}}))
+    assert coverage.accessed_params("http://zap", "http://app")["/s"] == ["a", "b"]
+
+
+def test_parameters_from_another_host_are_ignored(monkeypatch):
+    monkeypatch.setattr(coverage, "_api", _fake_api({"/JSON/core/view/urls/": {"urls": [
+        "http://app/s?a=1", "http://elsewhere/s?secret=1",
+    ]}}))
+    assert coverage.accessed_params("http://zap", "http://app") == {"/s": ["a"]}

@@ -272,3 +272,35 @@ def test_coverage_without_a_policy_block_behaves_as_before():
     previous = [rec("aaa", endpoint="/orders", rule_id="40018")]
     labels = _by_status(diff([], previous, {"routes": ["/orders"], "rules": ["40018"]}))
     assert labels["resolved"] == {"aaa"}
+
+
+# ---- W6-10: claiming a fix needs parameter-level evidence -------------------------------
+
+PARAM_COV = {"routes": ["/sqli"], "rules": ["40018"], "route_params": {"/sqli": ["id"]}}
+
+
+def test_a_finding_resolves_when_its_parameter_was_exercised():
+    previous = [rec("aaa", endpoint="/sqli", rule_id="40018", parameter="id")]
+    assert _by_status(diff([], previous, PARAM_COV))["resolved"] == {"aaa"}
+
+
+def test_a_finding_does_not_resolve_when_its_parameter_never_was():
+    # The real case: /vulnerabilities/sqli was visited bare, so ?id= was never tested, yet
+    # the route counted as covered and the finding would have been called fixed.
+    cov = {**PARAM_COV, "route_params": {"/sqli": []}}
+    previous = [rec("aaa", endpoint="/sqli", rule_id="40018", parameter="id")]
+    assert _by_status(diff([], previous, cov))["not_scanned"] == {"aaa"}
+
+
+def test_a_finding_with_no_parameter_still_judges_at_route_level():
+    # Header and page-level findings have no parameter; route coverage is the right test.
+    previous = [rec("aaa", endpoint="/sqli", rule_id="40018", parameter=None)]
+    cov = {**PARAM_COV, "route_params": {"/sqli": []}}
+    assert _by_status(diff([], previous, cov))["resolved"] == {"aaa"}
+
+
+def test_coverage_without_parameter_data_behaves_as_before():
+    # Older coverage artifacts have no route_params; they must keep working.
+    previous = [rec("aaa", endpoint="/sqli", rule_id="40018", parameter="id")]
+    assert _by_status(diff([], previous, {"routes": ["/sqli"], "rules": ["40018"]}))["resolved"] \
+        == {"aaa"}

@@ -12,6 +12,7 @@ allowed to write, and a digest of the application's own state. This module turns
 attribution, most specific cause first:
 
     route_not_covered      this scan never visited the finding's route
+    parameter_not_exercised  the route was visited, but never with this parameter
     rule_not_enabled       the rule that found it was switched off
     rule_truncated         the rule ran out of time before finishing
     app_state_changed      the application answered differently than last time
@@ -27,6 +28,21 @@ from __future__ import annotations
 
 def _route_covered(record: dict, coverage: dict) -> bool:
     return record.get("endpoint") in set(coverage.get("routes") or [])
+
+
+def _parameter_exercised(record: dict, coverage: dict) -> bool:
+    """Was this finding's own parameter sent, not merely its route visited? (W6-10)
+
+    Coverage artifacts written before parameters were recorded have no `route_params`, and
+    those keep their previous answer rather than turning every old finding unscanned.
+    """
+    params = coverage.get("route_params")
+    if not params:
+        return True
+    parameter = record.get("parameter")
+    if not parameter:
+        return True                       # header and page-level findings have no parameter
+    return parameter in set(params.get(record.get("endpoint"), []))
 
 
 def _state_difference(current: dict, previous: dict) -> str | None:
@@ -53,6 +69,12 @@ def explain_one(record: dict, coverage: dict, previous_coverage: dict) -> dict:
         reason, detail = "route_not_covered", (
             f"{record.get('endpoint')} was not among the {len(coverage.get('routes') or [])} "
             f"routes this scan exercised, so nothing looked for it")
+    elif not _parameter_exercised(record, coverage):
+        seen = (coverage.get("route_params") or {}).get(record.get("endpoint")) or []
+        reason, detail = "parameter_not_exercised", (
+            f"{record.get('endpoint')} was visited, but never with the parameter "
+            f"'{record.get('parameter')}' — only {seen or 'no parameters'} were sent, so "
+            f"nothing tested it")
     elif rule not in set(coverage.get("rules") or []):
         reason, detail = "rule_not_enabled", f"rule {rule} was not enabled for this scan"
     elif rule in set(coverage.get("truncated_rules") or []):

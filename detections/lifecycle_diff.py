@@ -40,6 +40,22 @@ def _wrote_to_the_app(covered) -> bool:
                 and covered.get("policy", {}).get("write_mode") == "allow")
 
 
+def _parameter_check(covered):
+    """Return (route, parameter) -> bool: was this finding's own parameter exercised?
+
+    A finding's identity includes its parameter, so route coverage alone cannot support a fix
+    claim: a page visited without `?id=` never tested `id`. Findings with no parameter —
+    missing headers, page-level issues — are judged at route level, which is the right
+    granularity for them. Coverage recorded before this existed has no `route_params`, and
+    those artifacts keep their old behaviour rather than suddenly labelling everything
+    unscanned.
+    """
+    params = covered.get("route_params") if isinstance(covered, dict) else None
+    if not params:
+        return lambda route, parameter: True
+    return lambda route, parameter: (not parameter) or parameter in set(params.get(route, []))
+
+
 def _coverage_check(covered):
     """Return a predicate (route, rule) -> bool for whether this scan exercised that pair.
 
@@ -73,6 +89,7 @@ def diff(current_records: Iterable[dict], previous_records: Iterable[dict],
     current_fps = {r["fingerprint"] for r in current}
     previous_fps = {r["fingerprint"] for r in previous}
     is_covered = _coverage_check(covered)
+    param_exercised = _parameter_check(covered)
     if _wrote_to_the_app(covered):      # a write-enabled scan cannot claim a fix
         is_covered = lambda route, rule: False    # noqa: E731 — deliberate, one line
 
@@ -82,7 +99,9 @@ def diff(current_records: Iterable[dict], previous_records: Iterable[dict],
         out.append({**r, "status": status})
     for r in previous:
         if r["fingerprint"] not in current_fps:
-            status = "resolved" if is_covered(r.get("endpoint"), r.get("rule_id")) else "not_scanned"
+            covered_here = (is_covered(r.get("endpoint"), r.get("rule_id"))
+                            and param_exercised(r.get("endpoint"), r.get("parameter")))
+            status = "resolved" if covered_here else "not_scanned"
             out.append({**r, "status": status})
     return out
 

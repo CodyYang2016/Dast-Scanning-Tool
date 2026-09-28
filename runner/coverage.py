@@ -49,6 +49,33 @@ def accessed_routes(zap_api: str, target: str) -> set[str]:
     return routes
 
 
+def accessed_params(zap_api: str, target: str) -> dict[str, list[str]]:
+    """Query-parameter names ZAP actually sent, per canonical route (W6-10).
+
+    A finding's identity is (route, parameter, rule), but coverage recorded only routes — so
+    /vulnerabilities/sqli visited without `?id=` counted as covered and the findings on that
+    parameter would have been called fixed, when nothing had ever tested them. The query
+    strings were there all along; endpoint_pattern drops them, so they are collected here
+    before that happens.
+
+    Limitation: this sees GET parameters. Parameters carried in a POST body are not in the
+    URL list, so a finding on one cannot be shown as exercised and will not be claimed as
+    fixed — the conservative direction, and the reason to read body parameters from ZAP's
+    message store eventually.
+    """
+    from urllib.parse import parse_qs, urlsplit
+    data = _api(zap_api, "/JSON/core/view/urls/", {"baseurl": target})
+    host = host_of(target)
+    out: dict[str, set[str]] = {}
+    for url in data.get("urls", []):
+        if host is not None and host_of(url) != host:
+            continue
+        route = endpoint_pattern(url)
+        names = set(parse_qs(urlsplit(url).query).keys())
+        out.setdefault(route, set()).update(names)
+    return {route: sorted(names) for route, names in sorted(out.items())}
+
+
 def enabled_rule_ids(zap_api: str) -> set[str]:
     """Plugin ids currently enabled, active AND passive (matches record rule_id = ZAP pluginId).
 
@@ -157,6 +184,9 @@ def capture(zap_api: str, target: str, scan_id: str | None = None, probes=None) 
     out = {
         "routes": sorted(accessed_routes(zap_api, target)),
         "rules": sorted(enabled_rule_ids(zap_api)),
+        # Per-route parameters, so a fix claim needs evidence that the finding's own
+        # parameter was exercised and not merely its route (W6-10).
+        "route_params": accessed_params(zap_api, target),
     }
     if scan_id is not None:
         outcomes = rule_outcomes(zap_api, scan_id)
