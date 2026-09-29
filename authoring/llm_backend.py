@@ -29,7 +29,8 @@ COPILOT = "copilot"
 _DEFAULT_ANTHROPIC_MODEL = "claude-opus-4-8"
 _DEFAULT_COPILOT_MODEL = "gpt-5.5"
 # Mirrors the non-interactive flags the Nationwide pen-test-loop uses; override via COPILOT_FLAGS.
-_DEFAULT_COPILOT_FLAGS = "--allow-all-tools --excluded-tools=web_fetch --disable-builtin-mcps -s"
+_DEFAULT_COPILOT_FLAGS = ("--allow-all-tools --excluded-tools=web_fetch --disable-builtin-mcps "
+                          "--no-ask-user -s")  # --no-ask-user: never block a scan waiting on stdin
 
 
 def provider() -> str:
