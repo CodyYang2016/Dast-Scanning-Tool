@@ -25,6 +25,23 @@ services:
       -config api.addrs.addr.regex=true
     networks: [dast]
 
+  # Additional onboarded targets. Profiles keep the default Juice Shop demo unchanged.
+  # These services have no host ports; expose them only with a local compose override when
+  # authoring from the host. ZAP and the containerized runner reach them on the dast network.
+  dvwa:
+    profiles: [dvwa]
+    image: vulnerables/web-dvwa@sha256:dae203fe11646a86937bf04db0079adef295f426da68a92b40e3b181f337daa7
+    networks: [dast]
+
+  webgoat:
+    profiles: [webgoat]
+    image: webgoat/webgoat@sha256:d4ac9fc2b0a41b68d64dedde684f4783aa60cc785838435a6d5bd5a25b387497
+    networks: [dast]
+    environment:
+      # Avoid ZAP's own API/proxy port; base_url is http://webgoat:8083.
+      WEBGOAT_HOST: "0.0.0.0"
+      WEBGOAT_PORT: "8083"
+
   runner:
     build:
       context: .

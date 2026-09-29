@@ -96,6 +96,25 @@ podman compose up --build --abort-on-container-exit --exit-code-from runner
 #   add `:Z` to the volume in compose.yaml  ->  ./out:/app/out:Z
 ```
 
+### Bundled onboarding targets
+
+The repository also includes profile-gated DVWA and WebGoat targets. The default compose run
+remains Juice Shop only; start one additional target explicitly:
+
+```bash
+podman compose --profile dvwa up -d dvwa zap
+# create the DVWA database at http://localhost:8081/setup.php using a local port override
+export DVWA_USER=admin DVWA_PASS=password
+python -m dast author dvwa --explore --zap-proxy http://localhost:8080
+python -m dast scan dvwa
+
+podman compose --profile webgoat up -d webgoat zap
+# WebGoat is configured for http://webgoat:8083, not ZAP's port 8080.
+```
+
+Both images are pinned in `versions.lock`; the bundled app configs are under
+`security/dast/dvwa/` and `security/dast/webgoat/`.
+
 ### Onboarding a new application (configuration only)
 
 A second application is **one file** — `security/dast/<app>/app.yaml` — never a code change.

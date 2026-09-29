@@ -28,6 +28,38 @@ its database created (`setup.php` → *Create / Reset Database*), WebGoat needs 
 registered through its signup form (its passwords cap at 10 characters). Do that first, by
 hand, exactly as a person would.
 
+### 1a. Try a bundled target first
+
+DVWA and WebGoat are included as profile-gated targets so the configuration-only workflow can
+be exercised before connecting to an internal application. The default compose run still starts
+only Juice Shop. Use a local override if authoring from the host requires browser access:
+
+```bash
+cat > compose.override.yaml <<'YAML'
+services:
+  zap:  { ports: ["8080:8080"] }
+  dvwa: { ports: ["8081:80"] }
+YAML
+printf '\ncompose.override.yaml\n' >> .git/info/exclude
+
+podman compose --profile dvwa up -d dvwa zap
+podman compose logs -f dvwa
+```
+
+Create the DVWA database at `http://localhost:8081/setup.php`, then run:
+
+```bash
+export DVWA_USER=admin DVWA_PASS=password
+python -m dast author dvwa --explore --zap-proxy http://localhost:8080
+python -m dast scan dvwa
+python -m dast report dvwa
+```
+
+WebGoat is started with `podman compose --profile webgoat up -d webgoat zap` and listens on
+`http://webgoat:8083`; it must not use ZAP's port `8080`. Register a 6-10 character test
+account before authoring. These vulnerable targets should remain unexposed except through a
+local, explicitly reviewed port override.
+
 ---
 
 ## 2. Write the config
@@ -53,9 +85,8 @@ session-ending is refused before it is evaluated rather than after. If nothing s
 command says what it tried and writes the skeleton instead, so you are never handed a config
 that looks finished and is not.
 
-Measured on DVWA: **11 seconds**, three login steps and a verified `selector` proof, and the
-resulting config passed `dast author` (live auth replay) unchanged. You still review it — it
-is a starting point, not an authority — and the `record`/`api`/`ui` TODOs remain yours.
+Review the generated config and live proof before scanning; it is a starting point, not an
+authority. The `record`/`api`/`ui` decisions remain yours.
 
 The skeleton is a valid config with TODOs, not prose — fill them in and it loads. Three keys
 carry all the judgement: the **login shape** (§3), the **proof** (§3), and the **identity**.
