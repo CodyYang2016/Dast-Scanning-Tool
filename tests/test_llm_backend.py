@@ -58,6 +58,7 @@ def test_available_copilot_needs_cli_on_path(monkeypatch):
 def test_copilot_cmd_carries_model_and_prompt(monkeypatch):
     monkeypatch.delenv("COPILOT_FLAGS", raising=False)
     monkeypatch.delenv("COPILOT_CLI", raising=False)
+    monkeypatch.setattr(llm_backend.shutil, "which", lambda _bin: None)
     cmd = llm_backend._copilot_cmd("PROMPT", "gpt-5.5")
     assert cmd[0] == "copilot"
     assert "--model=gpt-5.5" in cmd
@@ -69,6 +70,39 @@ def test_copilot_flags_override(monkeypatch):
     monkeypatch.setenv("COPILOT_FLAGS", "--foo --bar")
     cmd = llm_backend._copilot_cmd("P", "m")
     assert "--foo" in cmd and "--bar" in cmd and "--disable-builtin-mcps" not in cmd
+
+
+def test_copilot_cmd_uses_the_resolved_executable(monkeypatch):
+    """subprocess does not apply PATHEXT, so the bare name fails on Windows where which() found
+    `copilot.cmd`. The command must carry whatever which() resolved."""
+    monkeypatch.delenv("COPILOT_CLI", raising=False)
+    monkeypatch.setenv("LLM_PROVIDER", "copilot")
+    monkeypatch.setattr(llm_backend.shutil, "which",
+                        lambda name: r"C:\npm\copilot.cmd" if name == "copilot" else None)
+    assert llm_backend._copilot_bin() == r"C:\npm\copilot.cmd"
+    assert llm_backend.available(None) is True
+
+
+def test_copilot_cmd_runs_a_windows_shim_through_cmd_with_the_prompt_in_a_file(monkeypatch,
+                                                                               tmp_path):
+    """A .cmd shim is not executable by CreateProcess, and cmd.exe would re-parse the prompt."""
+    monkeypatch.setenv("COPILOT_CLI", r"C:\npm\copilot.cmd")
+    monkeypatch.setattr(llm_backend.shutil, "which", lambda name: name)
+    prompt_file = tmp_path / "llm_prompt.txt"
+
+    cmd = llm_backend._copilot_cmd("PROMPT with \"quotes\" & %VARS%", "m", prompt_file)
+
+    assert cmd[:3] == ["cmd.exe", "/c", r"C:\npm\copilot.cmd"]
+    assert cmd[-2] == "--prompt"
+    assert prompt_file.as_posix() in cmd[-1]
+    assert "PROMPT with" not in cmd[-1]  # the prompt text never reaches cmd.exe
+
+
+def test_copilot_cmd_refuses_a_shim_without_a_prompt_file(monkeypatch):
+    monkeypatch.setenv("COPILOT_CLI", r"C:\npm\copilot.cmd")
+    monkeypatch.setattr(llm_backend.shutil, "which", lambda name: name)
+    with pytest.raises(RuntimeError, match="prompt file"):
+        llm_backend._copilot_cmd("P", "m")
 
 
 def test_copilot_prompt_demands_file_only_json():
@@ -108,7 +142,7 @@ def test_read_output_raises_when_empty(tmp_path):
 def test_complete_routes_to_copilot(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "copilot")
 
-    def fake_run(prompt, model, timeout):
+    def fake_run(prompt, model, timeout, prompt_file=None):
         # Simulate the CLI writing the JSON file the prompt asked for.
         marker = "the file "
         start = prompt.index(marker) + len(marker)
@@ -139,7 +173,7 @@ def test_complete_routes_to_anthropic(monkeypatch):
 # the JSON the model wrote. We simulate the CLI by writing the requested output file.
 
 def _fake_copilot_returns(json_text):
-    def fake_run(prompt, model, timeout):
+    def fake_run(prompt, model, timeout, prompt_file=None):
         marker = "the file "
         start = prompt.index(marker) + len(marker)
         end = prompt.index(" ", start)
