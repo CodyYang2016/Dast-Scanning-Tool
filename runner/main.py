@@ -90,6 +90,21 @@ def resolve_max_scan_min(cli_value: int | None, policy: dict | None, default: in
     return default
 
 
+def resolve_max_rule_min(cli_value: int | None, policy: dict | None, default: int = 1) -> int:
+    """Per-rule bound for the active scan, resolved like max_scan_min: an explicit value, else
+    the bundle's policy budget, else the historical default.
+
+    Separate from the wall-clock budget because they fail differently: the scan budget stops
+    the whole scan, this one stops ONE rule and leaves the rest running, which is why a
+    truncated rule is recorded individually in coverage (W6-2).
+    """
+    if cli_value is not None:
+        return cli_value
+    if policy and policy.get("max_rule_min"):
+        return int(policy["max_rule_min"])
+    return default
+
+
 def bundle_app_config(scope_path: str) -> dict | None:
     """The app.yaml for the application this bundle belongs to, if it can be found.
 
@@ -193,8 +208,10 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
 
     policy = bundle_policy(scope_path)
     max_scan_min = resolve_max_scan_min(max_scan_min, policy)
+    max_rule_min = resolve_max_rule_min(None, policy)
     report = scan(zap_api, base_url, scope["fqdn_allow_list"],
                   do_spider=do_spider, max_scan_min=max_scan_min, policy=policy,
+                  max_rule_min=max_rule_min,
                   exclusions=exclusions)
     records = list(normalize(report["alerts"], scope["app_id"], scan_id))
     # Reference the scan's evidence from each record (FR-E1).
@@ -212,7 +229,7 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
                                         excluded=report.get("exclusions"))
     # Pin the policy that produced this coverage, so a later diff can tell "we fixed it" from
     # "we scanned it less hard this time" (R2).
-    coverage["policy"] = resolved_policy(policy, max_scan_min, 1)
+    coverage["policy"] = resolved_policy(policy, max_scan_min, max_rule_min)
     return scope, result, guard, records, scan_id, coverage
 
 

@@ -89,7 +89,7 @@ def resolved_policy(policy: dict | None, max_scan_min: int, max_rule_min: int) -
     }
 
 
-def configure_policy(zap_api: str, max_scan_min: int = 4, max_rule_min: int = 1,
+def configure_policy(zap_api: str, max_scan_min: int = 4, max_rule_min: int | None = None,
                      policy: dict | None = None) -> None:
     """Bound the active scan, and apply the bundle's `zap-policy.yaml` when there is one.
 
@@ -102,6 +102,12 @@ def configure_policy(zap_api: str, max_scan_min: int = 4, max_rule_min: int = 1,
     scanner state is daemon-global and outlives a session, so without it a rule switched off
     by an earlier run stays off and this scan silently covers less than its policy claims.
     """
+    # The per-rule budget comes from the bundle's policy unless a caller overrides it. It used
+    # to be a parameter defaulting to 1 that nothing ever passed, so `generate` wrote
+    # max_rule_min into zap-policy.yaml, the scan ignored it, and coverage.json reported the
+    # value that had not been used — config and artifact agreeing while both contradicted it.
+    if max_rule_min is None:
+        max_rule_min = int((policy or {}).get("max_rule_min") or 1)
     _api(zap_api, "/JSON/ascan/action/setOptionMaxScanDurationInMins/", {"Integer": max_scan_min})
     _api(zap_api, "/JSON/ascan/action/setOptionMaxRuleDurationInMins/", {"Integer": max_rule_min})
 
@@ -204,7 +210,8 @@ def export_alerts(zap_api: str, target: str) -> dict:
 
 
 def scan(zap_api: str, target: str, allow_hosts, do_spider: bool = True,
-         max_scan_min: int = 4, policy: dict | None = None, exclusions=None) -> dict:
+         max_scan_min: int = 4, policy: dict | None = None, exclusions=None,
+         max_rule_min: int | None = None) -> dict:
     """Spider + bounded active-scan `target`; return raw ZAP alerts plus the active scan's
     id. Refuses out-of-scope targets before touching ZAP (safety pre-check)."""
     host = host_of(target)
@@ -213,7 +220,8 @@ def scan(zap_api: str, target: str, allow_hosts, do_spider: bool = True,
         raise ScanScopeError(
             f"refusing to scan {target!r}: host {host!r} not in allow-list {sorted(allow)} (NFR-2)."
         )
-    configure_policy(zap_api, max_scan_min=max_scan_min, policy=policy)
+    configure_policy(zap_api, max_scan_min=max_scan_min, max_rule_min=max_rule_min,
+                     policy=policy)
     apply_exclusions(zap_api, exclusions)
     _api(zap_api, "/JSON/core/action/accessUrl/", {"url": target, "followRedirects": "true"})
     if do_spider:

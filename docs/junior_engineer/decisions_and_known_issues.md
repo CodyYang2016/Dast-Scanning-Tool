@@ -17,10 +17,11 @@ should make us act.
 - D8 — LLM emits a JSON journey plan; deterministic code renders flow.py (safety)
 - D9 — generate is LLM-primary with a deterministic fallback; auth.json is required
 - D10 — authenticated route discovery: OpenAPI first, crawl fallback, recorded walk floor
+- D11 — autonomous exploration is the primary authoring path (supersedes D10's ordering, extends D9)
 - KI1 — endpoint_pattern id-collapsing heuristic (deferred fix)
 - KI2 — scope-enforcement edge cases (deferred)
 - KI3 — Juice Shop container exits (133) between sessions
-- KI4 — authenticated route discovery is bounded by the recorded walk (deferred)
+- KI4 — authenticated route discovery is bounded by the recorded walk (**RESOLVED by D11**)
 
 ---
 
@@ -299,9 +300,66 @@ heuristic) and KI4 (the current discovery limitation this addresses).
 
 ---
 
-## KI4 — Authenticated route discovery is bounded by the recorded walk (DEFERRED)
+## D11 — Autonomous exploration is the primary authoring path; the recorded walk is the floor (ADOPTED — supersedes the ordering in D10 and the framing in D9)
 
-**Issue.** Today the authenticated attack surface that gets scanned ≈ what the `record` session
+**Decision.** `seed` + `explore` — a human-seeded session that an LLM-driven loop explores — is
+the **default** authoring path (`dast author <app> --explore`). The recorded walk (`record`) is
+the fallback for anything unusual. D10's ordering stands for *route discovery from a spec*, but
+its assumption that a crawl is a risky second choice behind a human walk no longer matches the
+evidence.
+
+D9 remains true of `generate` (LLM-primary with a deterministic fallback), and is extended:
+the LLM is now used at **three** authoring points — `generate` (trace → journey plan), `explore`
+(observation → one action) and `discover` (login page → login steps + candidate auth proofs) —
+all behind the same boundary. It emits schema-validated **data**; deterministic code renders,
+executes or verifies it. `discover` is the clearest case: a proposed auth proof is accepted only
+if executing it holds once logged in and fails on the login page. The model's confidence is
+never an input.
+
+**Why.** Measured on DVWA, with zero routes supplied by a person: autonomous exploration finds
+**7 high-severity findings including all 5** that a hand-written route list produced, and two
+consecutive scans return the same set. D10 deferred this partly because a crawl was expected to
+be nondeterministic and to destroy its own session. Both risks were real and both turned out to
+be **our defects rather than properties of the approach**:
+
+- the loop walked every seed route *before* its own loop began, so only the last one had its
+  forms submitted (W6-12) — that, not the model, was why two findings were unreachable;
+- the scanner attacked the application's own controls, submitting a database-reset form ~325
+  times and the login form ~1,000 times per run (W6-11), which is what made results move.
+
+With seed routes queued through the loop and `scope.avoid_actions` handed to ZAP as scan
+exclusions, the instability D10 anticipated does not appear.
+
+**What keeps it safe.** The guardrails D10 asked for exist and are enforced deterministically,
+never by the model: `action_policy` default-denies state-changing verbs and hard-refuses
+session-ending and credential-changing actions (added after an exploration run emptied DVWA's
+admin password — see KI4); `write_mode` requires `data_policy: disposable`; the scope guard runs
+block-and-continue during discovery and block/log/fail during the scan; `max_pages` bounds the
+loop; and observations are redacted before they reach the model.
+
+**What is still true from D10.** An OpenAPI spec remains the best source where one exists —
+authoritative, no browser, deterministic. Nothing here replaces that; `--openapi` is still
+unbuilt (W6-4).
+
+**How to interrogate later.** `authoring/explore.py` (`untried_form`, `next_destination`,
+`unsubmitted_forms`), `runner/action_policy.py`, `runner/scan.py::exclusion_regexes`. The
+measured comparison, including what autonomous discovery still misses and why, is
+`../deterministic_vs_llm_discovery.md`. Provenance for any given bundle is in its
+`manifest.json` (`plan_source`, `model`).
+
+---
+
+## KI4 — Authenticated route discovery is bounded by the recorded walk (RESOLVED by D11)
+
+> **Resolved.** `seed` + `explore` is now the default authoring path, and the "chosen direction
+> when we act" below was built rather than deferred: session-ending and credential-changing
+> actions are hard-refused, the scope guard is phase-split, the loop is bounded by `max_pages`,
+> and `scope.avoid_actions` is handed to ZAP as scan exclusions. Measured on DVWA with zero
+> hand-picked routes: 7 highs including all 5 a human's list found, repeatable. The issue below
+> is kept because it states the problem this solved, and because the OpenAPI branch of D10 is
+> still unbuilt. See **D11**.
+
+**Issue (as written when deferred).** Today the authenticated attack surface that gets scanned ≈ what the `record` session
 actually walked, plus the endpoints the SPA auto-fetches on those pages, plus ZAP's traditional
 spider (weak on SPAs). The LLM does **not** discover routes — it selects/prioritizes/infers from
 the trace, and any inferred endpoints are unverified guesses. So areas nobody walked, whose

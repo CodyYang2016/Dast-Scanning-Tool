@@ -241,3 +241,32 @@ def test_a_zap_that_rejects_an_exclusion_fails_the_scan(monkeypatch):
     monkeypatch.setattr(scan_mod, "_api", boom)
     with pytest.raises(Exception):
         scan_mod.apply_exclusions("http://zap", ["(?i).*logout.*"])
+
+
+# ---- the per-rule budget must reach ZAP, not just the artifact ---------------------------
+
+def test_the_policys_per_rule_budget_is_applied(monkeypatch):
+    # Measured gap: generate wrote max_rule_min into zap-policy.yaml and configure_policy took
+    # it as a separate argument defaulting to 1, so a configured budget was silently ignored
+    # while coverage.json reported the value that had not been used.
+    sent = {}
+    monkeypatch.setattr(scan_mod, "_api",
+                        lambda z, p, params=None: sent.update({p: params}) or {})
+    scan_mod.configure_policy("http://zap", policy={"max_scan_min": 10, "max_rule_min": 5})
+    assert sent["/JSON/ascan/action/setOptionMaxRuleDurationInMins/"] == {"Integer": 5}
+
+
+def test_an_explicit_argument_still_wins_over_the_policy(monkeypatch):
+    sent = {}
+    monkeypatch.setattr(scan_mod, "_api",
+                        lambda z, p, params=None: sent.update({p: params}) or {})
+    scan_mod.configure_policy("http://zap", max_rule_min=2, policy={"max_rule_min": 5})
+    assert sent["/JSON/ascan/action/setOptionMaxRuleDurationInMins/"] == {"Integer": 2}
+
+
+def test_no_policy_keeps_the_historical_default(monkeypatch):
+    sent = {}
+    monkeypatch.setattr(scan_mod, "_api",
+                        lambda z, p, params=None: sent.update({p: params}) or {})
+    scan_mod.configure_policy("http://zap")
+    assert sent["/JSON/ascan/action/setOptionMaxRuleDurationInMins/"] == {"Integer": 1}
