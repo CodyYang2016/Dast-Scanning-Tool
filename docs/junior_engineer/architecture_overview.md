@@ -13,41 +13,63 @@ exactly where (and how narrowly) the LLM is used. Start here; the per-component 
 
 ## 1. What this is
 
-An **authenticated, non-prod, LLM-assisted DAST loop**: record a login + a short journey
-through a web app, use an LLM to turn that recording into scan config, run OWASP ZAP against the
-authenticated app inside a hard safety boundary, normalize the findings with stable
-fingerprints, and publish them to the GitHub Security tab with lifecycle tracking across scans.
+An **authenticated, non-prod, LLM-assisted DAST loop**: describe an application in one config
+file, have the tool log in and explore it, run OWASP ZAP against the authenticated app inside a
+hard safety boundary, normalize the findings with stable fingerprints, and publish them to the
+GitHub Security tab with lifecycle tracking across scans.
 
-Pilot app: **OWASP Juice Shop** (intentionally vulnerable, safe to attack). Scanner: **OWASP
-ZAP**. Browser automation: **Playwright + Chromium**. LLM: **Claude** (Anthropic API).
+**Onboarding an application is configuration, not code.** Everything app-specific lives in
+`security/dast/<app>/app.yaml`; nothing under `authoring/` or `runner/` may name an application,
+and `tests/test_no_app_specifics.py` fails the build if it does. Three applications are onboarded
+— **Juice Shop** (Angular SPA, JWT in `localStorage`), **DVWA** (PHP, `PHPSESSID` cookie,
+username login) and **WebGoat** (Spring Boot, registered account). WebGoat took 4m32s from
+`dast onboard` to a passing gate with zero code changed.
 
-**Status:** both halves built, tested (188 tests), and verified end-to-end on real data — the
-full loop runs from a single containerized command, and the four proof points all pass. A
-**seeded-session + LLM exploration** authoring path (`seed` + `explore`) and a **coverage-aware
-lifecycle diff** are also built and verified — see §2, §4, §6 and
-`seeded_session_exploration_design.md`.
+Scanner: **OWASP ZAP** 2.17.0. Browser automation: **Playwright + Chromium**. LLM: **Claude**
+(Anthropic API), at authoring time only.
+
+**Status:** built, tested (518 tests) and verified end-to-end on real data. The headline result:
+against DVWA, autonomous discovery with **zero hand-picked routes** finds **7 high-severity
+findings including all 5** a human's hand-written route list produced, and two consecutive scans
+return the same set. Getting there meant fixing four defects that a green test suite could not
+see — they are worth reading before trusting any scanner's silence, and they are in §12.
 
 ---
 
 ## 2. The whole pipeline, front to back
 
-Two phases, and the seam between them is the generated `flow.py` + `scope.json`. **Authoring**
-turns a login journey into scan config (the LLM lives here and only here) — via either `record`
-(a scripted browser crawl) **or** `seed` + `explore` (a human-seeded session an LLM-driven loop
-then explores for breadth). Both emit the same `trace.json`, so everything downstream is identical.
-**Scanning** executes a safe authenticated scan and processes the results (no LLM runs during a
-scan); the lifecycle diff is coverage-aware.
+Two phases, and the seam between them is the generated `flow.py` + `scope.json`. The input to
+both is **`app.yaml`** — the one artifact an operator writes.
+
+**Authoring** turns a login journey into scan config (the LLM lives here and only here) — via
+either `record` (a scripted walk of routes the config lists) **or** `seed` + `explore` (a
+human-seeded session that an LLM-driven loop explores for breadth). Both emit the same
+`trace.json`, so everything downstream is identical. **Scanning** executes a safe authenticated
+scan and processes the results; **no LLM runs during a scan**. The lifecycle diff is
+coverage-aware, and `explain` attributes anything that disappears.
+
+The operator sees four verbs, not fifteen modules — `dast.py` is a thin facade over them:
+
+```
+dast onboard <app>   # write an app.yaml skeleton (--discover: model proposes the auth block)
+dast author  <app>   # record (or seed+explore) -> generate -> validate
+dast scan    <app>   # preflight -> replay -> ZAP -> normalize + coverage
+dast report  <app>   # lifecycle diff -> SARIF -> (--upload) GitHub
+dast explain <app>   # why did findings disappear between the last two scans?
+```
 
 ```mermaid
 flowchart LR
-    human(["👤 Human + creds"]):::human
+    human(["👤 Human writes app.yaml<br/>+ credentials in env"]):::human
+    appcfg[("app.yaml<br/>scope · auth · explore · scan<br/>output · publish")]:::data
 
     subgraph AUTH["🖊️ AUTHORING — once per app (LLM lives here)"]
         direction LR
-        rec["record<br/>scripted browser crawl"]:::build
+        rec["record<br/>walk the listed routes"]:::build
         seed["seed<br/>human login → storageState"]:::build
         expl["explore<br/>seeded session · LLM loop"]:::build
         exllm{{"LLM · Claude<br/>observation → JSON action"}}:::llm
+        pol["action policy<br/>deny-list · write mode"]:::safety
         trace[("trace.json<br/>pages · forms · API · hosts")]:::data
         gen["generate"]:::build
         llm{{"LLM · Claude<br/>trace → JSON plan"}}:::llm
@@ -60,27 +82,34 @@ flowchart LR
         pre["preflight<br/>safety layer 1"]:::safety
         rep["replay / replay_seeded<br/>auth via ZAP proxy"]:::build
         guard["scope guard<br/>safety layer 2"]:::safety
+        excl["exclusions<br/>keep ZAP off logout/setup/login"]:::safety
         ascan["active scan<br/>bounded to allow-list"]:::build
         raw[("raw ZAP alerts")]:::data
         norm["normalizer + fingerprint"]:::build
-        cov[("coverage<br/>route×rule exercised")]:::data
+        cov[("coverage.json<br/>routes · params · rules<br/>rule outcomes · app state")]:::data
         recs[("detection records")]:::data
-        sarif["SARIF export"]:::build
+        sarif["SARIF export<br/>+ automation category"]:::build
         diff["lifecycle diff<br/>new / open / resolved / not_scanned"]:::build
+        expl2["explain · reachability<br/>why a finding went, what was never sent"]:::build
     end
 
     gh[("🌐 GitHub Security tab")]:::ext
 
-    human --> rec --> trace
-    human --> seed --> expl --> trace
+    human --> appcfg
+    appcfg --> rec --> trace
+    appcfg --> seed --> expl --> trace
     expl <--> exllm
+    expl --> pol
+    appcfg --> gen
     trace --> gen
     gen <--> llm
     gen --> cfg --> val
-    cfg ==> pre ==> rep ==> guard ==> ascan ==> raw ==> norm ==> recs
+    appcfg ==> pre
+    cfg ==> pre ==> rep ==> guard ==> excl ==> ascan ==> raw ==> norm ==> recs
     ascan --> cov --> diff
+    cov --> expl2
     recs --> sarif --> gh
-    recs --> diff
+    recs --> diff --> expl2
 
     classDef human fill:#fde68a,stroke:#b45309,color:#1f2937
     classDef build fill:#bbf7d0,stroke:#15803d,color:#14532d
@@ -98,6 +127,8 @@ flowchart LR
 
 | CLI | FRs | What it does |
 |-----|-----|--------------|
+| `appconfig.py` | W2 | Loads and validates `app.yaml` against `app.schema.json`, and is the single place every app-specific value comes from: scope, login steps, auth proof, seed routes, test data, budgets, cookies, probes, output dir, publish target. Credentials appear only as env var **names** (NFR-3) |
+| `discover.py` | W2-16 | `dast onboard --discover`: the model reads the login page and proposes login steps plus candidate auth proofs; deterministic code then **verifies** each by logging in, accepting a proof only if it holds authenticated and fails on the login page. Session-ending candidates are refused before evaluation. The model's confidence is never the reason anything is accepted |
 | `record.py` | R1/R2/R3 | Drives Chromium through register → login → an authenticated page; captures `trace.json` (interactions, forms, API/XHR, hosts) + `index.json` |
 | `seed.py` | — (KI4) | Human logs in once (SSO/MFA/CAPTCHA by hand); saves Playwright `storageState` (gitignored) so scans start already authenticated |
 | `explore.py` | — (KI4) | Seeded, **LLM-driven** exploration loop (observe → redact → LLM JSON action → validate → execute → capture); emits the same `trace.json` as `record`, expanding breadth from seed routes |
@@ -113,8 +144,8 @@ flowchart LR
 | `scope_guard.py` | S4, NFR-4 | **Safety layer 2** — `page.route` interceptor; block/log/fail out-of-allow-list requests. Phase-split: `enforce` (fail closed) for scans, `discovery` (block-and-continue) for exploration |
 | `action_policy.py` | — | Exploration safety: default-deny state-changing verbs + `avoid_action_list`; decides if an LLM-proposed action may execute (never trusts the LLM's label) |
 | `redact.py` | — | Scrub JWT/bearer/secret-keys/email from DOM/XHR observations **before** they reach the LLM |
-| `scan.py` | S1, S2 | Port of the capture-script choreography: spider + bounded active scan → raw ZAP JSON |
-| `coverage.py` | — (R2) | Capture the `(route × rule)` surface a scan actually exercised (ZAP accessed URLs × enabled scanners) for the coverage-aware diff |
+| `scan.py` | S1, S2 | Spider + bounded active scan → raw ZAP JSON. Also applies **scan exclusions** (W6-11): the `avoid_actions` the config already declares, plus the login page, are excluded from spider and active scan alike — without this the scanner attacks the application's own controls and destroys the state its findings depend on |
+| `coverage.py` | — (R2) | What the scan actually exercised: routes, **per-route parameters** (W6-10), enabled rules, **per-rule outcomes** from ZAP's scan progress (W6-2), and an **app-state fingerprint** — digests of a few probe URLs fetched through the scan's own session (W6-8) so two scans can be compared for "was the app even in the same condition?" |
 | `evidence.py` | E1 | Capture HAR + screenshot, **redact secrets**, reference from records/SARIF |
 | `main.py` | all | Chain preflight → fresh ZAP session → replay (or seeded) → scan → normalize (+ coverage); exit code = the Phase 1 gate |
 
@@ -126,25 +157,37 @@ flowchart LR
 | `fingerprint.py` | N2 | Stable `sha256(rule_id \| endpoint_pattern \| parameter \| payload_family)` |
 | `sarif_export.py` | X1 | Records → SARIF 2.1.0 (severity→level, `security-severity`, CWE tags, fingerprint in `partialFingerprints`) |
 | `github_upload.py` | X2 | gzip+base64 the SARIF, POST to the code-scanning API |
-| `lifecycle_diff.py` | L1/L2 | Compare two scans' fingerprint sets → label new/open/resolved; **coverage-aware** (R2): a previous-only finding is `resolved` only if its `(route × rule)` pair was exercised this scan, else `not_scanned`. Persist state (+ coverage) |
+| `lifecycle_diff.py` | L1/L2 | Compare two scans' fingerprint sets → label new/open/resolved; **coverage-aware** (R2): a previous-only finding is `resolved` only if its route, **its own parameter**, and its rule were exercised this scan — else `not_scanned`. Persist state (+ coverage) |
+| `explain.py` | — (W6-9) | Why a finding disappeared, most specific cause first: `route_excluded` · `route_not_covered` · `parameter_not_exercised` · `rule_not_enabled` · `rule_truncated` · `app_state_changed` · `scan_changed_the_app` · `rule_found_nothing` · `fixed`. Only the last claims a fix, and it carries its evidence |
+| `reachability.py` | — (W6-12) | What the application **exposes** (GET form fields in the trace) against what the scan **sent** (`coverage.route_params`). The difference is a detection gap nothing measured before; `dast report` prints it |
 
 ### 3d. Contracts (`contracts/`) — the frozen interfaces
 
-`scope.json`(+schema), `detection.schema.json` (status enum incl. `not_scanned`), the fingerprint
-formula (`README.md`), `trace.schema.json`, `journey.schema.json`, `seed.schema.json` (seed config),
-`action.schema.json` (the LLM exploration action contract), the vendored `sarif-2.1.0.schema.json`,
-and the real `sample_zap_output.json` fixture. Everything is written *to* these; they're the seams
-that let each part be built and tested independently.
+**`app.schema.json`** is the one an operator meets: the whole per-app contract, with
+`additionalProperties: false` and a description on every key, which is also what lets a form
+generator render it later. Then `scope.json`(+schema), `detection.schema.json` (status enum incl.
+`not_scanned`), the fingerprint formula (`README.md`), `trace.schema.json`, `journey.schema.json`,
+`seed.schema.json`, `action.schema.json` (the LLM exploration action contract),
+`auth_discovery.schema.json` (what the model may propose for a login), the vendored
+`sarif-2.1.0.schema.json`, and the real `sample_zap_output.json` fixture. Everything is written
+*to* these; they're the seams that let each part be built and tested independently.
 
 ---
 
 ## 4. Where the LLM fits (and where it doesn't)
 
-The LLM is used **only at authoring time**, in two places, both behind the **same** boundary:
-`generate` (one stateless call: trace → JSON *journey plan*) and `explore` (a loop of stateless
-calls: each redacted observation → one constrained JSON *action*). In both, the model emits
-**data** validated against a schema; deterministic code renders/executes it. The model never
+The LLM is used **only at authoring time**, in three places, all behind the **same** boundary:
+`generate` (one stateless call: trace → JSON *journey plan*), `explore` (a loop of stateless
+calls: each redacted observation → one constrained JSON *action*), and `discover` (one call:
+login page → proposed login steps + candidate auth proofs). In all three the model emits **data**
+validated against a schema; deterministic code renders, executes or verifies it. The model never
 authors executable code and never runs during a scan.
+
+`discover` is the sharpest illustration of the boundary, because there the model's output is
+**tested rather than trusted**: each proposed proof is tried against the running application and
+kept only if it holds once logged in *and* fails on the login page. Candidates that would end the
+session are refused before they are ever evaluated. The model's confidence is not an input to
+that decision.
 
 ```mermaid
 flowchart TD
@@ -317,10 +360,11 @@ flowchart LR
     c[("detection record<br/>severity high · CWE-89<br/>endpoint /rest/products/search · param q<br/>fingerprint ece130…")]:::data
     d["SARIF result<br/>level error · security-severity 8.0<br/>tag external/cwe/cwe-89<br/>partialFingerprint ece130…"]:::build
     e[("🌐 GitHub Security tab<br/>SQL Injection · High")]:::ext
-    f["lifecycle diff (scan 2, after fix)<br/>ece130… gone + route×rule exercised → RESOLVED<br/>(if NOT exercised → not_scanned) · others stay OPEN"]:::build
+    f["lifecycle diff (scan 2, after fix)<br/>ece130… gone + route × <b>param</b> × rule exercised → RESOLVED<br/>(if NOT exercised → not_scanned) · others stay OPEN"]:::build
+    g["explain<br/>names the cause when it is NOT a fix:<br/>route_excluded · parameter_not_exercised<br/>rule_truncated · app_state_changed"]:::build
 
     a --> b --> c --> d --> e
-    c --> f
+    c --> f --> g
 
     classDef data fill:#fef9c3,stroke:#ca8a04,color:#713f12
     classDef build fill:#bbf7d0,stroke:#15803d,color:#14532d
@@ -332,7 +376,7 @@ see §4 above + `authoring_clis_design.md`.
 
 ---
 
-## 7. The four proof points (definition of done)
+## 7. The proof points (definition of done)
 
 | # | Proof point | Delivered by |
 |---|-------------|--------------|
@@ -342,40 +386,63 @@ see §4 above + `authoring_clis_design.md`.
 | 4 | Fingerprint lifecycle across two scans | `lifecycle_diff` (fix → resolved, others open) |
 
 All four are demonstrable end-to-end on real data, and the **generated** `flow.py` (LLM path
-verified) drives a passing runner gate — the Week-2 checkpoint. Proof point #4 is now
-**coverage-aware** (R2): `resolved` is asserted only for `(route × rule)` pairs the scan actually
-exercised, so a disabled rule or dropped route reads as `not_scanned`, not a false fix.
+verified) drives a passing runner gate. Proof point #4 is now **coverage-aware** (R2) and
+**parameter-aware** (W6-10): `resolved` is asserted only when the route, the finding's own
+parameter, and the rule were all exercised — a disabled rule, a dropped route or an untested
+parameter reads as `not_scanned`, not a false fix.
+
+Two results have been added since, and they are the ones worth quoting:
+
+| # | Proof point | Evidence |
+|---|-------------|----------|
+| 5 | An application onboards from configuration alone | WebGoat, **zero** diff to `authoring/` or `runner/`, 4m32s to a passing gate; `tests/test_no_app_specifics.py` enforces it |
+| 6 | Autonomous discovery contains the human's result | DVWA, **zero** hand-picked routes: 7 highs including all 5 the hand-written list found, repeated identically on a second scan |
 
 ---
 
 ## 8. How to run
 
-**One command (containerized):**
+**The whole loop, one app** — this is the path an operator uses:
+
+```bash
+export ANTHROPIC_API_KEY=…          # authoring only; no LLM runs during a scan
+export DVWA_USER=… DVWA_PASS=…      # names come from app.yaml; values never in files
+
+python -m dast onboard dvwa --base-url http://dvwa    # writes the app.yaml skeleton
+python -m dast author  dvwa --explore --zap-proxy http://localhost:8080
+python -m dast scan    dvwa
+python -m dast report  dvwa                            # add --upload to publish
+python -m dast explain dvwa                            # after a second scan
+```
+
+Artifacts land under `out/<app>/` by default; `--out`, `$DAST_OUT` or `output.dir` in `app.yaml`
+move the whole workspace, and each run records which of them won in `settings.json`.
+
+**Bring up a target** (profiles keep `docker compose up` to the pilot app only):
+```bash
+docker compose --profile dvwa up -d dvwa zap     # or --profile webgoat
+```
+Authoring drives a browser on *your* machine, so ZAP and the app must be reachable from there —
+compose publishes nothing by design. See `../onboarding_a_new_application.md` §1a for the local
+override, and note WebGoat must not sit on 8080 (that is ZAP's own port; the scan silently sees
+nothing).
+
+**One command, fully containerized** (pilot app, hand-authored bundle):
 ```bash
 docker compose up --build --abort-on-container-exit --exit-code-from runner
 ```
 
-**Authoring + scan (local dev), with the LLM:**
+**The module CLIs still exist** and `dast` is a thin facade over them; reach for them when you
+want one stage in isolation:
 ```bash
-export ANTHROPIC_API_KEY=…  AUTH_EMAIL=…  AUTH_PASSWORD=…  RUNNER_CHROMIUM_NO_SANDBOX=1
-python -m authoring.record   --app-id juice-shop --base-url http://juice:3000 --zap-proxy http://localhost:8080 --out-dir rec/
-python -m authoring.generate --trace rec/trace.json --out-dir rec/            # LLM → flow.py + config
-python -m authoring.validate --plan rec/journey.json --scope rec/scope.json --flow rec/flow.py   # allow-list + live auth
-python -m runner.main        --scope rec/scope.json --flow rec/flow.py --records-out rec/records.json --coverage-out rec/coverage.json
-python -m detections.sarif_export rec/records.json -o out.sarif
-python -m detections.github_upload out.sarif --owner <owner> --repo <repo>
-python -m detections.lifecycle_diff rec/records.json --app-id juice-shop --state rec/state.json --coverage rec/coverage.json  # R2
+python -m authoring.record   --app juice-shop --zap-proxy http://localhost:8080 --out-dir rec/
+python -m authoring.explore  --app dvwa --zap-proxy http://localhost:8080 --out-dir rec/
+python -m authoring.generate --app dvwa --trace rec/trace.json --out-dir rec/
+python -m runner.main        --scope rec/scope.json --flow rec/flow.py --records-out rec/records.json
+python -m detections.sarif_export rec/labeled.json --category dast/dvwa -o out.sarif
 ```
 
-**Alternative authoring route — seeded session + LLM exploration** (replaces `record`; rejoins at
-`generate`):
-```bash
-python -m authoring.seed    --base-url http://juice:3000 --zap-proxy http://localhost:8080 --assisted --storage-state .secrets/storageState.json
-python -m authoring.explore --seed security/dast/juice-shop/seed.json --scope security/dast/juice-shop/scope.json --zap-proxy http://localhost:8080 --out-dir rec/
-```
-
-Full run/verify guide (both paths, containerization gotchas, troubleshooting):
-`archive/testing_and_running_roadmap.md`.
+Step-by-step onboarding of a *new* application: `../onboarding_a_new_application.md`.
 
 ---
 
@@ -394,16 +461,23 @@ are validated by running them. See `validation_and_testing.md`.
 ## 10. Repo map
 
 ```
-contracts/       frozen interfaces: scope/detection/trace/journey/seed/action schemas, fingerprint
-                 formula, vendored SARIF schema, sample_zap_output.json fixture
-authoring/       record.py · seed.py · explore.py (LLM) · generate.py (LLM) · validate.py
+dast.py          the operator's CLI: onboard · author · scan · report · explain (a facade)
+contracts/       frozen interfaces: app · scope · detection · trace · journey · seed · action ·
+                 auth_discovery schemas, fingerprint formula, vendored SARIF schema, ZAP fixture
+authoring/       appconfig.py (app.yaml) · record · seed · explore (LLM) · discover (LLM) ·
+                 generate (LLM) · validate
 runner/          preflight · replay · scope_guard · action_policy · redact · scan · coverage ·
                  evidence · main · capture_zap_fixture.sh
-detections/      normalizer · fingerprint · sarif_export · github_upload · lifecycle_diff
-security/dast/juice-shop/   hand-authored flow.py + app scope.json (+ gitignored evidence/, .secrets/)
-tests/           objective suites (188 tests) — one per module + acceptance suites
-docs/            requirements, 3-week plan, demo plan, day-1 runbook, phase-1 demo script
-docs/junior_engineer/   this file + all design/decision docs
+detections/      normalizer · fingerprint · sarif_export · github_upload · lifecycle_diff ·
+                 explain · reachability
+security/dast/   one directory per onboarded app, each holding app.yaml — dvwa · webgoat are
+                 config-only; juice-shop also keeps a hand-authored flow.py/scope.json/seed.json
+                 from before the config contract
+out/<app>/       artifacts (gitignored): authoring/ · scans/<scan_id>/ · state.json
+tests/           objective suites (518 tests) — one per module + acceptance suites
+docs/            current: requirements · onboarding · remediation plan · readiness ·
+                 deterministic_vs_llm_discovery · phase-2 demo material  (docs/archive/ = superseded)
+docs/junior_engineer/   this file + all design/decision docs  (archive/ = superseded plans)
 Containerfile · compose.yaml · versions.lock · requirements*.txt · pyproject.toml
 ```
 
@@ -416,3 +490,28 @@ two-layer safety model (D2), and the deferred items (endpoint-pattern heuristic,
 evidence hosting, exploration coverage KI4). The seeded-session + LLM exploration loop and the
 coverage-aware lifecycle diff are specified in `seeded_session_exploration_design.md` (decisions
 R1/R2).
+
+---
+
+## 12. Four defects a green test suite could not see
+
+Every one of these was found by running the pipeline against a real application while 400+
+tests passed. They are the most transferable thing in this repository, because each one made the
+scanner **report silence as safety**.
+
+| Defect | How it presented | Why the tests missed it |
+|---|---|---|
+| **Coverage was route-level** (W6-10) | A finding on `?id=` could be called `fixed` when the route had only ever been visited bare | Coverage was internally consistent; nothing compared it to what was *attacked* |
+| **The state oracle could not see state** (W6-8) | Two scans differing by five highs produced *identical* app-state fingerprints | Probes were fetched with no session, so every one digested the login page — `sha256("")`, forever equal. A constant oracle always agrees |
+| **The scan attacked the app's own controls** (W6-11) | ~325 submissions of DVWA's database-reset form and ~1,000 login POSTs in one run; half of all responses redirected to login | `avoid_actions` was enforced during *exploration* only and ZAP was never told. No unit test observes what a scanner does to a live application |
+| **Only the last seed route was explored** (W6-12) | Two high-severity findings unreachable from any autonomously authored bundle | Seed routes were walked *before* the loop, and `untried_form()` only judges the current page. Every test was of a pure function; the defect lived in the loop's ordering |
+
+The pattern: **all four were invisible because "no finding" and "never looked" produced the same
+output.** The work that followed was less about detection and more about making the tool able to
+tell those apart from its own artifacts — which is what `coverage.json`, `explain`, the
+reachability line and `settings.json` exist for. Before arguing about detection rates with any
+scanner, that distinction is what makes the numbers mean anything.
+
+Fixing them took DVWA from *5 → 0 → 8 → 2 → 1* highs across runs to a stable **7**, containing
+all five findings a human's hand-written route list produced. Full narrative, with the measured
+before/after tables: `../deterministic_vs_llm_discovery.md`.
