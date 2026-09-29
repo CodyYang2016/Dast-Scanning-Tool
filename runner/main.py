@@ -27,7 +27,8 @@ from runner import coverage as coverage_capture
 from runner import evidence
 from runner.preflight import PreflightError, preflight
 from runner.replay import SessionDeadError, load_flow, replay, replay_seeded
-from runner.scan import ScanScopeError, new_session, scan
+from runner.scan import (ScanScopeError, ZapUnavailableError, exclusion_regexes as scan_exclusions,
+                         load_policy, new_session, resolved_policy, scan)
 from runner.scope_guard import ScopeViolation
 
 _DEFAULT_SCHEMA = "contracts/scope.schema.json"
@@ -77,6 +78,41 @@ def wait_ready(zap_api: str, base_url: str, timeout: float = 120.0, interval: fl
         time.sleep(interval)
 
 
+def resolve_max_scan_min(cli_value: int | None, policy: dict | None, default: int = 4) -> int:
+    if cli_value is not None:
+        return cli_value
+    if policy and policy.get("max_scan_min"):
+        return int(policy["max_scan_min"])
+    return default
+
+
+def resolve_max_rule_min(cli_value: int | None, policy: dict | None, default: int = 1) -> int:
+    if cli_value is not None:
+        return cli_value
+    if policy and policy.get("max_rule_min"):
+        return int(policy["max_rule_min"])
+    return default
+
+
+def bundle_app_config(scope_path: str) -> dict | None:
+    try:
+        from authoring import appconfig
+        scope = json.loads(Path(scope_path).read_text())
+        return appconfig.load_app_config(scope["app_id"])
+    except Exception:
+        return None
+
+
+def bundle_policy(scope_path: str) -> dict | None:
+    return load_policy(str(Path(scope_path).resolve().parent / "zap-policy.yaml"))
+
+
+def resolve_evidence_dir(scope_path: str, evidence_dir: str | None, scan_id: str) -> Path:
+    if evidence_dir:
+        return Path(evidence_dir) / "evidence"
+    return Path(scope_path).resolve().parent / "evidence" / scan_id
+
+
 def evaluate_gate(authenticated: bool, scope_ok: bool, records: list[dict]) -> dict:
     """Phase 1 gate: authenticated + in-scope + >=1 high/medium detection. Pure/testable."""
     has_high_or_medium = any(r["severity"] in ("critical", "high", "medium") for r in records)
@@ -90,8 +126,8 @@ def evaluate_gate(authenticated: bool, scope_ok: bool, records: list[dict]) -> d
 
 
 def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
-        fresh=True, do_spider=True, max_scan_min=4, wait=True,
-        storage_state=None, seed_routes=None):
+    fresh=True, do_spider=True, max_scan_min=None, wait=True,
+    storage_state=None, seed_routes=None, evidence_dir=None):
     """Execute the full loop. Returns (scope, replay_result, guard, records, scan_id, coverage).
 
     `coverage` is the (route x rule) surface this scan exercised (R2), for the lifecycle diff.
@@ -101,55 +137,61 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
     if wait:
         wait_ready(zap_api, base_url)                  # tolerate container startup ordering
     scan_id = _scan_id()
-    app_dir = str(Path(scope_path).resolve().parent)   # evidence lives under the app dir
-    ev_dir = evidence.evidence_dir(app_dir, scan_id)    # FR-E1
+    ev_dir = resolve_evidence_dir(scope_path, evidence_dir, scan_id)
+    ev_dir.mkdir(parents=True, exist_ok=True)
+
+    app_cfg = bundle_app_config(scope_path)
+    cookies = probes = None
+    exclusions: list[str] = []
+    if app_cfg:
+        from authoring import appconfig
+        cookies = appconfig.scan_cookies(app_cfg)
+        probes = appconfig.state_probes(app_cfg)
+        exclusions = scan_exclusions(appconfig.avoid_actions(app_cfg),
+                                     appconfig.login_url(app_cfg))
+
+    live_session: dict = {}
 
     if fresh:
         new_session(zap_api)                           # clean per-scan session
     if storage_state:
         try:
             result, guard = replay_seeded(scope, base_url, zap_proxy, storage_state,
-                                          seed_routes or [], evidence_dir=str(ev_dir))
+                                          seed_routes or [], evidence_dir=str(ev_dir),
+                                          on_session=live_session.update)
         except SessionDeadError as exc:
             print(f"SEEDED SESSION DEAD ({exc}); falling back to hand-authored flow",
                   file=sys.stderr)
             flow = load_flow(flow_path)
-            result, guard = replay(scope, flow, base_url, zap_proxy, evidence_dir=str(ev_dir))
+            result, guard = replay(scope, flow, base_url, zap_proxy, evidence_dir=str(ev_dir),
+                                   cookies=cookies, on_session=live_session.update)
     else:
         flow = load_flow(flow_path)
-        result, guard = replay(scope, flow, base_url, zap_proxy, evidence_dir=str(ev_dir))
+        result, guard = replay(scope, flow, base_url, zap_proxy, evidence_dir=str(ev_dir),
+                       cookies=cookies, on_session=live_session.update)
 
     # Redact the HAR immediately after capture — before it can be published (hard requirement).
     har = ev_dir / "active-scan.har"
     if har.exists():
         evidence.redact_har_file(str(har))
 
-    # Capture the (route x rule) surface this scan exercised, for the coverage-aware diff (R2).
-    policy = {}
-    policy_path = Path(scope_path).parent / "zap-policy.yaml"
-    if policy_path.exists():
-        try:
-            policy = json.loads(policy_path.read_text())
-        except json.JSONDecodeError:
-            policy = {}
-    max_rule_min = int(policy.get("max_rule_min") or 1)
+    policy = bundle_policy(scope_path)
+    max_scan_min = resolve_max_scan_min(max_scan_min, policy)
+    max_rule_min = resolve_max_rule_min(None, policy)
     report = scan(zap_api, base_url, scope["fqdn_allow_list"],
                   do_spider=do_spider, max_scan_min=max_scan_min,
-                  max_rule_min=max_rule_min, policy=policy)
+                  max_rule_min=max_rule_min, policy=policy, exclusions=exclusions)
     records = list(normalize(report["alerts"], scope["app_id"], scan_id))
     # Reference the scan's evidence from each record (FR-E1).
     relpath = evidence.evidence_relpath(scan_id)
     for r in records:
         r["evidence_path"] = relpath
+    session = live_session or coverage_capture.session_cookies(storage_state, base_url)
+    probe_jar = {**session, **(cookies or {})}
     coverage = coverage_capture.capture(
-        zap_api, base_url, scan_id=scan_id,
-        probes=policy.get("state_probes"), cookies=policy.get("probe_cookies"))
-    coverage["policy"] = {
-        "max_scan_min": max_scan_min,
-        "max_rule_min": max_rule_min,
-        "write_mode": policy.get("write_mode", "deny"),
-        "state_probes": policy.get("state_probes", []),
-    }
+        zap_api, base_url, scan_id=report.get("ascan_id"), probes=probes,
+        cookies=probe_jar, authenticated=bool(session), excluded=report.get("exclusions"))
+    coverage["policy"] = resolved_policy(policy, max_scan_min, max_rule_min)
     return scope, result, guard, records, scan_id, coverage
 
 
@@ -165,12 +207,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--zap-api", default="http://localhost:8080")
     p.add_argument("--zap-proxy", default="http://localhost:8080")
     p.add_argument("--records-out", default=None, help="Write detection records here")
+    p.add_argument("--evidence-dir", default=None,
+                   help="Directory for this scan's evidence; defaults to the app directory")
     p.add_argument("--coverage-out", default=None,
                    help="Write this scan's (route x rule) coverage here for the lifecycle diff (R2)")
     p.add_argument("--no-spider", action="store_true")
     p.add_argument("--no-fresh", action="store_true", help="Do not reset the ZAP session first")
     p.add_argument("--no-wait", action="store_true", help="Do not wait for ZAP/target readiness")
-    p.add_argument("--max-scan-min", type=int, default=4)
+    p.add_argument("--max-scan-min", type=int, default=None,
+                   help="Override the bundle policy's scan budget (minutes)")
     args = p.parse_args(argv)
 
     storage_state = seed_routes = None
@@ -185,8 +230,9 @@ def main(argv: list[str] | None = None) -> int:
             args.scope, args.schema, args.flow, args.base_url, args.zap_api, args.zap_proxy,
             fresh=not args.no_fresh, do_spider=not args.no_spider, max_scan_min=args.max_scan_min,
             wait=not args.no_wait, storage_state=storage_state, seed_routes=seed_routes,
+            evidence_dir=args.evidence_dir,
         )
-    except (PreflightError, ScanScopeError, ScopeViolation) as exc:
+    except (PreflightError, ScanScopeError, ScopeViolation, ZapUnavailableError) as exc:
         print(f"RUNNER ABORT: {exc}", file=sys.stderr)
         return 2
 

@@ -19,8 +19,10 @@ from __future__ import annotations
 
 import json
 import hashlib
+import re
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 from detections.fingerprint import endpoint_pattern
 from runner.scope_guard import host_of
@@ -47,6 +49,18 @@ def accessed_routes(zap_api: str, target: str) -> set[str]:
         if host is None or host_of(url) == host:
             routes.add(endpoint_pattern(url))
     return routes
+
+
+def session_cookies(storage_state, base_url: str) -> dict[str, str]:
+    if not storage_state:
+        return {}
+    try:
+        saved = json.loads(Path(storage_state).read_text())
+    except Exception:
+        return {}
+    host = host_of(base_url)
+    return {cookie["name"]: cookie["value"] for cookie in saved.get("cookies", [])
+            if host is None or str(cookie.get("domain", "")).lstrip(".") == host}
 
 
 def accessed_params(zap_api: str, target: str) -> dict[str, list[str]]:
@@ -141,9 +155,13 @@ def enabled_rule_ids(zap_api: str) -> set[str]:
 
 
 def capture(zap_api: str, target: str, scan_id: str | None = None,
-            excluded: list[str] | None = None, probes=None, cookies=None) -> dict:
+            excluded: list[str] | None = None, probes=None, cookies=None,
+            authenticated: bool | None = None) -> dict:
     """Return routes, enabled rules, exercised parameters and rule outcomes."""
     routes = accessed_routes(zap_api, target)
+    patterns = [re.compile(pattern) for pattern in excluded or []]
+    routes = {route for route in routes
+              if not any(pattern.search(route) for pattern in patterns)}
     params = accessed_params(zap_api, target)
     out = {
         "routes": sorted(routes),

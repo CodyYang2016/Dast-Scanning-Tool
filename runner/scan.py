@@ -14,10 +14,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 import urllib.parse
 import urllib.request
+from pathlib import Path
+
+import yaml
 
 from runner.preflight import preflight
 from runner.scope_guard import host_of
@@ -28,6 +32,10 @@ _SLOW_SCANNERS = "40026"  # DOM-XSS (browser-based) — wedges the API; disabled
 
 class ScanScopeError(Exception):
     """Raised when the scan target is not covered by the scope allow-list (safety)."""
+
+
+class ZapUnavailableError(Exception):
+    """Raised when ZAP stops answering during a scan."""
 
 
 def _api(zap_api: str, path: str, params: dict | None = None, timeout: float = 30.0) -> dict:
@@ -46,6 +54,26 @@ def new_session(zap_api: str, name: str = "") -> None:
     _api(zap_api, "/JSON/core/action/newSession/", params)
 
 
+def load_policy(path: str) -> dict | None:
+    p = Path(path)
+    if not p.is_file():
+        return None
+    loaded = yaml.safe_load(p.read_text())
+    return loaded if isinstance(loaded, dict) else None
+
+
+def resolved_policy(policy: dict | None, max_scan_min: int, max_rule_min: int) -> dict:
+    policy = policy or {}
+    return {
+        "write_mode": policy.get("write_mode", "deny"),
+        "attack_strength": policy.get("attack_strength", "default"),
+        "alert_threshold": policy.get("alert_threshold", "default"),
+        "disabled_scanners": list(policy.get("disabled_scanners", [_SLOW_SCANNERS])),
+        "max_scan_min": max_scan_min,
+        "max_rule_min": max_rule_min,
+    }
+
+
 def configure_policy(zap_api: str, max_scan_min: int = 4, max_rule_min: int | None = None,
                      policy: dict | None = None) -> None:
     """Bound + lighten the active scan using the bundle policy when present."""
@@ -53,12 +81,36 @@ def configure_policy(zap_api: str, max_scan_min: int = 4, max_rule_min: int | No
         max_rule_min = int((policy or {}).get("max_rule_min") or 1)
     _api(zap_api, "/JSON/ascan/action/setOptionMaxScanDurationInMins/", {"Integer": max_scan_min})
     _api(zap_api, "/JSON/ascan/action/setOptionMaxRuleDurationInMins/", {"Integer": max_rule_min})
+    if policy:
+        categories = [item["id"] for item in
+                      _api(zap_api, "/JSON/ascan/view/policies/").get("policies", [])]
+        strength = str(policy.get("attack_strength", "medium")).upper()
+        threshold = str(policy.get("alert_threshold", "medium")).upper()
+        for category in categories:
+            _api(zap_api, "/JSON/ascan/action/setPolicyAttackStrength/",
+                 {"id": category, "attackStrength": strength})
+            _api(zap_api, "/JSON/ascan/action/setPolicyAlertThreshold/",
+                 {"id": category, "alertThreshold": threshold})
+    _api(zap_api, "/JSON/ascan/action/enableAllScanners/")
+    disabled = list(policy.get("disabled_scanners", [])) if policy else [_SLOW_SCANNERS]
+    if disabled:
+        _api(zap_api, "/JSON/ascan/action/disableScanners/",
+             {"ids": ",".join(map(str, disabled))})
     _api(zap_api, "/JSON/ascan/action/disableScanners/", {"ids": _SLOW_SCANNERS})
 
 
 def _poll(zap_api: str, view_path: str, scan_id: str, poll_s: float, max_polls: int) -> None:
+    failures = 0
     for _ in range(max_polls):
-        status = _api(zap_api, view_path, {"scanId": scan_id}).get("status")
+        try:
+            status = _api(zap_api, view_path, {"scanId": scan_id}).get("status")
+            failures = 0
+        except Exception as exc:
+            failures += 1
+            if failures >= 3:
+                raise ZapUnavailableError(f"ZAP stopped responding after {failures} failed polls: {exc}") from exc
+            time.sleep(poll_s)
+            continue
         if status == "100":
             return
         time.sleep(poll_s)
@@ -81,9 +133,27 @@ def export_alerts(zap_api: str, target: str) -> dict:
     return _api(zap_api, "/JSON/alert/view/alerts/", {"baseurl": target})
 
 
+def exclusion_regexes(avoid_actions, login_url: str | None) -> list[str]:
+    out = [f"(?i).*{re.escape(str(term).strip())}.*" for term in (avoid_actions or [])
+           if str(term).strip()]
+    if login_url:
+        path = urllib.parse.urlsplit(str(login_url)).path or str(login_url)
+        pattern = f"(?i).*{re.escape(path)}.*"
+        if pattern not in out:
+            out.append(pattern)
+    return out
+
+
+def apply_exclusions(zap_api: str, regexes) -> None:
+    for regex in regexes or []:
+        for endpoint in ("/JSON/spider/action/excludeFromScan/",
+                         "/JSON/ascan/action/excludeFromScan/"):
+            _api(zap_api, endpoint, {"regex": regex})
+
+
 def scan(zap_api: str, target: str, allow_hosts, do_spider: bool = True,
          max_scan_min: int = 4, policy: dict | None = None,
-         max_rule_min: int | None = None) -> dict:
+         max_rule_min: int | None = None, exclusions=None) -> dict:
     """Spider + bounded active-scan `target`, return raw ZAP alerts. Refuses out-of-scope
     targets before touching ZAP (safety pre-check)."""
     host = host_of(target)
@@ -94,11 +164,15 @@ def scan(zap_api: str, target: str, allow_hosts, do_spider: bool = True,
         )
     configure_policy(zap_api, max_scan_min=max_scan_min, max_rule_min=max_rule_min,
                      policy=policy)
+    apply_exclusions(zap_api, exclusions)
     _api(zap_api, "/JSON/core/action/accessUrl/", {"url": target, "followRedirects": "true"})
     if do_spider:
         spider(zap_api, target)
-    active_scan(zap_api, target)
-    return export_alerts(zap_api, target)
+    ascan_id = active_scan(zap_api, target)
+    report = export_alerts(zap_api, target)
+    report["ascan_id"] = ascan_id
+    report["exclusions"] = list(exclusions or [])
+    return report
 
 
 def main(argv: list[str] | None = None) -> int:
