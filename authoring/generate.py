@@ -29,8 +29,6 @@ _JOURNEY_SCHEMA = _ROOT / "contracts" / "journey.schema.json"
 _SCOPE_SCHEMA = _ROOT / "contracts" / "scope.schema.json"
 _VERSIONS_LOCK = _ROOT / "versions.lock"
 
-_DEFAULT_MODEL = "claude-opus-4-8"
-
 
 def _relpath(url: str, base_url: str) -> str:
     if url.startswith(base_url):
@@ -325,7 +323,7 @@ def plan_from_llm(trace: dict, model: str, api_key: str | None = None,
     return plan
 
 
-def make_plan(trace: dict, config: dict, use_llm: bool = True, model: str = _DEFAULT_MODEL,
+def make_plan(trace: dict, config: dict, use_llm: bool = True, model: str | None = None,
               api_key: str | None = None) -> tuple[dict, str]:
     """Return (plan, source) where source is 'llm' or 'fallback'.
 
@@ -333,6 +331,7 @@ def make_plan(trace: dict, config: dict, use_llm: bool = True, model: str = _DEF
     routes, never how we authenticate.
     """
     api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+    model = model or llm_backend.default_model()
     if use_llm and llm_backend.available(api_key):
         try:
             plan = plan_from_llm(trace, model, api_key, config=config)
@@ -348,7 +347,7 @@ def make_plan(trace: dict, config: dict, use_llm: bool = True, model: str = _DEF
 
 
 def generate(trace: dict, out_dir: str, config: dict, use_llm: bool = True,
-             model: str = _DEFAULT_MODEL, api_key: str | None = None) -> dict:
+             model: str | None = None, api_key: str | None = None) -> dict:
     """Produce all authoring artifacts from a trace + app config. Returns a summary dict."""
     plan, source = make_plan(trace, config, use_llm=use_llm, model=model, api_key=api_key)
     flow_src = render_flow(plan, config)
