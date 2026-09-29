@@ -140,3 +140,26 @@ def test_manifest_and_lock_are_json_serializable():
     lock = emit_lock()
     assert json.loads(json.dumps(manifest))["app_id"] == "juice-shop"
     assert "playwright_version" in json.loads(json.dumps(lock))
+
+
+# ---- the model asked for must match the selected provider --------------------------------
+# A hardcoded default sent Anthropic's model name to the copilot CLI, which rejected it and
+# dropped every run to plan_source=fallback while looking like a model-availability problem.
+
+def test_make_plan_asks_the_provider_for_its_own_default_model(monkeypatch):
+    from authoring import generate as generate_mod
+
+    monkeypatch.setenv("LLM_PROVIDER", "copilot")
+    monkeypatch.delenv("COPILOT_MODEL", raising=False)
+    asked = {}
+
+    def fake_plan_from_llm(trace, model, api_key, config=None):
+        asked["model"] = model
+        return dict(PLAN)
+
+    monkeypatch.setattr(generate_mod.llm_backend, "available", lambda api_key=None: True)
+    monkeypatch.setattr(generate_mod, "plan_from_llm", fake_plan_from_llm)
+
+    _, source = generate_mod.make_plan(TRACE, CONFIG, use_llm=True)
+
+    assert source == "llm" and asked["model"] == "gpt-5.5"
