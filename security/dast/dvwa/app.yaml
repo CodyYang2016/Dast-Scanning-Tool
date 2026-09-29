@@ -1,0 +1,68 @@
+# DVWA - the second onboarded application.
+#
+# DVWA uses a username, a PHPSESSID cookie, a provisioned identity, and route auth proof.
+# Create its database once through /setup.php before using the configured account.
+
+app_id: dvwa
+environment_class: dev
+data_policy: disposable
+base_url: http://dvwa
+
+scope:
+  allow: [dvwa]
+  avoid_actions: [logout, setup, phpinfo, captcha]
+
+auth:
+  mode: form
+  login_url: /login.php
+  steps:
+    - {action: fill, selector: "input[name=username]", value: identifier}
+    - {action: fill, selector: "input[name=password]", value: secret}
+    - {action: click, selector: "input[name=Login]"}
+  proof:
+    route:
+      path: /index.php
+      forbid_redirect_to: login.php
+  identity: provisioned
+  credentials:
+    email_env: DVWA_USER
+    password_env: DVWA_PASS
+  storage_state: .secrets/dvwa-storageState.json
+  cookies:
+    security: low
+
+record:
+  authenticated_routes:
+    - /vulnerabilities/sqli/?id=1&Submit=Submit
+    - /vulnerabilities/xss_r/?name=test
+    - /vulnerabilities/exec/
+    - /vulnerabilities/brute/?username=admin&password=test&Login=Login
+    - /security.php
+
+explore:
+  seed_routes:
+    - /index.php
+    - /vulnerabilities/sqli/
+    - /vulnerabilities/xss_r/
+  safe_forms: []
+  write_mode: deny
+  test_data:
+    name: dast-test
+    message: dast-test-message
+    ip: 127.0.0.1
+    username: admin
+    id: "1"
+    password: dast-test-password
+  budgets:
+    max_pages: 30
+
+scan:
+  policy:
+    attack_strength: high
+    alert_threshold: low
+    disabled_rules: ["40026"]
+  budgets:
+    max_scan_min: 10
+  state_probes:
+    - /security.php
+    - /vulnerabilities/sqli/?id=1&Submit=Submit

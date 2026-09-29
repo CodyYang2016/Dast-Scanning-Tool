@@ -1,0 +1,52 @@
+# OWASP WebGoat - the third onboarded application, and the test of the config-only claim.
+#
+# WebGoat is a Spring Boot application with a JSESSIONID cookie and selector-based auth proof.
+# Register a test account through the signup form before authoring; passwords are 6-10 chars.
+
+app_id: webgoat
+environment_class: dev
+base_url: http://webgoat:8083
+
+scope:
+  allow: [webgoat]
+  avoid_actions: [logout, reset, delete]
+
+auth:
+  mode: form
+  login_url: /WebGoat/login
+  steps:
+    - {action: fill, selector: "input[name=username]", value: identifier}
+    - {action: fill, selector: "input[name=password]", value: secret}
+    - {action: click, selector: "button[type=submit]"}
+  proof:
+    selector: "#menu-container"
+  identity: provisioned
+  credentials:
+    email_env: WEBGOAT_USER
+    password_env: WEBGOAT_PASS
+  storage_state: .secrets/webgoat-storageState.json
+
+record:
+  authenticated_routes:
+    - /WebGoat/start.mvc
+    - /WebGoat/service/lessonmenu.mvc
+    - /WebGoat/service/lessonprogress.mvc
+
+api:
+  patterns: ["/service/", "/WebGoat/service/"]
+
+explore:
+  seed_routes:
+    - /WebGoat/start.mvc
+    - /WebGoat/service/lessonmenu.mvc
+  safe_forms: []
+  budgets:
+    max_pages: 10
+
+scan:
+  policy:
+    attack_strength: medium
+    alert_threshold: medium
+    disabled_rules: ["40026"]
+  budgets:
+    max_scan_min: 4
