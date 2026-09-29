@@ -5,6 +5,23 @@
 > categories, and the Nationwide Copilot/Podman path are implemented. Remaining work is chiefly
 > live lower-environment validation, identity/network hardening, and operational adoption.
 
+## D11 — Autonomous exploration is supported; recorded authoring remains the explicit default
+
+The source project's latest decision establishes `seed` + `explore` as its preferred authoring
+direction. This target supports that path through `dast author <app> --explore`, including the
+deterministic action policy, bounded exploration, redaction, write-mode controls, and coverage
+reporting. The target CLI still keeps the recorded walk as its default for backward compatibility;
+changing that default should follow a live lower-environment validation and operator review.
+
+The decision is safe to adopt incrementally because the model emits constrained data only. The
+scope guard, action policy, authentication proof, page budget, and ZAP exclusions remain
+deterministic. The OpenAPI-first discovery branch remains unimplemented in both the target
+workflow and this target roadmap.
+
+The latest source review also identifies a remaining SARIF gap: ZAP's description, solution,
+confidence, and evidence fields are not yet carried into SARIF. The target should keep that gap
+visible rather than imply that the current SARIF output is feature-complete.
+
 The actionable plan derived from the three feedback documents (`archive/dast_poc_review.md`,
 `dast_first_internal_app_readiness.md`, `archive/Authenticated-Application-Discovery-DAST-Design-Proposal.md`)
 plus what we found running the pipeline ourselves.

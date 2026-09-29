@@ -124,13 +124,6 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
     if har.exists():
         evidence.redact_har_file(str(har))
 
-    report = scan(zap_api, base_url, scope["fqdn_allow_list"],
-                  do_spider=do_spider, max_scan_min=max_scan_min)
-    records = list(normalize(report["alerts"], scope["app_id"], scan_id))
-    # Reference the scan's evidence from each record (FR-E1).
-    relpath = evidence.evidence_relpath(scan_id)
-    for r in records:
-        r["evidence_path"] = relpath
     # Capture the (route x rule) surface this scan exercised, for the coverage-aware diff (R2).
     policy = {}
     policy_path = Path(scope_path).parent / "zap-policy.yaml"
@@ -139,10 +132,21 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
             policy = json.loads(policy_path.read_text())
         except json.JSONDecodeError:
             policy = {}
+    max_rule_min = int(policy.get("max_rule_min") or 1)
+    report = scan(zap_api, base_url, scope["fqdn_allow_list"],
+                  do_spider=do_spider, max_scan_min=max_scan_min,
+                  max_rule_min=max_rule_min, policy=policy)
+    records = list(normalize(report["alerts"], scope["app_id"], scan_id))
+    # Reference the scan's evidence from each record (FR-E1).
+    relpath = evidence.evidence_relpath(scan_id)
+    for r in records:
+        r["evidence_path"] = relpath
     coverage = coverage_capture.capture(
         zap_api, base_url, scan_id=scan_id,
         probes=policy.get("state_probes"), cookies=policy.get("probe_cookies"))
     coverage["policy"] = {
+        "max_scan_min": max_scan_min,
+        "max_rule_min": max_rule_min,
         "write_mode": policy.get("write_mode", "deny"),
         "state_probes": policy.get("state_probes", []),
     }

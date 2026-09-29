@@ -46,8 +46,11 @@ def new_session(zap_api: str, name: str = "") -> None:
     _api(zap_api, "/JSON/core/action/newSession/", params)
 
 
-def configure_policy(zap_api: str, max_scan_min: int = 4, max_rule_min: int = 1) -> None:
-    """Bound + lighten the active scan (matches the capture script)."""
+def configure_policy(zap_api: str, max_scan_min: int = 4, max_rule_min: int | None = None,
+                     policy: dict | None = None) -> None:
+    """Bound + lighten the active scan using the bundle policy when present."""
+    if max_rule_min is None:
+        max_rule_min = int((policy or {}).get("max_rule_min") or 1)
     _api(zap_api, "/JSON/ascan/action/setOptionMaxScanDurationInMins/", {"Integer": max_scan_min})
     _api(zap_api, "/JSON/ascan/action/setOptionMaxRuleDurationInMins/", {"Integer": max_rule_min})
     _api(zap_api, "/JSON/ascan/action/disableScanners/", {"ids": _SLOW_SCANNERS})
@@ -79,7 +82,8 @@ def export_alerts(zap_api: str, target: str) -> dict:
 
 
 def scan(zap_api: str, target: str, allow_hosts, do_spider: bool = True,
-         max_scan_min: int = 4) -> dict:
+         max_scan_min: int = 4, policy: dict | None = None,
+         max_rule_min: int | None = None) -> dict:
     """Spider + bounded active-scan `target`, return raw ZAP alerts. Refuses out-of-scope
     targets before touching ZAP (safety pre-check)."""
     host = host_of(target)
@@ -88,7 +92,8 @@ def scan(zap_api: str, target: str, allow_hosts, do_spider: bool = True,
         raise ScanScopeError(
             f"refusing to scan {target!r}: host {host!r} not in allow-list {sorted(allow)} (NFR-2)."
         )
-    configure_policy(zap_api, max_scan_min=max_scan_min)
+    configure_policy(zap_api, max_scan_min=max_scan_min, max_rule_min=max_rule_min,
+                     policy=policy)
     _api(zap_api, "/JSON/core/action/accessUrl/", {"url": target, "followRedirects": "true"})
     if do_spider:
         spider(zap_api, target)
