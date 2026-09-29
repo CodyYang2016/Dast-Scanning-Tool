@@ -27,7 +27,6 @@ from runner.action_policy import never_allowed
 
 _ROOT = Path(__file__).resolve().parent.parent
 _SCHEMA = _ROOT / "contracts" / "auth_discovery.schema.json"
-_DEFAULT_MODEL = "claude-opus-4-8"
 
 
 class DiscoveryFailed(Exception):

@@ -206,3 +206,24 @@ def test_parse_action_text_rejects_no_json():
     import pytest
     with pytest.raises(ValueError):
         parse_action_text("no json here")
+
+
+# ---- the model asked for must match the selected provider --------------------------------
+
+def test_next_action_asks_the_provider_for_its_own_default_model(monkeypatch):
+    from authoring import explore as explore_mod
+
+    monkeypatch.setenv("LLM_PROVIDER", "copilot")
+    monkeypatch.delenv("COPILOT_MODEL", raising=False)
+    asked = {}
+
+    def fake_propose_llm(observation, model, api_key):
+        asked["model"] = model
+        return {"action": "follow_link", "target": {"method": "GET", "path": "/#/about"}}
+
+    monkeypatch.setattr(explore_mod.llm_backend, "available", lambda api_key=None: True)
+    monkeypatch.setattr(explore_mod, "propose_llm", fake_propose_llm)
+
+    _, source = next_action({"url": "/#/", "links": [], "forms": [], "api": []}, set(), SCOPE)
+
+    assert source == "llm" and asked["model"] == "gpt-5.5"

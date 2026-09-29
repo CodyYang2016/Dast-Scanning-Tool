@@ -36,7 +36,6 @@ from runner.scope_guard import ScopeGuard, host_of
 
 _ROOT = Path(__file__).resolve().parent.parent
 _ACTION_SCHEMA = _ROOT / "contracts" / "action.schema.json"
-_DEFAULT_MODEL = "claude-opus-4-8"
 
 
 # ---- validation: schema + scope/deny policy (pure) --------------------------------------
@@ -184,9 +183,10 @@ def parse_action_text(text: str) -> dict:
 
 
 def next_action(observation: dict, visited, scope: dict, *, deny_actions=None, safe_forms=None,
-                use_llm: bool = True, model: str = _DEFAULT_MODEL, api_key: str | None = None):
+                use_llm: bool = True, model: str | None = None, api_key: str | None = None):
     """Return (action, source). LLM-primary; on any LLM/validation failure, deterministic fallback."""
     api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+    model = model or llm_backend.default_model()
     if use_llm and llm_backend.available(api_key):
         try:
             action = _normalize_action(propose_llm(observation, model, api_key))
@@ -234,7 +234,7 @@ def _observe(page, base_url: str, api_events: list[dict]) -> dict:
 def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[str], scope: dict, *,
             config: dict | None = None,
             deny_actions=None, safe_forms=None, max_pages: int = 50, use_llm: bool = True,
-            model: str = _DEFAULT_MODEL, api_key: str | None = None, zap_proxy: str | None = None,
+            model: str | None = None, api_key: str | None = None, zap_proxy: str | None = None,
             headless: bool = True, slow_mo: int = 0) -> tuple[dict, ScopeGuard]:
     """Run the seeded, LLM-driven exploration loop and return (trace, guard). The trace matches
     record's output (build_trace), so generate/validate/runner consume it unchanged.
