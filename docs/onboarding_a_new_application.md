@@ -155,6 +155,18 @@ python -m dast scan   my-app                 # preflight → replay → ZAP → 
 python -m dast report my-app                 # lifecycle diff → SARIF   (--upload to publish)
 ```
 
+For broader authenticated route discovery, seed a session and opt into the bounded exploration
+path explicitly:
+
+```bash
+python -m dast author my-app --explore
+```
+
+Exploration is constrained by the configured scope, deny-list, write policy, authentication
+proof, page budget, and redaction boundary. The model proposes actions; deterministic code decides
+whether they may execute. The recorded walk remains the default target path until the
+lower-environment exploration flow has been validated operationally.
+
 What good looks like:
 
 - **author** — `recorded: N interactions … hosts=['my-app']` (the host must be the one ZAP
