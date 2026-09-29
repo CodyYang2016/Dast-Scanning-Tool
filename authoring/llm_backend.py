@@ -29,7 +29,8 @@ COPILOT = "copilot"
 _DEFAULT_ANTHROPIC_MODEL = "claude-opus-4-8"
 _DEFAULT_COPILOT_MODEL = "gpt-5.5"
 # Mirrors the non-interactive flags the Nationwide pen-test-loop uses; override via COPILOT_FLAGS.
-_DEFAULT_COPILOT_FLAGS = "--allow-all-tools --excluded-tools=web_fetch --disable-builtin-mcps -s"
+_DEFAULT_COPILOT_FLAGS = ("--allow-all-tools --excluded-tools=web_fetch --disable-builtin-mcps "
+                          "--no-ask-user -s")  # --no-ask-user: never block a scan waiting on stdin
 
 
 def provider() -> str:
@@ -45,7 +46,19 @@ def default_model() -> str:
 
 
 def _copilot_bin() -> str:
-    return os.environ.get("COPILOT_CLI") or "copilot"
+    """The copilot executable, resolved to a full path where one can be found.
+
+    npm installs the CLI on Windows as `copilot.cmd`, and PATHEXT is applied by the shell, not
+    by CreateProcess — so the bare name passes `shutil.which` and then fails `subprocess.run`
+    with WinError 2. Resolving here keeps the two agreeing on the same binary.
+    """
+    name = os.environ.get("COPILOT_CLI") or "copilot"
+    return _copilot_resolved() or name
+
+
+def _copilot_resolved() -> str | None:
+    """The copilot executable as found on PATH, or None when it is not installed."""
+    return shutil.which(os.environ.get("COPILOT_CLI") or "copilot")
 
 
 def _copilot_flags() -> list[str]:
@@ -66,7 +79,7 @@ def available(api_key: str | None = None) -> bool:
     Copilot is available when the CLI is on PATH; Anthropic when a key is present.
     """
     if provider() == COPILOT:
-        return shutil.which(_copilot_bin()) is not None
+        return _copilot_resolved() is not None
     return bool(api_key or os.environ.get("ANTHROPIC_API_KEY"))
 
 
@@ -105,13 +118,28 @@ def _copilot_prompt(system: str, user: str, out_ref: str) -> str:
     )
 
 
-def _copilot_cmd(prompt: str, model: str) -> list[str]:
-    return [_copilot_bin(), f"--model={model}", *_copilot_flags(), "--prompt", prompt]
+def _is_batch_shim(binary: str) -> bool:
+    """npm installs the CLI on Windows as `copilot.cmd`, which CreateProcess cannot execute."""
+    return binary.lower().endswith((".cmd", ".bat"))
 
 
-def _run_copilot(prompt: str, model: str, timeout: float) -> subprocess.CompletedProcess:
-    return subprocess.run(_copilot_cmd(prompt, model), capture_output=True, text=True,
-                          timeout=timeout)
+def _copilot_cmd(prompt: str, model: str, prompt_file: Path | None = None) -> list[str]:
+    binary = _copilot_bin()
+    args = [f"--model={model}", *_copilot_flags()]
+    if not _is_batch_shim(binary):
+        return [binary, *args, "--prompt", prompt]
+    # A batch shim has to go through cmd.exe, which would also re-parse the prompt's quotes and
+    # `%` signs — so the prompt travels as a file the agent reads instead of on the command line.
+    if prompt_file is None:
+        raise RuntimeError(f"a prompt file is required to run the batch shim {binary}")
+    return ["cmd.exe", "/c", binary, *args, "--prompt",
+            f"Read the file {prompt_file.as_posix()} and follow the instructions in it exactly."]
+
+
+def _run_copilot(prompt: str, model: str, timeout: float,
+                 prompt_file: Path | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(_copilot_cmd(prompt, model, prompt_file), capture_output=True,
+                          text=True, timeout=timeout)
 
 
 def _read_copilot_output(out_path: Path, proc: subprocess.CompletedProcess) -> str:
@@ -131,8 +159,12 @@ def _read_copilot_output(out_path: Path, proc: subprocess.CompletedProcess) -> s
 
 
 def _complete_copilot(system: str, user: str, model: str, *, timeout: float) -> str:
-    with tempfile.TemporaryDirectory() as td:
+    # Under the working directory: the CLI only trusts paths inside the directory it was started
+    # in, so a system temp dir would put both files out of the agent's reach.
+    with tempfile.TemporaryDirectory(dir=Path.cwd(), prefix=".dast-copilot-") as td:
         out_path = Path(td) / "llm_output.json"
         prompt = _copilot_prompt(system, user, out_path.as_posix())
-        proc = _run_copilot(prompt, model, timeout)
+        prompt_path = Path(td) / "llm_prompt.txt"
+        prompt_path.write_text(prompt, encoding="utf-8")
+        proc = _run_copilot(prompt, model, timeout, prompt_path)
         return _read_copilot_output(out_path, proc)
