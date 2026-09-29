@@ -7,11 +7,16 @@ GitHub is delegated to the module entry points those steps already have, and is 
 running them — not mocked here.
 """
 
+import json
+import pathlib
+
 import pytest
 import yaml
 
 import dast
 from authoring import appconfig
+
+_DVWA_YAML = str(appconfig.app_config_path("dvwa"))
 
 
 # ---- verbs and routing -------------------------------------------------------------------
@@ -115,3 +120,55 @@ def test_scan_without_a_bundle_tells_you_what_to_run(tmp_path, monkeypatch, caps
     args = dast.build_parser().parse_args(["scan", "unbuilt"])
     assert dast.cmd_scan(args) == 2
     assert "dast author unbuilt" in capsys.readouterr().err
+
+
+# ---- author: an app that ships only app.yaml is still authorable -------------------------
+
+def _dvwa_config():
+    """A real committed config, read by path so tests can repoint _APPS_DIR at a tmp dir."""
+    return appconfig.load_app_config(_DVWA_YAML)
+
+
+def test_explore_inputs_derives_seed_and_scope_when_only_app_yaml_is_committed(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(dast, "OUT", tmp_path)
+    monkeypatch.setattr(appconfig, "_APPS_DIR", tmp_path / "apps")   # nothing committed
+    (tmp_path / "apps" / "dvwa").mkdir(parents=True)
+    config = _dvwa_config()
+
+    seed_file, scope_file = dast.explore_inputs("dvwa", config, None)
+
+    scope = json.loads(scope_file.read_text())
+    assert scope == appconfig.scope_from_config(config)
+    seed = json.loads(seed_file.read_text())
+    assert seed["target"]["scope_file"] == str(scope_file)
+    assert seed["session"]["storage_state"] == appconfig.storage_state(config)
+    assert seed["exploration"]["max_pages"] == appconfig.max_pages(config)
+    # Derived, not invented: both must satisfy the contracts the runner preflights against.
+    from authoring.seed import load_seed
+    from runner.preflight import preflight
+    load_seed(str(seed_file))
+    preflight(str(scope_file))
+
+
+def test_explore_inputs_prefers_committed_files_over_derived(tmp_path, monkeypatch):
+    monkeypatch.setattr(dast, "OUT", tmp_path)
+    monkeypatch.setattr(appconfig, "_APPS_DIR", tmp_path / "apps")
+    app_dir = tmp_path / "apps" / "dvwa"
+    app_dir.mkdir(parents=True)
+    (app_dir / "scope.json").write_text("{}")
+    (app_dir / "seed.json").write_text("{}")
+
+    seed_file, scope_file = dast.explore_inputs("dvwa", _dvwa_config(), None)
+
+    assert (seed_file, scope_file) == (app_dir / "seed.json", app_dir / "scope.json")
+
+
+def test_explore_inputs_honours_an_explicit_seed_override(tmp_path, monkeypatch):
+    monkeypatch.setattr(dast, "OUT", tmp_path)
+    monkeypatch.setattr(appconfig, "_APPS_DIR", tmp_path / "apps")
+    (tmp_path / "apps" / "dvwa").mkdir(parents=True)
+
+    seed_file, _ = dast.explore_inputs("dvwa", _dvwa_config(), "/tmp/mine.json")
+
+    assert seed_file == pathlib.Path("/tmp/mine.json")
