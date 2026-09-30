@@ -8,7 +8,6 @@ Oracle: hand-built env/proc fixtures with known-correct answers.
 
 import subprocess
 import types
-from pathlib import Path
 
 import pytest
 
@@ -106,52 +105,51 @@ def test_copilot_cmd_refuses_a_shim_without_a_prompt_file(monkeypatch):
         llm_backend._copilot_cmd("P", "m")
 
 
-def test_copilot_prompt_demands_file_only_json():
-    prompt = llm_backend._copilot_prompt("SYS", "USER", "/tmp/out.json")
+def test_copilot_prompt_asks_for_marked_json_and_no_file_write():
+    """A file write goes through the CLI's permission gate, which denies it unattended."""
+    prompt = llm_backend._copilot_prompt("SYS", "USER")
     assert "SYS" in prompt and "USER" in prompt
-    assert "/tmp/out.json" in prompt
-    assert "ONLY" in prompt and "console" in prompt
+    assert llm_backend._JSON_START in prompt and llm_backend._JSON_END in prompt
+    assert "write no files" in prompt
 
 
-# ---- copilot output reading (file preferred, stdout fallback) ---------------------------
+# ---- copilot output reading (marked block of stdout) -----------------------------------
 
 def _proc(returncode=0, stdout="", stderr=""):
     return types.SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
 
 
-def test_read_output_prefers_written_file(tmp_path):
-    out = tmp_path / "llm_output.json"
-    out.write_text('{"action":"stop"}', encoding="utf-8")
-    text = llm_backend._read_copilot_output(out, _proc(stdout="agent chatter"))
+def _marked(json_text):
+    return f"{llm_backend._JSON_START}\n{json_text}\n{llm_backend._JSON_END}"
+
+
+def test_read_output_cuts_the_marked_block_out_of_the_chatter():
+    block = _marked('{"action":"stop"}')
+    text = llm_backend._read_copilot_output(_proc(stdout=f"reading the prompt...\n{block}\nDone."))
     assert text.strip() == '{"action":"stop"}'
 
 
-def test_read_output_falls_back_to_stdout(tmp_path):
-    out = tmp_path / "missing.json"
-    text = llm_backend._read_copilot_output(out, _proc(stdout='{"action":"stop"}'))
+def test_read_output_takes_the_rest_when_the_end_marker_is_missing():
+    text = llm_backend._read_copilot_output(
+        _proc(stdout=f'{llm_backend._JSON_START}\n{{"action":"stop"}}'))
+    assert text.strip() == '{"action":"stop"}'
+
+
+def test_read_output_falls_back_to_all_of_stdout_without_markers():
+    text = llm_backend._read_copilot_output(_proc(stdout='{"action":"stop"}'))
     assert '"action"' in text
 
 
-def test_read_output_raises_when_empty(tmp_path):
-    out = tmp_path / "missing.json"
+def test_read_output_raises_when_empty():
     with pytest.raises(RuntimeError):
-        llm_backend._read_copilot_output(out, _proc(returncode=1, stderr="blocked"))
+        llm_backend._read_copilot_output(_proc(returncode=1, stderr="blocked"))
 
 
 # ---- complete() routing -----------------------------------------------------------------
 
 def test_complete_routes_to_copilot(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "copilot")
-
-    def fake_run(prompt, model, timeout, prompt_file=None):
-        # Simulate the CLI writing the JSON file the prompt asked for.
-        marker = "the file "
-        start = prompt.index(marker) + len(marker)
-        end = prompt.index(" ", start)
-        Path(prompt[start:end]).write_text('{"ok":true}', encoding="utf-8")
-        return _proc(stdout="")
-
-    monkeypatch.setattr(llm_backend, "_run_copilot", fake_run)
+    monkeypatch.setattr(llm_backend, "_run_copilot", _fake_copilot_returns('{"ok":true}'))
     out = llm_backend.complete("SYS", "USER", "gpt-5.5")
     assert out.strip() == '{"ok":true}'
 
@@ -171,15 +169,11 @@ def test_complete_routes_to_anthropic(monkeypatch):
 
 # ---- end-to-end: the two callers work through the Copilot backend -----------------------
 # Proves explore/generate need no per-provider code: they call llm_backend.complete() and parse
-# the JSON the model wrote. We simulate the CLI by writing the requested output file.
+# the JSON the model emitted. We simulate the CLI printing it between the markers.
 
 def _fake_copilot_returns(json_text):
     def fake_run(prompt, model, timeout, prompt_file=None):
-        marker = "the file "
-        start = prompt.index(marker) + len(marker)
-        end = prompt.index(" ", start)
-        Path(prompt[start:end]).write_text(json_text, encoding="utf-8")
-        return _proc(stdout="")
+        return _proc(stdout=f"thinking...\n{_marked(json_text)}\n")
     return fake_run
 
 
@@ -226,11 +220,10 @@ def test_copilot_output_is_decoded_as_utf8_not_the_locale_codec(monkeypatch):
     assert seen["encoding"] == "utf-8" and seen["errors"] == "replace"
 
 
-def test_a_non_utf8_byte_in_the_json_file_does_not_kill_the_call(tmp_path, monkeypatch):
-    out = tmp_path / "llm_output.json"
-    out.write_bytes(b'{"ok": "caf\x9d"}')
-    text = llm_backend._read_copilot_output(out, _proc(stdout=""))
-    assert text.startswith('{"ok"')
+def test_a_non_utf8_byte_in_the_reply_does_not_kill_the_call():
+    """errors="replace" in _run_copilot turns the bad byte into U+FFFD rather than raising."""
+    text = llm_backend._read_copilot_output(_proc(stdout=_marked('{"ok": "caf\ufffd"}')))
+    assert text.strip().startswith('{"ok"')
 
 
 def test_snippet_shows_what_came_back_on_one_line():
