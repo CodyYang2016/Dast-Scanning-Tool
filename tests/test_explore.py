@@ -268,40 +268,87 @@ def test_next_action_asks_the_provider_for_its_own_default_model(monkeypatch):
 # Without --require-llm a wrong model id, an expired token or a missing CLI is indistinguishable
 # from a deliberate --no-llm run, so a broken provider can scan unnoticed for weeks.
 
-def test_require_llm_raises_instead_of_falling_back_on_an_llm_failure(monkeypatch):
+def test_strict_tolerates_a_flaky_reply_but_aborts_a_dead_provider(monkeypatch):
     import pytest
     from authoring import explore as explore_mod
-    from authoring.llm_backend import LLMRequiredError
+    from authoring.llm_backend import LLMRequiredError, StrictLLM
 
     monkeypatch.setattr(explore_mod.llm_backend, "available", lambda api_key=None: True)
     monkeypatch.setattr(explore_mod, "propose_llm",
-                        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("model unavailable")))
+                        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("no JSON object")))
+    obs = {"url": "/#/", "links": ["/#/about"], "forms": [], "api": []}
+    strict = StrictLLM(max_consecutive=3)
+
+    for _ in range(2):  # a prose answer costs the step, not the run
+        action, source = next_action(obs, set(), SCOPE, strict=strict)
+        assert source == "fallback" and action["target"]["path"] == "/#/about"
     with pytest.raises(LLMRequiredError):
-        next_action({"url": "/#/", "links": [], "forms": [], "api": []}, set(), SCOPE,
-                    require_llm=True)
+        next_action(obs, set(), SCOPE, strict=strict)
 
 
-def test_require_llm_raises_when_the_provider_is_not_available(monkeypatch):
+def test_strict_forgets_failures_once_the_model_answers(monkeypatch):
+    from authoring import explore as explore_mod
+    from authoring.llm_backend import StrictLLM
+
+    good = {"action": "follow_link", "target": {"method": "GET", "path": "/#/about"}}
+    replies = [RuntimeError("no JSON object"), RuntimeError("no JSON object"), good]
+    monkeypatch.setattr(explore_mod.llm_backend, "available", lambda api_key=None: True)
+
+    def flaky(*_a, **_k):
+        reply = replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    monkeypatch.setattr(explore_mod, "propose_llm", flaky)
+    obs = {"url": "/#/", "links": ["/#/about"], "forms": [], "api": []}
+    strict = StrictLLM(max_consecutive=3)
+    for _ in range(3):
+        next_action(obs, set(), SCOPE, strict=strict)
+    assert strict.consecutive == 0 and strict.successes == 1
+    strict.finish()  # the model drove a step: not a broken provider
+
+
+def test_strict_finish_raises_when_the_model_never_drove_a_step():
+    import pytest
+    from authoring.llm_backend import LLMRequiredError, StrictLLM
+
+    strict = StrictLLM(max_consecutive=99)
+    strict.failure(RuntimeError("no JSON object"))
+    with pytest.raises(LLMRequiredError):
+        strict.finish()
+
+
+def test_strict_finish_is_silent_on_a_clean_run():
+    from authoring.llm_backend import StrictLLM
+
+    StrictLLM().finish()  # nothing attempted, nothing failed
+
+
+def test_strict_raises_immediately_when_the_provider_is_not_available(monkeypatch):
     import pytest
     from authoring import explore as explore_mod
-    from authoring.llm_backend import LLMRequiredError
+    from authoring.llm_backend import LLMRequiredError, StrictLLM
 
     monkeypatch.setattr(explore_mod.llm_backend, "available", lambda api_key=None: False)
     with pytest.raises(LLMRequiredError):
         next_action({"url": "/#/", "links": [], "forms": [], "api": []}, set(), SCOPE,
-                    require_llm=True)
+                    strict=StrictLLM())
 
 
-def test_require_llm_still_falls_back_on_a_policy_rejection(monkeypatch):
+def test_strict_still_falls_back_on_a_policy_rejection(monkeypatch):
     # A refused action is the safety layer working, not a broken provider: keep exploring.
     from authoring import explore as explore_mod
+    from authoring.llm_backend import StrictLLM
 
     monkeypatch.setattr(explore_mod.llm_backend, "available", lambda api_key=None: True)
     monkeypatch.setattr(explore_mod, "propose_llm",
                         lambda *_a, **_k: {"action": "follow_link", "target": {"path": "/#/logout"}})
     obs = {"url": "/#/", "links": ["/#/about"], "forms": [], "api": []}
-    action, source = next_action(obs, set(), SCOPE, require_llm=True)
+    strict = StrictLLM()
+    action, source = next_action(obs, set(), SCOPE, strict=strict)
     assert source == "fallback" and action["target"]["path"] == "/#/about"
+    strict.finish()
 
 
 def test_rejected_targets_are_collected_for_the_next_prompt(monkeypatch):
