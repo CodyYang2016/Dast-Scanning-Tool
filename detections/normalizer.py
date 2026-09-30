@@ -67,12 +67,10 @@ def _excerpt(raw) -> str | None:
     value = _text(raw)
     if value is None:
         return None
-    # Bound the input BEFORE redacting: redact_text's email pattern is quadratic in input length
-    # (measured: 200 KB takes ~44 s), and this string comes from the target, so its length is not
-    # ours to choose. Pre-capping at 4x the output cap keeps redaction cheap while a secret that
-    # starts inside the kept 500 characters is still seen whole — unless it is over 1,500
-    # characters long, in which case its unredacted prefix could survive. Stated, not hidden.
-    value = redact_text(value[:_MAX_EXCERPT * 4])
+    # Redact the WHOLE string, then cap. Redacting first means a secret that crosses the cap
+    # boundary is recognised in full rather than cut into an unrecognisable prefix. (This used to
+    # pre-cap before redacting, because the redactor was quadratic in input length — W5-5.)
+    value = redact_text(value)
     if len(value) > _MAX_EXCERPT:
         value = value[:_MAX_EXCERPT] + _TRUNCATED
     return value

@@ -17,9 +17,59 @@ import re
 REDACTED = "REDACTED"
 
 # Value patterns (scrubbed anywhere they appear in a string).
-_JWT = re.compile(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
+#
+# Both the JWT and email patterns must be LINEAR in their input (W5-5). The text comes from the
+# application under test — every page and response body the exploration loop sends the model,
+# and every evidence string the normalizer keeps — so its length is not ours to choose. The
+# original patterns retried a match from every position inside a long run of word characters:
+# 200 KB took ~44 s through the email pattern and ~14 s through the JWT one; both are now a few ms.
+#
+# The fix is the same for both: a match may only START at the beginning of a run, via a negative
+# lookbehind on the run's own character class. That turns n retries per run into one.
+#
+# JWT: the whole run is matched and a lookahead requires "eyJ" plus at least one more token
+# character somewhere in it — exactly what the old pattern demanded of its first segment. (A bare
+# "eyJ" run does not qualify: accepting one shifted which three segments were matched, and a fuzz
+# test against the old pattern caught the new one redacting less.) Whether a candidate succeeds
+# depends only on what follows the run, so one attempt per run decides it.
+# This redacts slightly MORE than before — a JWT glued to a preceding word character now loses
+# that prefix too — and never less; tests/test_redact.py checks that against the old pattern.
+_JWT = re.compile(
+    r"(?<![A-Za-z0-9_-])(?=[A-Za-z0-9_-]*?eyJ[A-Za-z0-9_-])"
+    r"[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
+)
 _BEARER = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._\-]+")
-_EMAIL = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+
+# Email is scanned from each "@" rather than matched by one pattern. The previous pattern,
+# [A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}, retried from every position in a long run. The
+# obvious regex fix — a lookbehind so a match only starts at the beginning of a run — is NOT
+# equivalent: a TLD can stop partway through a run ("…@a.io9bob@x.com" ends the first match at
+# "io"), and the old pattern then started the next address mid-run. A fuzz test against the old
+# pattern found that case; Python's re has no \G to say "or where the last match ended". So the
+# scan does it directly, and reproduces the old pattern's output exactly. It is linear because
+# neither the local part nor the domain can contain "@", so the stretches it walks between one
+# "@" and the next partition the string.
+_EMAIL_LOCAL = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._%+-")
+_EMAIL_DOMAIN = re.compile(r"[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+
+
+def _redact_emails(text: str, replacement: str) -> str:
+    out, last = [], 0
+    at = text.find("@")
+    while at != -1:
+        start = at
+        while start > last and text[start - 1] in _EMAIL_LOCAL:
+            start -= 1
+        domain = _EMAIL_DOMAIN.match(text, at + 1) if start < at else None
+        if domain:
+            out.append(text[last:start])
+            out.append(replacement)
+            last = domain.end()
+            at = text.find("@", last)
+        else:
+            at = text.find("@", at + 1)
+    out.append(text[last:])
+    return "".join(out)
 
 # Field/key names whose VALUE must be dropped regardless of content (case-insensitive).
 _SECRET_KEYS = {
@@ -45,7 +95,7 @@ def redact_text(text):
     text = _JWT.sub(REDACTED, text)
     text = _BEARER.sub("Bearer " + REDACTED, text)
     text = _TOKEN_FIELD.sub(rf"\1{REDACTED}\2", text)
-    text = _EMAIL.sub(REDACTED, text)
+    text = _redact_emails(text, REDACTED)
     return text
 
 

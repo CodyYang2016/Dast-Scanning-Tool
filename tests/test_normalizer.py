@@ -197,3 +197,13 @@ def test_a_record_without_any_new_field_still_validates(validator):
     old = {"app_id": "a", "scan_id": SCAN_ID, "fingerprint": "0" * 64, "rule_id": "1",
            "title": "t", "severity": "low", "endpoint": "/", "status": "open"}
     assert not list(validator.iter_errors(old))
+
+
+def test_a_secret_crossing_the_cap_is_redacted_whole():
+    # Redaction runs on the whole string before the cap. A JWT starting just inside the kept 500
+    # characters and running well past them must not leave its prefix behind.
+    jwt = "eyJ" + "A" * 1800 + ".eyJzdWIiOiIxIn0.c2lnbmF0dXJl"
+    rec = normalize_alert({"pluginId": "1", "alert": "x", "risk": "High", "url": "http://a/b",
+                           "evidence": "B" * 480 + " " + jwt}, APP_ID, SCAN_ID)
+    assert "eyJAAAA" not in rec["evidence_excerpt"]
+    assert "REDACTED" in rec["evidence_excerpt"]

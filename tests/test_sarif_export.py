@@ -303,8 +303,7 @@ def test_the_worst_case_github_allows_stays_under_the_upload_limit():
                    "reference": "\n".join(f"https://ref/{j}" for j in range(10)),
                    "evidence": "E" * 700 + str(i), "attack": "A" * 700 + str(i)} for i in range(n)]
         # ~700 chars: just over the 500 cap so truncation is exercised, and close to the
-        # largest real evidence in the fixture (620). Much longer inputs make this test slow
-        # because the redactor's email pattern is quadratic — a separate, reported defect.
+        # largest real evidence in the fixture (620).
         recs = [normalize_alert(a, APP_ID, SCAN_ID) for a in alerts]
         return recs, len(gzip.compress(json.dumps(to_sarif(recs)).encode()))
 
