@@ -30,7 +30,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from authoring import appconfig
+from authoring import appconfig, llm_backend
 
 ROOT = Path(__file__).resolve().parent
 OUT = ROOT / "out"
@@ -260,7 +260,9 @@ def cmd_author(args) -> int:
             appconfig.app_config_path(args.app).parent / "seed.json"),
             "--scope", str(appconfig.app_config_path(args.app).parent / "scope.json"),
             "--zap-proxy", args.zap_proxy, "--out-dir", str(traced),
-            *(["--no-llm"] if args.no_llm else []), *(["--headed"] if args.headed else [])])
+            *(["--no-llm"] if args.no_llm else []),
+            *(["--require-llm"] if args.require_llm else []),
+            *(["--headed"] if args.headed else [])])
     else:
         rc = record_mod.main(["--app", args.app, "--zap-proxy", args.zap_proxy,
                               "--out-dir", str(traced),
@@ -269,7 +271,12 @@ def cmd_author(args) -> int:
         return rc
 
     trace = json.loads((traced / "trace.json").read_text())
-    summary = generate_mod.generate(trace, str(bundle), config, use_llm=not args.no_llm)
+    try:
+        summary = generate_mod.generate(trace, str(bundle), config, use_llm=not args.no_llm,
+                                        require_llm=args.require_llm)
+    except llm_backend.LLMRequiredError as exc:
+        print(f"AUTHOR ABORT: {exc}", file=sys.stderr)
+        return 3
     print(json.dumps(summary, indent=2))
 
     rc = validate_mod.main([
@@ -425,6 +432,8 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--zap-proxy", default=_DEFAULT_ZAP)
     a.add_argument("--headed", action="store_true")
     a.add_argument("--no-llm", action="store_true", help="force the deterministic path")
+    a.add_argument("--require-llm", action="store_true",
+                   help="fail loudly instead of falling back when the LLM path is unavailable")
     a.add_argument("--no-replay", action="store_true", help="skip validate's live auth replay")
     a.set_defaults(func=cmd_author)
 
