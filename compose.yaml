@@ -18,11 +18,19 @@ services:
   zap:
     image: zaproxy/zap-stable@sha256:781a2bdaea47324e7bab583e2263f21d257b0aee61ed51521a5be45f5f5081ef
     # -silent (no phone-home) + api.addrs allow-list so the API accepts calls from the runner.
+    # The aliases are what make ZAP answer as its API on a published host port: ZAP only treats
+    # a request as its own when the Host header names an address it knows itself by, and a
+    # published port rewrites neither. Without them, `curl 127.0.0.1:8090/JSON/...` is proxied
+    # to 127.0.0.1:8090 *inside the container* and comes back as an empty reply (see §6).
     command: >
       zap.sh -daemon -host 0.0.0.0 -port 8080 -silent
       -config api.disablekey=true
       -config api.addrs.addr.name=.*
       -config api.addrs.addr.regex=true
+      -config network.localServers.aliases.alias(0).name=127.0.0.1
+      -config network.localServers.aliases.alias(0).enabled=true
+      -config network.localServers.aliases.alias(1).name=localhost
+      -config network.localServers.aliases.alias(1).enabled=true
     networks: [dast]
 
   # Additional onboarded targets. Profiles keep the default Juice Shop demo unchanged.
