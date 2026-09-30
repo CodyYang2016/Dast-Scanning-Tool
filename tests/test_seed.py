@@ -10,7 +10,8 @@ import json
 import jsonschema
 import pytest
 
-from authoring.seed import load_seed
+from authoring.seed import (SeedPreflightError, leading_selectors, load_seed,
+                            preflight_login_page)
 from runner.replay import SessionDeadError, prove_auth_live
 
 BASE = "http://juice:3000"
@@ -136,3 +137,87 @@ def test_prove_auth_live_dead_when_token_missing():
 def test_session_dead_error_is_raisable():
     with pytest.raises(SessionDeadError):
         raise SessionDeadError("expired")
+
+# ---- login preflight (oracle: fake login pages with known selector sets) -----------------
+
+STEPS = [
+    {"action": "fill", "selector": "input[name=username]", "value": "identifier"},
+    {"action": "fill", "selector": "input[name=password]", "value": "secret"},
+    {"action": "click", "selector": "button[type=submit]"},
+]
+LOGIN = "http://webgoat:8083/WebGoat/login"
+
+
+class FakeLoginPage:
+    """Page-like whose DOM is a known selector set; wait_for_selector fails for anything else."""
+
+    def __init__(self, selectors, *, landed_url=LOGIN, title="Login Page"):
+        self._selectors = set(selectors)
+        self._landed = landed_url
+        self._title = title
+
+    @property
+    def url(self):
+        return self._landed
+
+    def title(self):
+        return self._title
+
+    def wait_for_selector(self, selector, state=None, timeout=None):
+        if selector not in self._selectors:
+            raise TimeoutError(f"Timeout {timeout}ms exceeded waiting for {selector}")
+        return object()
+
+
+def test_preflight_passes_when_the_login_form_is_rendered():
+    page = FakeLoginPage({"input[name=username]", "input[name=password]"})
+    preflight_login_page(page, LOGIN, 200, STEPS, timeout_ms=1)
+
+
+def test_preflight_names_the_missing_selector_instead_of_timing_out_on_fill():
+    # The WebGoat/DVWA failure mode: the app answers, but the page holds no login form.
+    page = FakeLoginPage(set(), title="Setup DVWA")
+    with pytest.raises(SeedPreflightError) as exc:
+        preflight_login_page(page, LOGIN, 200, STEPS, timeout_ms=1)
+    msg = str(exc.value)
+    assert "input[name=username]" in msg and "input[name=password]" in msg
+    assert "Setup DVWA" in msg and LOGIN in msg
+
+
+def test_preflight_reports_a_redirect_to_another_page():
+    page = FakeLoginPage(set(), landed_url="http://dvwa/setup.php")
+    with pytest.raises(SeedPreflightError) as exc:
+        preflight_login_page(page, LOGIN, 200, STEPS, timeout_ms=1)
+    assert "http://dvwa/setup.php" in str(exc.value)
+
+
+def test_preflight_rejects_an_error_status_before_touching_the_dom():
+    page = FakeLoginPage({"input[name=username]", "input[name=password]"})
+    with pytest.raises(SeedPreflightError) as exc:
+        preflight_login_page(page, LOGIN, 502, STEPS, timeout_ms=1)
+    assert "502" in str(exc.value)
+
+
+def test_preflight_tolerates_an_unknown_status():
+    # A data: or file: navigation has no response; absence of a status is not a failure.
+    page = FakeLoginPage({"input[name=username]", "input[name=password]"})
+    preflight_login_page(page, LOGIN, None, STEPS, timeout_ms=1)
+
+
+def test_leading_selectors_stops_at_the_first_non_fill_step():
+    assert leading_selectors(STEPS) == ["input[name=username]", "input[name=password]"]
+
+
+def test_leading_selectors_ignores_fields_reached_after_a_navigation():
+    # Microsoft-style two-page login: the password field does not exist until the first submit,
+    # so asserting it up front would fail a working config.
+    steps = [
+        {"action": "fill", "selector": "#user", "value": "identifier"},
+        {"action": "click", "selector": "#next"},
+        {"action": "fill", "selector": "#pass", "value": "secret"},
+    ]
+    assert leading_selectors(steps) == ["#user"]
+
+
+def test_leading_selectors_of_a_click_only_flow_is_empty():
+    assert leading_selectors([{"action": "click", "selector": "#sso"}]) == []
