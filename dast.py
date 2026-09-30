@@ -239,6 +239,35 @@ def _discover(args, path) -> int:
 
 # ---- author: trace -> bundle -------------------------------------------------------------
 
+def explore_inputs(app_id: str, config: dict, seed_override: str | None) -> tuple[Path, Path]:
+    """Locate the exploration seed + scope, deriving either from app.yaml when not committed.
+
+    Every value they hold is already in app.yaml, so an application that ships only a config
+    is authorable — onboarding stays a config change (see authoring/appconfig.py). A committed
+    file always wins, so an app that needs a hand-tuned scope or extra seed routes keeps it.
+    """
+    app_dir = appconfig.app_config_path(app_id).parent
+    derived = authoring_dir(app_id) / "derived"
+
+    scope_file = app_dir / "scope.json"
+    if not scope_file.is_file():
+        derived.mkdir(parents=True, exist_ok=True)
+        scope_file = derived / "scope.json"
+        scope_file.write_text(json.dumps(appconfig.scope_from_config(config), indent=2) + "\n")
+
+    if seed_override:
+        return Path(seed_override), scope_file
+    seed_file = app_dir / "seed.json"
+    if not seed_file.is_file():
+        derived.mkdir(parents=True, exist_ok=True)
+        seed = appconfig.seed_from_config(config)
+        seed["target"]["scope_file"] = str(scope_file)
+        seed["exploration"] = {"max_pages": appconfig.max_pages(config)}
+        seed_file = derived / "seed.json"
+        seed_file.write_text(json.dumps(seed, indent=2) + "\n")
+    return seed_file, scope_file
+
+
 def cmd_author(args) -> int:
     from authoring import generate as generate_mod
     from authoring import record as record_mod
@@ -256,9 +285,10 @@ def cmd_author(args) -> int:
         rc = seed_mod.main(["--app", args.app, "--zap-proxy", args.zap_proxy, "--assisted"])
         if rc:
             return rc
-        rc = explore_mod.main(["--app", args.app, "--seed", args.seed or str(
-            appconfig.app_config_path(args.app).parent / "seed.json"),
-            "--scope", str(appconfig.app_config_path(args.app).parent / "scope.json"),
+        seed_file, scope_file = explore_inputs(args.app, config, args.seed)
+        rc = explore_mod.main(["--app", args.app, "--seed", str(seed_file),
+            "--scope", str(scope_file),
+            "--max-pages", str(appconfig.max_pages(config)),
             "--zap-proxy", args.zap_proxy, "--out-dir", str(traced),
             *(["--no-llm"] if args.no_llm else []),
             *(["--require-llm"] if args.require_llm else []),
