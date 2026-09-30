@@ -191,3 +191,151 @@ def test_no_category_leaves_automation_details_out(records):
     # An empty id is worse than none: it is a category, and every app would share it.
     assert "automationDetails" not in to_sarif(records)["runs"][0]
     assert "automationDetails" not in to_sarif(records, category="")["runs"][0]
+
+
+# ---- actionable findings in the Security tab (W1-2) --------------------------------------
+#
+# GitHub's alert page renders a result's MESSAGE and its rule's HELP. It does not render
+# `properties` — which is why the parameter has been invisible in GitHub despite being in the
+# SARIF all along. Anything a developer needs must therefore be in the message or the help.
+
+def _by_rule(sarif, rule_id):
+    return next(r for r in _rules(sarif) if r["id"] == rule_id)
+
+
+def _sqli_result(sarif):
+    return next(r for r in _results(sarif)
+                if r["ruleId"] == "40018" and r["properties"].get("parameter") == "q")
+
+
+def test_the_sqli_alert_says_where_how_and_how_sure(sarif):
+    # The acceptance criterion from the plan, pinned: the fixture's High SQL injection.
+    assert _sqli_result(sarif)["message"]["text"] == (
+        "SQL Injection in parameter `q` — ZAP sent `apple'` and the server answered "
+        "`HTTP/1.1 500 Internal Server Error`. Confidence: Low."
+    )
+
+
+def test_what_a_developer_needs_is_in_the_message_not_only_in_properties(sarif):
+    msg = _sqli_result(sarif)["message"]["text"]
+    for visible in ("`q`", "apple'", "500", "Low"):
+        assert visible in msg
+
+
+def test_a_finding_with_no_parameter_attack_or_evidence_has_no_empty_slots():
+    rec = {"rule_id": "10020", "title": "Missing Anti-clickjacking Header", "severity": "medium",
+           "endpoint": "/", "fingerprint": "0" * 64, "scan_id": SCAN_ID}
+    msg = to_sarif([rec])["runs"][0]["results"][0]["message"]["text"]
+    assert msg == "Missing Anti-clickjacking Header."
+    assert "``" not in msg and "parameter" not in msg and "sent" not in msg
+
+
+def test_the_rule_carries_the_fix_and_the_reading(sarif):
+    rule = _by_rule(sarif, "40018")
+    assert rule["fullDescription"]["text"] == "SQL injection may be possible."
+    assert "PreparedStatement" in rule["help"]["markdown"]
+    assert "cheatsheetseries.owasp.org" in rule["help"]["markdown"]
+    assert rule["helpUri"].startswith("https://cheatsheetseries.owasp.org/")
+    assert rule["help"]["text"]            # plain-text fallback for clients without markdown
+
+
+def test_every_reference_url_is_listed_in_the_help(records, sarif):
+    for rec in records:
+        for url in rec.get("references") or []:
+            assert url in _by_rule(sarif, rec["rule_id"])["help"]["markdown"]
+
+
+def test_a_rule_without_remediation_has_no_empty_help():
+    rec = {"rule_id": "1", "title": "t", "severity": "low", "endpoint": "/",
+           "fingerprint": "0" * 64, "scan_id": SCAN_ID}
+    rule = to_sarif([rec])["runs"][0]["tool"]["driver"]["rules"][0]
+    assert "help" not in rule and "fullDescription" not in rule and "helpUri" not in rule
+
+
+def test_help_is_carried_once_per_rule_not_per_finding(records, sarif):
+    # 38 findings, 8 rules: the bulky text travels 8 times, which is what keeps the upload small.
+    assert len(_results(sarif)) == len(records)
+    assert len(_rules(sarif)) == len({r["rule_id"] for r in records})
+
+
+def test_zap_gives_identical_help_for_every_finding_of_a_rule(records):
+    # The rule entry takes its help from the FIRST record seen. That is only correct because ZAP
+    # describes the plugin, not the instance. Pin the assumption so a source that varies it
+    # fails here instead of silently showing one finding's text on another.
+    seen = {}
+    for r in records:
+        key = (r.get("description"), r.get("solution"), tuple(r.get("references") or []))
+        assert seen.setdefault(r["rule_id"], key) == key, r["rule_id"]
+
+
+def test_confidence_and_attack_are_also_machine_readable(sarif):
+    props = _sqli_result(sarif)["properties"]
+    assert props["confidence"] == "low" and props["attack"] == "apple'"
+
+
+def test_the_enriched_document_still_validates_against_the_official_schema(sarif):
+    schema = json.loads(SARIF_SCHEMA.read_text())
+    validator_for(schema)(schema).validate(sarif)
+
+
+def test_no_secret_reaches_the_sarif_even_through_evidence():
+    from detections.normalizer import normalize_alert
+    rec = normalize_alert({"pluginId": "1", "alert": "x", "risk": "High", "url": "http://a/b",
+                           "evidence": "Bearer abc123SECRETtoken victim.person@example.com"},
+                          APP_ID, SCAN_ID)
+    blob = json.dumps(to_sarif([rec]))
+    assert "abc123SECRETtoken" not in blob and "victim.person@example.com" not in blob
+
+
+# ---- size guard: GitHub rejects SARIF over 10 MB gzipped ----------------------------------
+
+def test_the_worst_case_github_allows_stays_under_the_upload_limit():
+    # GitHub accepts at most 25,000 results per run and 10 MB gzipped. Build 1,000 noisy
+    # findings over 60 rules with oversized text everywhere, measure, and project linearly to
+    # 25,000: the per-rule help is a fixed cost (carried once per rule), the rest scales.
+    import gzip
+    from detections.normalizer import normalize_alert
+
+    def build(n):
+        alerts = [{"pluginId": str(10000 + i % 60), "alert": f"Rule {i % 60}", "risk": "Medium",
+                   "url": f"http://a/route{i}?p={i}", "param": "p", "confidence": "Medium",
+                   "description": "D" * 2000, "solution": "S" * 2000,
+                   "reference": "\n".join(f"https://ref/{j}" for j in range(10)),
+                   "evidence": "E" * 700 + str(i), "attack": "A" * 700 + str(i)} for i in range(n)]
+        # ~700 chars: just over the 500 cap so truncation is exercised, and close to the
+        # largest real evidence in the fixture (620). Much longer inputs make this test slow
+        # because the redactor's email pattern is quadratic — a separate, reported defect.
+        recs = [normalize_alert(a, APP_ID, SCAN_ID) for a in alerts]
+        return recs, len(gzip.compress(json.dumps(to_sarif(recs)).encode()))
+
+    recs, small = build(500)
+    assert all(r["evidence_excerpt"].endswith("[truncated]") for r in recs)   # the cap bit
+    _, large = build(1000)
+    per_finding = (large - small) / 500
+    projected = large + per_finding * (25_000 - 1000)
+    assert projected < 10 * 1024 * 1024, f"projected {projected / 1e6:.1f} MB at 25k results"
+
+
+def test_evidence_from_the_target_cannot_inject_markdown_into_the_alert():
+    # Evidence is lifted from the TARGET's response. A backtick in it would close a naive code
+    # span and let the rest render as live markdown — a link inside the Security tab, authored by
+    # whoever controls the scanned application. CommonMark: a code span delimited by N+1
+    # backticks cannot be closed by a run of N inside it.
+    hostile = "ok` [click](http://evil.example) `"
+    rec = {"rule_id": "1", "title": "Reflected", "severity": "high", "endpoint": "/",
+           "fingerprint": "0" * 64, "scan_id": SCAN_ID, "evidence_excerpt": hostile}
+    md = to_sarif([rec])["runs"][0]["results"][0]["message"]["markdown"]
+    start = md.index("evidence: ") + len("evidence: ")
+    fence = md[start:len(md) - len(md[start:].lstrip("`"))]    # the opening delimiter run
+    assert len(fence) >= 2, md
+    body = md[start + len(fence):]
+    assert body.index(fence) > body.index("http://evil.example"), md  # closes AFTER the payload
+
+
+def test_the_plain_text_message_is_unchanged_by_markdown_escaping(sarif):
+    assert _sqli_result(sarif)["message"]["text"].startswith("SQL Injection in parameter `q`")
+
+
+def test_a_multi_line_solution_keeps_its_lines_in_markdown(sarif):
+    md = _by_rule(sarif, "40018")["help"]["markdown"]
+    assert "place.  \nIn general" in md          # hard line break, not a collapsed paragraph

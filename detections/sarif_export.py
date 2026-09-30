@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from collections.abc import Iterable
 from typing import TextIO
@@ -52,8 +53,30 @@ def _rule_tags(cwe_id: str | None) -> list[str]:
     return tags
 
 
+def _help(rec: dict) -> dict | None:
+    """The remediation panel GitHub shows on an alert: how to fix it, then what to read.
+
+    Rule-level. ZAP's description and solution describe the plugin rather than the instance, so
+    the first record of a rule speaks for all of them (pinned by a test, so a source that varies
+    them per finding fails loudly instead of showing one finding's text on another).
+    """
+    solution, refs = rec.get("solution"), rec.get("references") or []
+    if not (solution or refs):
+        return None
+    text_parts, md_parts = [], []
+    if solution:
+        text_parts.append(solution)
+        # ZAP writes one instruction per line; markdown would join them into a single
+        # paragraph, so each line ends in a hard break.
+        md_parts.append("**How to fix**\n\n" + "  \n".join(solution.splitlines()))
+    if refs:
+        text_parts.append("References:\n" + "\n".join(refs))
+        md_parts.append("**References**\n\n" + "\n".join(f"- <{u}>" for u in refs))
+    return {"text": "\n\n".join(text_parts), "markdown": "\n\n".join(md_parts)}
+
+
 def _rule_for(rec: dict) -> dict:
-    return {
+    rule = {
         "id": rec["rule_id"],
         "name": (rec.get("title") or rec["rule_id"]).replace(" ", ""),
         "shortDescription": {"text": rec.get("title") or rec["rule_id"]},
@@ -62,6 +85,57 @@ def _rule_for(rec: dict) -> dict:
             "security-severity": _SECURITY_SEVERITY.get(rec["severity"], "0.0"),
         },
     }
+    # Only when the source had them: an empty help panel reads as "there is no advice", which is
+    # a different statement from "the scanner gave none".
+    if rec.get("description"):
+        rule["fullDescription"] = {"text": rec["description"]}
+    help_ = _help(rec)
+    if help_:
+        rule["help"] = help_
+    if rec.get("references"):
+        rule["helpUri"] = rec["references"][0]
+    return rule
+
+
+def _code(value: str, markdown: bool) -> str:
+    """Wrap a value as inline code.
+
+    In markdown the value may be hostile: evidence is lifted from the TARGET's response, and a
+    backtick inside it would close a naive span and let the rest render as live markdown — a
+    link in the Security tab authored by whoever controls the scanned application. CommonMark
+    closes a code span only on a run of EXACTLY the opening length, so the delimiter is one
+    longer than the longest backtick run inside, padded so a leading/trailing backtick is safe.
+    """
+    if not markdown:
+        return f"`{value}`"
+    longest = max((len(r) for r in re.findall(r"`+", value)), default=0)
+    fence = "`" * (longest + 1)
+    return f"{fence} {value} {fence}" if longest else f"{fence}{value}{fence}"
+
+
+def _message(rec: dict, markdown: bool = False) -> str:
+    """What a reviewer reads under the location on the alert page.
+
+    GitHub renders a result's message and its rule's help — NOT `properties`. That is why the
+    parameter was invisible in the Security tab while sitting in properties.parameter all along.
+    So where the finding is, what proved it, and how sure the scanner is all belong here. Each
+    clause appears only when its field does, so a header finding reads as a plain sentence.
+    """
+    msg = rec.get("title") or rec["rule_id"]
+    if rec.get("parameter"):
+        msg += f" in parameter {_code(rec['parameter'], markdown)}"
+    attack, evidence = rec.get("attack"), rec.get("evidence_excerpt")
+    if attack and evidence:
+        msg += (f" — ZAP sent {_code(attack, markdown)} and the server answered "
+                f"{_code(evidence, markdown)}")
+    elif attack:
+        msg += f" — ZAP sent {_code(attack, markdown)}"
+    elif evidence:
+        msg += f" — evidence: {_code(evidence, markdown)}"
+    msg += "."
+    if rec.get("confidence"):
+        msg += f" Confidence: {rec['confidence'].capitalize()}."
+    return msg
 
 
 def _result_for(rec: dict, rule_index: int) -> dict:
@@ -69,7 +143,7 @@ def _result_for(rec: dict, rule_index: int) -> dict:
         "ruleId": rec["rule_id"],
         "ruleIndex": rule_index,
         "level": _LEVEL.get(rec["severity"], "note"),
-        "message": {"text": rec.get("title") or rec["rule_id"]},
+        "message": {"text": _message(rec), "markdown": _message(rec, markdown=True)},
         "locations": [
             {"physicalLocation": {"artifactLocation": {"uri": rec["endpoint"]}}}
         ],
@@ -81,6 +155,11 @@ def _result_for(rec: dict, rule_index: int) -> dict:
             "scan_id": rec.get("scan_id"),
         },
     }
+    # Also machine-readable, for API consumers and filtering — but never the ONLY place a value
+    # a person needs lives, since the alert page does not show properties.
+    for field in ("confidence", "attack"):
+        if rec.get(field):
+            result["properties"][field] = rec[field]
     # Reference the (redacted) evidence for this scan from the result (FR-E1).
     evidence = rec.get("evidence_path")
     if evidence:
