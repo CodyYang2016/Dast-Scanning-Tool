@@ -68,6 +68,7 @@ def test_copilot_cmd_carries_model_and_prompt(monkeypatch):
 
 def test_copilot_flags_override(monkeypatch):
     monkeypatch.setenv("COPILOT_FLAGS", "--foo --bar")
+    monkeypatch.setattr(llm_backend.shutil, "which", lambda _bin: "/usr/bin/copilot")
     cmd = llm_backend._copilot_cmd("P", "m")
     assert "--foo" in cmd and "--bar" in cmd and "--disable-builtin-mcps" not in cmd
 
