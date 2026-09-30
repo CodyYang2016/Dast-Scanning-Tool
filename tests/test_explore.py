@@ -118,6 +118,31 @@ def test_normalize_leaves_root_relative_and_absolute_alone():
     assert normalize_href("http://juice:3000/#/basket") == "http://juice:3000/#/basket"
 
 
+def test_normalize_resolves_page_relative_against_the_page_it_was_seen_on():
+    # DVWA's file-inclusion module links "./?page=include.php" and "?page=file1.php"; read against
+    # the site root those address /index.php and lose the module entirely.
+    page = "http://dvwa/vulnerabilities/fi/"
+    assert normalize_href("./?page=include.php", page) == "/vulnerabilities/fi/?page=include.php"
+    assert normalize_href("?page=file1.php", page) == "/vulnerabilities/fi/?page=file1.php"
+    assert normalize_href("index.php", page) == "/vulnerabilities/fi/index.php"
+    assert normalize_href("../exec/", page) == "/vulnerabilities/exec/"
+
+
+def test_normalize_collapses_dot_segments_in_a_root_relative_href():
+    assert normalize_href("/../../vulnerabilities/captcha/",
+                          "http://dvwa/vulnerabilities/fi/") == "/vulnerabilities/captcha/"
+
+
+def test_normalize_keeps_a_hash_route_origin_relative_even_on_a_nested_page():
+    assert normalize_href("#/contact", "http://juice:3000/x/y") == "/#/contact"
+
+
+def test_normalize_keeps_cross_origin_hrefs_absolute_for_the_scope_guard():
+    page = "http://dvwa/vulnerabilities/fi/"
+    assert normalize_href("//evil.test/x", page) == "http://evil.test/x"
+    assert normalize_href("https://evil.test/x", page) == "https://evil.test/x"
+
+
 def test_normalize_drops_non_navigable_hrefs():
     assert normalize_href("javascript:void(0)") is None
     assert normalize_href("mailto:a@b.c") is None
@@ -143,6 +168,16 @@ def test_next_action_normalizes_llm_path(monkeypatch):
     action, src = next_action({"url": "/#/", "links": [], "forms": [], "api": []}, set(), SCOPE,
                               api_key="k")
     assert src == "llm" and action["target"]["path"] == "/#/about"
+
+
+def test_next_action_normalizes_llm_path_against_the_observed_page(monkeypatch):
+    monkeypatch.setattr("authoring.explore.propose_llm",
+                        lambda obs, model, api_key: {"action": "follow_link",
+                                                     "target": {"method": "GET",
+                                                                "path": "./?page=include.php"}})
+    obs = {"url": "http://dvwa/vulnerabilities/fi/", "links": [], "forms": [], "api": []}
+    action, src = next_action(obs, set(), SCOPE, api_key="k")
+    assert src == "llm" and action["target"]["path"] == "/vulnerabilities/fi/?page=include.php"
 
 
 def test_next_action_rejects_non_navigable_llm_path(monkeypatch):

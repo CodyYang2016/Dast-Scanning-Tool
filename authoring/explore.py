@@ -22,6 +22,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from urllib.parse import urljoin, urlsplit
 
 import jsonschema
 
@@ -63,28 +64,55 @@ def validate_proposal(action: dict, scope: dict, deny_actions=None, safe_forms=N
 _NON_NAVIGABLE = ("javascript:", "mailto:", "tel:", "data:", "blob:")
 
 
-def normalize_href(href: str | None) -> str | None:
-    """Turn an href as the SPA emits it into a path the trace/flow can append to base_url.
+def _same_origin(a: str, b: str) -> bool:
+    pa, pb = urlsplit(a), urlsplit(b)
+    return (pa.scheme, pa.netloc) == (pb.scheme, pb.netloc)
+
+
+def _origin_relative(url: str) -> str:
+    """An absolute URL reduced to the path(+query/fragment) the trace/flow appends to base_url."""
+    parts = urlsplit(url)
+    path = parts.path or "/"
+    if parts.query:
+        path += "?" + parts.query
+    if parts.fragment:
+        path += "#" + parts.fragment
+    return path
+
+
+def normalize_href(href: str | None, page_url: str | None = None) -> str | None:
+    """Turn an href as the page emits it into a path the trace/flow can append to base_url.
 
     Angular emits "#/contact" and "./redirect?to=..."; appended verbatim to base_url those become
     "http://juice:3000#/contact" (works by accident) and "http://juice:3000./redirect?..." (an
     invalid URL that crashes the generated flow). Returns None for non-navigable hrefs.
+
+    page_url resolves a page-relative href against the page it was seen on, which is the only
+    correct reading of one: "./?page=include.php" on /vulnerabilities/fi/ addresses that module,
+    not the site root, and "/../../x" needs its dot segments collapsed. Without it a relative
+    href is assumed to be root-relative, which is the historical behaviour.
     """
     if not href:
         return None
     h = href.strip()
     if not h or h.lower().startswith(_NON_NAVIGABLE):
         return None
-    if h.startswith("http://") or h.startswith("https://") or h.startswith("/"):
+    if h.startswith("#"):
+        return "/" + h  # SPA route: always read against the origin, never the current path
+    if h.startswith("http://") or h.startswith("https://"):
+        return h  # left absolute so the scope guard judges it by host
+    if page_url:
+        resolved = urljoin(page_url, h)
+        # A cross-origin resolution ("//evil/x") stays absolute for the same reason.
+        return _origin_relative(resolved) if _same_origin(resolved, page_url) else resolved
+    if h.startswith("/"):
         return h
     if h.startswith("./"):
         return "/" + h[2:]
-    if h.startswith("#"):
-        return "/" + h
     return "/" + h
 
 
-def _normalize_action(action: dict) -> dict:
+def _normalize_action(action: dict, page_url: str | None = None) -> dict:
     """Apply normalize_href to an LLM-proposed path so it gets the same treatment as scraped
     links. A non-navigable path is blanked so schema validation (minLength) rejects it."""
     if not isinstance(action, dict):
@@ -92,7 +120,7 @@ def _normalize_action(action: dict) -> dict:
     target = action.get("target")
     if isinstance(target, dict) and isinstance(target.get("path"), str):
         target = dict(target)
-        target["path"] = normalize_href(target["path"]) or ""
+        target["path"] = normalize_href(target["path"], page_url) or ""
         action = dict(action, target=target)
     return action
 
@@ -189,7 +217,8 @@ def next_action(observation: dict, visited, scope: dict, *, deny_actions=None, s
     model = model or llm_backend.default_model()
     if use_llm and llm_backend.available(api_key):
         try:
-            action = _normalize_action(propose_llm(observation, model, api_key))
+            action = _normalize_action(propose_llm(observation, model, api_key),
+                                       observation.get("url"))
             ok, reason = validate_proposal(action, scope, deny_actions, safe_forms)
             if ok:
                 return action, "llm"
@@ -224,7 +253,7 @@ def _observe(page, base_url: str, api_events: list[dict]) -> dict:
     seen: set[str] = set()
     clean: list[str] = []
     for l in links:
-        n = normalize_href(l)
+        n = normalize_href(l, page.url)
         if n and n not in seen:
             seen.add(n)
             clean.append(n)
