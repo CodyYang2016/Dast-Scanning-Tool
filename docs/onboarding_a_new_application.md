@@ -37,23 +37,86 @@ only Juice Shop. Use a local override if authoring from the host requires browse
 ```bash
 cat > compose.override.yaml <<'YAML'
 services:
-  zap:  { ports: ["8080:8080"] }
+  zap:  { ports: ["8090:8080"] }
   dvwa: { ports: ["8081:80"] }
 YAML
 printf '\ncompose.override.yaml\n' >> .git/info/exclude
 
 podman compose --profile dvwa up -d dvwa zap
 podman compose logs -f dvwa
+
+# ZAP answers its own API on the published port only via the aliases in compose.yaml:
+curl -sS http://127.0.0.1:8090/JSON/core/view/version/                  # expect {"version":"2.17.0"}
+curl -sS -x http://127.0.0.1:8090 -o /dev/null -w '%{http_code}\n' http://dvwa/login.php   # 302
 ```
+
+If the first curl returns nothing (`curl: (52) Empty reply from server`), see §6 — ZAP is
+proxying the call to itself rather than answering it, and one API call fixes it at runtime.
 
 Create the DVWA database at `http://localhost:8081/setup.php`, then run:
 
 ```bash
 export DVWA_USER=admin DVWA_PASS=password
-python -m dast author dvwa --explore --zap-proxy http://localhost:8080
-python -m dast scan dvwa
+python -m dast author dvwa --explore --zap-proxy http://127.0.0.1:8090
+python -m dast scan  dvwa --zap-api http://127.0.0.1:8090 --zap-proxy http://127.0.0.1:8090
 python -m dast report dvwa
 ```
+
+`--zap-proxy` is the address **your workstation** reaches ZAP on; the `base_url` in `app.yaml`
+stays the address **ZAP** reaches the target on (`http://dvwa`). They are different machines'
+views of the same network and are not interchangeable.
+
+Exploration needs a scope and a seed. Neither is a file you write: both are derived from
+`app.yaml` into `out/<app>/authoring/derived/` at author time. Commit
+`security/dast/<app>/scope.json` or `seed.json` only to override that — a hand-tuned allow-list,
+or seed routes that differ from `explore.seed_routes` — and the committed file then wins.
+
+### 1b. On a Windows workstation
+
+Verified end to end on a Nationwide-managed Windows 11 laptop in Git Bash, against DVWA,
+September 2026. Five things differ from the Linux path, and each one fails in a way that does
+not name its cause.
+
+```bash
+py -3 -m venv .venv && source .venv/Scripts/activate      # `python3` opens the Microsoft Store
+pip install -r requirements.txt && python -m playwright install chromium
+
+# The corporate TLS chain, for pip, requests and Playwright's downloader alike:
+export NODE_EXTRA_CA_CERTS='C:\Users\<you>\certs\nw-ca-all.pem'
+export REQUESTS_CA_BUNDLE="$NODE_EXTRA_CA_CERTS" SSL_CERT_FILE="$NODE_EXTRA_CA_CERTS" \
+       PIP_CERT="$NODE_EXTRA_CA_CERTS"
+```
+
+The CA bundle must be a PEM chain. A DER or truststore export loads as
+`error:8000007B:system library::no protocol option` and is then *silently ignored*.
+
+**Podman, not Docker.** `podman machine` runs the containers in a WSL VM, so the VM — not your
+laptop — is what resolves names and reaches the proxy:
+
+```bash
+unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy    # before starting the machine, always
+export NO_PROXY='localhost,127.0.0.1,.nwie.net' no_proxy="$NO_PROXY"
+podman machine stop && podman machine start
+```
+
+`podman machine start` copies the current shell's proxy variables into the VM. A proxy on
+`127.0.0.1:8888` is the *host's* loopback; inside the VM that address is the VM itself, and
+every pull fails with `proxyconnect tcp: dial tcp 127.0.0.1:8888: connect: connection refused`.
+Started with the variables unset, podman writes the reachable `host.containers.internal:8888`
+itself.
+
+Images must be mirror-qualified, since Docker Hub is not reachable — prefix the digests in
+`compose.yaml` with `ntr.nwie.net/docker.io/` in your `compose.override.yaml`:
+
+```yaml
+services:
+  dvwa:
+    image: ntr.nwie.net/docker.io/vulnerables/web-dvwa@sha256:dae203fe11646a86937bf04db0079adef295f426da68a92b40e3b181f337daa7
+```
+
+Finally, publish ZAP on a port nothing else claims (`8090:8080` above). Windows forwards
+published ports through `wslrelay.exe`, and a port already held by another agent accepts the
+connection and closes it — indistinguishable from ZAP being down.
 
 WebGoat is started with `podman compose --profile webgoat up -d webgoat zap` and listens on
 `http://webgoat:8083`; it must not use ZAP's port `8080`. Register a 6-10 character test
@@ -359,6 +422,7 @@ when there is no XHR surface; a wrong pattern quietly records nothing.
 | `credentials not in the environment: MYAPP_USER` | The env vars named in `auth.credentials` are not exported | Export them in the shell that runs `dast` |
 | Login works by hand, fails here | A password policy (WebGoat caps at 10 characters), or the account was wiped when the container restarted | Re-provision the account; in-memory databases do not survive a restart |
 | `services not ready within 120s` | ZAP cannot reach the target | `podman exec zap curl …` from §1; check both are on the same network |
+| `curl: (52) Empty reply from server` from ZAP's API on a published host port | ZAP answers as its API only when the `Host` header names an address it knows itself by; a published port does not rewrite it, so ZAP tries to *proxy* the call to `127.0.0.1:<port>` inside the container, where nothing listens | `compose.yaml` registers `127.0.0.1` and `localhost` as aliases. On a ZAP started without them: `curl -sS -H 'Host: zap' 'http://127.0.0.1:8090/JSON/network/action/addAlias/?name=127.0.0.1'` — effective immediately, lost on restart |
 | `ZapUnavailableError: ZAP stopped responding` | The daemon died — usually OOM (exit 137) from a browser-driven rule | `podman logs zap`; disable `40026` or give the daemon more memory |
 
 ---
