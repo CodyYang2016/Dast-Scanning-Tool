@@ -242,6 +242,14 @@ fails, so check the field rather than assuming. If you expected `llm` and got `f
 rerun `python -m authoring.generate --app my-app --trace … --out-dir /tmp/x` and read stderr:
 it names the reason.
 
+For a scheduled or CI run, add `--require-llm` to `dast author` (or to `authoring.explore` /
+`authoring.generate` directly). It exits non-zero instead of falling back, so an expired token,
+a model id the account is not entitled to, or a missing CLI fails the run rather than quietly
+producing a deterministic bundle that looks like a configuration choice. A *policy* rejection
+still falls back — that is the safety layer working, not a broken provider. `--require-llm`
+with `--no-llm` is contradictory and is rejected. `dast author --explore` also prints
+`steps_by_source`, which is how you see how much of the walk the model actually drove.
+
 ## 5. Make the scan worth running
 
 A passing gate is not the same as a useful scan. Two knobs, both configuration:

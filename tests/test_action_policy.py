@@ -98,3 +98,20 @@ def test_embedded_url_check_is_case_insensitive_and_query_encoded():
     d = validate_action({"action": "follow_link", "target": {
         "path": "/go?next=HTTPS://Evil.Example.com/x&x=1"}}, SCOPE)
     assert not d.allowed
+
+
+# ---- deny_terms: what the explorer tells the model up front -------------------------------
+
+def test_deny_terms_merges_the_configured_list_with_the_never_allowed_terms():
+    from runner.action_policy import deny_terms
+
+    terms = deny_terms({"avoid_action_list": ["captcha", " Purchase "]})
+    assert "captcha" in terms and "purchase" in terms and "logout" in terms
+    assert terms == sorted(set(terms))
+
+
+def test_deny_terms_prefers_an_explicit_deny_list_over_the_scope():
+    from runner.action_policy import deny_terms
+
+    terms = deny_terms({"avoid_action_list": ["captcha"]}, deny_actions=["upload"])
+    assert "upload" in terms and "captcha" not in terms
