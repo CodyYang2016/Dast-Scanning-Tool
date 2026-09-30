@@ -36,6 +36,41 @@ class LLMRequiredError(RuntimeError):
     """
 
 
+class StrictLLM:
+    """The --require-llm budget for a multi-step run: tolerate a flaky reply, abort a dead provider.
+
+    An exploration makes one call per step, and a model occasionally answers with prose or truncated
+    JSON. Failing the run on the first such answer throws away a walk the fallback proposer could
+    have finished, so a failure is only fatal once `max_consecutive` of them happen back to back
+    (a provider that is actually unusable) or if `finish()` finds the model never drove a step.
+    """
+
+    def __init__(self, max_consecutive: int = 3):
+        self.max_consecutive = max_consecutive
+        self.consecutive = 0
+        self.failures: list[str] = []
+        self.successes = 0
+
+    def success(self) -> None:
+        self.successes += 1
+        self.consecutive = 0
+
+    def failure(self, exc: BaseException) -> None:
+        """Record a failed step; raise once they are consecutive enough to mean a dead provider."""
+        self.failures.append(str(exc))
+        self.consecutive += 1
+        if self.consecutive >= self.max_consecutive:
+            raise LLMRequiredError(
+                f"{self.consecutive} consecutive LLM failures, last: {exc}") from exc
+
+    def finish(self) -> None:
+        """Raise if the run completed without the model ever producing a usable action."""
+        if self.successes == 0 and self.failures:
+            raise LLMRequiredError(
+                f"the LLM drove no step of this run ({len(self.failures)} failures), "
+                f"last: {self.failures[-1]}")
+
+
 _DEFAULT_ANTHROPIC_MODEL = "claude-opus-4-8"
 _DEFAULT_COPILOT_MODEL = "gpt-5.5"
 # Mirrors the non-interactive flags the Nationwide pen-test-loop uses; override via COPILOT_FLAGS.
@@ -148,15 +183,18 @@ def _copilot_cmd(prompt: str, model: str, prompt_file: Path | None = None) -> li
 
 def _run_copilot(prompt: str, model: str, timeout: float,
                  prompt_file: Path | None = None) -> subprocess.CompletedProcess:
+    # The CLI writes UTF-8 (box-drawing characters, arrows, curly quotes in its own chatter).
+    # text=True alone would decode it with the locale codec — cp1252 on a Windows console, which
+    # raises UnicodeDecodeError inside subprocess's reader thread and loses the whole reply.
     return subprocess.run(_copilot_cmd(prompt, model, prompt_file), capture_output=True,
-                          text=True, timeout=timeout)
+                          text=True, encoding="utf-8", errors="replace", timeout=timeout)
 
 
 def _read_copilot_output(out_path: Path, proc: subprocess.CompletedProcess) -> str:
     """Prefer the JSON file the model wrote; fall back to stdout. Raise if there is nothing."""
     text = ""
     try:
-        text = out_path.read_text(encoding="utf-8")
+        text = out_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         text = proc.stdout or ""
     if not text.strip():
