@@ -172,3 +172,20 @@ def test_explore_inputs_honours_an_explicit_seed_override(tmp_path, monkeypatch)
     seed_file, _ = dast.explore_inputs("dvwa", _dvwa_config(), "/tmp/mine.json")
 
     assert seed_file == pathlib.Path("/tmp/mine.json")
+
+
+# ---- --require-llm: the contradiction must cost no session seed and no traffic -------------
+
+def test_author_rejects_require_llm_with_no_llm_before_doing_any_work(capsys):
+    args = dast.build_parser().parse_args(["author", "dvwa", "--no-llm", "--require-llm"])
+    rc = dast.cmd_author(args)
+    assert rc == 2 and "contradicts" in capsys.readouterr().err
+
+
+def test_explore_cli_rejects_require_llm_with_no_llm_at_parse_time():
+    from authoring import explore as explore_mod
+
+    with pytest.raises(SystemExit) as exc:
+        explore_mod.main(["--seed", "x", "--scope", "y", "--out-dir", "z",
+                          "--no-llm", "--require-llm"])
+    assert exc.value.code == 2
