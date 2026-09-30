@@ -93,6 +93,13 @@ def test_journey_from_trace_is_schema_valid():
     Draft202012Validator(json.loads(JOURNEY_SCHEMA.read_text())).validate(plan)
 
 
+def test_journey_from_trace_leaves_out_a_document_the_crawl_walked_into():
+    """A goto step for a download cannot be replayed at all -- Chromium aborts the navigation."""
+    trace = dict(TRACE, index=["/#/basket", "/docs/DVWA_v1.3.pdf"])
+    targets = [s["target"] for s in journey_from_trace(trace, CONFIG)["journey"]]
+    assert "/#/basket" in targets and "/docs/DVWA_v1.3.pdf" not in targets
+
+
 def test_render_flow_is_deterministic():
     assert render_flow(PLAN, CONFIG) == render_flow(PLAN, CONFIG)
 
