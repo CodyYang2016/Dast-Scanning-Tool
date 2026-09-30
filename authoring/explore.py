@@ -22,13 +22,14 @@ import os
 import re
 import sys
 from pathlib import Path
+from urllib.parse import urljoin, urlsplit
 
 import jsonschema
 
 from authoring import appconfig, llm_backend
 from authoring.record import build_trace, write_trace
 from authoring.seed import load_seed
-from runner.action_policy import validate_action
+from runner.action_policy import deny_terms, validate_action
 from runner.preflight import preflight
 from runner.replay import SessionDeadError, prove_auth_live
 from runner.redact import redact
@@ -63,28 +64,55 @@ def validate_proposal(action: dict, scope: dict, deny_actions=None, safe_forms=N
 _NON_NAVIGABLE = ("javascript:", "mailto:", "tel:", "data:", "blob:")
 
 
-def normalize_href(href: str | None) -> str | None:
-    """Turn an href as the SPA emits it into a path the trace/flow can append to base_url.
+def _same_origin(a: str, b: str) -> bool:
+    pa, pb = urlsplit(a), urlsplit(b)
+    return (pa.scheme, pa.netloc) == (pb.scheme, pb.netloc)
+
+
+def _origin_relative(url: str) -> str:
+    """An absolute URL reduced to the path(+query/fragment) the trace/flow appends to base_url."""
+    parts = urlsplit(url)
+    path = parts.path or "/"
+    if parts.query:
+        path += "?" + parts.query
+    if parts.fragment:
+        path += "#" + parts.fragment
+    return path
+
+
+def normalize_href(href: str | None, page_url: str | None = None) -> str | None:
+    """Turn an href as the page emits it into a path the trace/flow can append to base_url.
 
     Angular emits "#/contact" and "./redirect?to=..."; appended verbatim to base_url those become
     "http://juice:3000#/contact" (works by accident) and "http://juice:3000./redirect?..." (an
     invalid URL that crashes the generated flow). Returns None for non-navigable hrefs.
+
+    page_url resolves a page-relative href against the page it was seen on, which is the only
+    correct reading of one: "./?page=include.php" on /vulnerabilities/fi/ addresses that module,
+    not the site root, and "/../../x" needs its dot segments collapsed. Without it a relative
+    href is assumed to be root-relative, which is the historical behaviour.
     """
     if not href:
         return None
     h = href.strip()
     if not h or h.lower().startswith(_NON_NAVIGABLE):
         return None
-    if h.startswith("http://") or h.startswith("https://") or h.startswith("/"):
+    if h.startswith("#"):
+        return "/" + h  # SPA route: always read against the origin, never the current path
+    if h.startswith("http://") or h.startswith("https://"):
+        return h  # left absolute so the scope guard judges it by host
+    if page_url:
+        resolved = urljoin(page_url, h)
+        # A cross-origin resolution ("//evil/x") stays absolute for the same reason.
+        return _origin_relative(resolved) if _same_origin(resolved, page_url) else resolved
+    if h.startswith("/"):
         return h
     if h.startswith("./"):
         return "/" + h[2:]
-    if h.startswith("#"):
-        return "/" + h
     return "/" + h
 
 
-def _normalize_action(action: dict) -> dict:
+def _normalize_action(action: dict, page_url: str | None = None) -> dict:
     """Apply normalize_href to an LLM-proposed path so it gets the same treatment as scraped
     links. A non-navigable path is blanked so schema validation (minLength) rejects it."""
     if not isinstance(action, dict):
@@ -92,7 +120,7 @@ def _normalize_action(action: dict) -> dict:
     target = action.get("target")
     if isinstance(target, dict) and isinstance(target.get("path"), str):
         target = dict(target)
-        target["path"] = normalize_href(target["path"]) or ""
+        target["path"] = normalize_href(target["path"], page_url) or ""
         action = dict(action, target=target)
     return action
 
@@ -156,7 +184,10 @@ def propose_llm(observation: dict, model: str, api_key: str | None = None) -> di
         "follow_link / visit_api on paths that appear in the observation's `links` / `api` and are "
         "NOT in `visited`. Use expand_nav / submit_form (with a CSS `selector`) only when no "
         "unvisited link or API path remains. Emit {\"action\":\"stop\"} when nothing useful "
-        "remains."
+        "remains.\n"
+        "The observation's `forbidden` lists path fragments the operator's policy refuses, and "
+        "`rejected` lists targets already refused on this run: proposing either wastes the step, "
+        "so never propose a path containing a `forbidden` fragment or appearing in `rejected`."
     )
     user = "Redacted observation:\n" + json.dumps(observation, indent=2)
     text = llm_backend.complete(system, user, model, api_key=api_key, max_tokens=1024)
@@ -182,23 +213,46 @@ def parse_action_text(text: str) -> dict:
     return obj
 
 
+def target_key(action: dict) -> str | None:
+    """The path or selector an action addresses — what identifies it as already-rejected."""
+    target = action.get("target") or {}
+    return target.get("path") or target.get("selector") or None
+
+
 def next_action(observation: dict, visited, scope: dict, *, deny_actions=None, safe_forms=None,
-                use_llm: bool = True, model: str | None = None, api_key: str | None = None):
-    """Return (action, source). LLM-primary; on any LLM/validation failure, deterministic fallback."""
+                use_llm: bool = True, model: str | None = None, api_key: str | None = None,
+                require_llm: bool = False, rejected: set[str] | None = None):
+    """Return (action, source). LLM-primary; on any LLM/validation failure, deterministic fallback.
+
+    A rejected target is recorded in `rejected` (when given) so the next observation can tell the
+    model not to propose it again. require_llm raises LLMRequiredError rather than falling back on
+    an LLM *failure*; a policy rejection is the safety layer working, and still falls back.
+    """
     api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
     model = model or llm_backend.default_model()
     if use_llm and llm_backend.available(api_key):
         try:
-            action = _normalize_action(propose_llm(observation, model, api_key))
+            action = _normalize_action(propose_llm(observation, model, api_key),
+                                       observation.get("url"))
             ok, reason = validate_proposal(action, scope, deny_actions, safe_forms)
             if ok:
                 return action, "llm"
             t = action.get("target") or {}
+            if rejected is not None and target_key(action):
+                rejected.add(target_key(action))
             print(f"explore: LLM action rejected ({reason}): {action.get('action')} "
                   f"{t.get('method', '')} {t.get('path') or t.get('selector') or ''}; using fallback",
                   file=sys.stderr)
         except Exception as exc:
+            if require_llm:
+                raise llm_backend.LLMRequiredError(f"LLM action unavailable: {exc}") from exc
             print(f"explore: LLM path failed ({exc}); using fallback", file=sys.stderr)
+    elif require_llm and use_llm:
+        raise llm_backend.LLMRequiredError(
+            f"provider {llm_backend.provider()} is not available "
+            "(is the CLI installed / the token or key set?)")
+    elif require_llm:
+        raise llm_backend.LLMRequiredError("--require-llm contradicts --no-llm")
     return propose_fallback(observation, visited, scope, deny_actions, safe_forms), "fallback"
 
 
@@ -224,7 +278,7 @@ def _observe(page, base_url: str, api_events: list[dict]) -> dict:
     seen: set[str] = set()
     clean: list[str] = []
     for l in links:
-        n = normalize_href(l)
+        n = normalize_href(l, page.url)
         if n and n not in seen:
             seen.add(n)
             clean.append(n)
@@ -235,12 +289,16 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
             config: dict | None = None,
             deny_actions=None, safe_forms=None, max_pages: int = 50, use_llm: bool = True,
             model: str | None = None, api_key: str | None = None, zap_proxy: str | None = None,
-            headless: bool = True, slow_mo: int = 0) -> tuple[dict, ScopeGuard]:
+            headless: bool = True, slow_mo: int = 0, require_llm: bool = False,
+            stats: dict | None = None) -> tuple[dict, ScopeGuard]:
     """Run the seeded, LLM-driven exploration loop and return (trace, guard). The trace matches
     record's output (build_trace), so generate/validate/runner consume it unchanged.
 
     slow_mo (ms) delays each Playwright action so a headed run is watchable in a live demo (same
-    knob as record); 0 (default) is full speed and does not affect the captured trace."""
+    knob as record); 0 (default) is full speed and does not affect the captured trace.
+
+    stats, when given, is filled with the per-step action source counts ({"llm": n,
+    "fallback": n}) so a caller can report how much of the walk the model actually drove."""
     from playwright.sync_api import sync_playwright
 
     if not seed_routes:
@@ -290,12 +348,19 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
             _goto(route)
 
         steps = 0
+        rejected: set[str] = set()
+        forbidden = deny_terms(scope, deny_actions)
         while steps < max_pages:
             observation = redact(_observe(page, base_url, api_events))  # redact BEFORE the LLM
             observation["visited"] = sorted(visited)  # coverage so far, so the model doesn't repeat
-            action, _src = next_action(observation, visited, scope, deny_actions=deny_actions,
-                                       safe_forms=safe_forms, use_llm=use_llm, model=model,
-                                       api_key=api_key)
+            observation["forbidden"] = forbidden      # what policy will refuse, said up front
+            observation["rejected"] = sorted(rejected)
+            action, src = next_action(observation, visited, scope, deny_actions=deny_actions,
+                                      safe_forms=safe_forms, use_llm=use_llm, model=model,
+                                      api_key=api_key, require_llm=require_llm,
+                                      rejected=rejected)
+            if stats is not None:
+                stats[src] = stats.get(src, 0) + 1
             if action.get("action") == "stop":
                 break
             ok, _reason = validate_proposal(action, scope, deny_actions, safe_forms,
@@ -341,6 +406,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--model", default=None,
                    help="LLM model id; defaults to the LLM_PROVIDER's default (Anthropic or Copilot)")
     p.add_argument("--no-llm", action="store_true", help="Force the deterministic fallback proposer")
+    p.add_argument("--require-llm", action="store_true",
+                   help="Fail instead of falling back when the LLM path cannot be taken")
     p.add_argument("--max-pages", type=int, default=50)
     p.add_argument("--headed", action="store_true")
     p.add_argument("--slow-mo", type=int, default=0, metavar="MS",
@@ -356,23 +423,31 @@ def main(argv: list[str] | None = None) -> int:
         config = appconfig.load_app_config(args.app or app_id)
     except Exception:
         config = None   # exploration can still run on a raw seed+scope without an app.yaml
+    stats: dict[str, int] = {}
     try:
         trace, guard = explore(
             app_id, base_url, seed["session"]["storage_state"], seed["seed_routes"], scope,
             config=config,
             deny_actions=seed.get("deny_actions"), max_pages=args.max_pages,
             use_llm=not args.no_llm, model=model, zap_proxy=args.zap_proxy,
-            headless=not args.headed, slow_mo=args.slow_mo,
+            headless=not args.headed, slow_mo=args.slow_mo, require_llm=args.require_llm,
+            stats=stats,
         )
     except SessionDeadError as exc:
         print(f"EXPLORE ABORT: seeded session dead ({exc}); re-seed and retry", file=sys.stderr)
         return 2
+    except llm_backend.LLMRequiredError as exc:
+        print(f"EXPLORE ABORT: {exc}", file=sys.stderr)
+        return 3
 
     write_trace(trace, args.out_dir)
     print(json.dumps({
         "app_id": app_id, "pages": len(trace["index"]), "api_calls": len(trace["api"]),
         "forms": len(trace["forms"]), "hosts": trace["hosts"],
         "requests_seen": len(guard.decisions), "blocked": len(guard.violations),
+        # How much of the walk the model actually drove: all-fallback steps with the LLM enabled
+        # mean the provider is misconfigured, not that the tool chose to be deterministic.
+        "steps_by_source": stats,
         "out_dir": args.out_dir,
     }, indent=2))
     return 0

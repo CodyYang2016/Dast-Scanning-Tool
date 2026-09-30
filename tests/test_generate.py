@@ -163,3 +163,44 @@ def test_make_plan_asks_the_provider_for_its_own_default_model(monkeypatch):
     _, source = generate_mod.make_plan(TRACE, CONFIG, use_llm=True)
 
     assert source == "llm" and asked["model"] == "gpt-5.5"
+
+
+# ---- --require-llm: a broken provider must not masquerade as a deliberate fallback --------
+
+def test_make_plan_requires_llm_raises_when_the_llm_plan_fails(monkeypatch):
+    import pytest
+    from authoring import generate as generate_mod
+    from authoring.llm_backend import LLMRequiredError
+
+    monkeypatch.setattr(generate_mod.llm_backend, "available", lambda api_key=None: True)
+    monkeypatch.setattr(generate_mod, "plan_from_llm",
+                        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("model unavailable")))
+    with pytest.raises(LLMRequiredError):
+        generate_mod.make_plan(TRACE, CONFIG, use_llm=True, require_llm=True)
+
+
+def test_make_plan_requires_llm_raises_when_no_provider_is_available(monkeypatch):
+    import pytest
+    from authoring import generate as generate_mod
+    from authoring.llm_backend import LLMRequiredError
+
+    monkeypatch.setattr(generate_mod.llm_backend, "available", lambda api_key=None: False)
+    with pytest.raises(LLMRequiredError):
+        generate_mod.make_plan(TRACE, CONFIG, use_llm=True, require_llm=True)
+
+
+def test_make_plan_requires_llm_rejects_the_contradictory_no_llm_combination():
+    import pytest
+    from authoring import generate as generate_mod
+    from authoring.llm_backend import LLMRequiredError
+
+    with pytest.raises(LLMRequiredError):
+        generate_mod.make_plan(TRACE, CONFIG, use_llm=False, require_llm=True)
+
+
+def test_make_plan_without_require_llm_still_falls_back(monkeypatch):
+    from authoring import generate as generate_mod
+
+    monkeypatch.setattr(generate_mod.llm_backend, "available", lambda api_key=None: False)
+    _plan, source = generate_mod.make_plan(TRACE, CONFIG, use_llm=True)
+    assert source == "fallback"
