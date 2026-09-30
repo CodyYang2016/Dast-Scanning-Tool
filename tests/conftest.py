@@ -18,6 +18,7 @@ _LLM_ENV = (
     "COPILOT_MODEL",
     "COPILOT_GITHUB_TOKEN",
     "COPILOT_TIMEOUT",
+    "LLM_DEBUG",
 )
 
 
