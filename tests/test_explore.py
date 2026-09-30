@@ -262,3 +262,71 @@ def test_next_action_asks_the_provider_for_its_own_default_model(monkeypatch):
     _, source = next_action({"url": "/#/", "links": [], "forms": [], "api": []}, set(), SCOPE)
 
     assert source == "llm" and asked["model"] == "gpt-5.5"
+
+
+# ---- a failed LLM path must be loud, and a refused target must not be re-proposed ---------
+# Without --require-llm a wrong model id, an expired token or a missing CLI is indistinguishable
+# from a deliberate --no-llm run, so a broken provider can scan unnoticed for weeks.
+
+def test_require_llm_raises_instead_of_falling_back_on_an_llm_failure(monkeypatch):
+    import pytest
+    from authoring import explore as explore_mod
+    from authoring.llm_backend import LLMRequiredError
+
+    monkeypatch.setattr(explore_mod.llm_backend, "available", lambda api_key=None: True)
+    monkeypatch.setattr(explore_mod, "propose_llm",
+                        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("model unavailable")))
+    with pytest.raises(LLMRequiredError):
+        next_action({"url": "/#/", "links": [], "forms": [], "api": []}, set(), SCOPE,
+                    require_llm=True)
+
+
+def test_require_llm_raises_when_the_provider_is_not_available(monkeypatch):
+    import pytest
+    from authoring import explore as explore_mod
+    from authoring.llm_backend import LLMRequiredError
+
+    monkeypatch.setattr(explore_mod.llm_backend, "available", lambda api_key=None: False)
+    with pytest.raises(LLMRequiredError):
+        next_action({"url": "/#/", "links": [], "forms": [], "api": []}, set(), SCOPE,
+                    require_llm=True)
+
+
+def test_require_llm_still_falls_back_on_a_policy_rejection(monkeypatch):
+    # A refused action is the safety layer working, not a broken provider: keep exploring.
+    from authoring import explore as explore_mod
+
+    monkeypatch.setattr(explore_mod.llm_backend, "available", lambda api_key=None: True)
+    monkeypatch.setattr(explore_mod, "propose_llm",
+                        lambda *_a, **_k: {"action": "follow_link", "target": {"path": "/#/logout"}})
+    obs = {"url": "/#/", "links": ["/#/about"], "forms": [], "api": []}
+    action, source = next_action(obs, set(), SCOPE, require_llm=True)
+    assert source == "fallback" and action["target"]["path"] == "/#/about"
+
+
+def test_rejected_targets_are_collected_for_the_next_prompt(monkeypatch):
+    from authoring import explore as explore_mod
+
+    monkeypatch.setattr(explore_mod.llm_backend, "available", lambda api_key=None: True)
+    monkeypatch.setattr(explore_mod, "propose_llm",
+                        lambda *_a, **_k: {"action": "follow_link", "target": {"path": "/#/logout"}})
+    rejected: set[str] = set()
+    next_action({"url": "/#/", "links": [], "forms": [], "api": []}, set(), SCOPE,
+                rejected=rejected)
+    assert rejected == {"/#/logout"}
+
+
+def test_propose_llm_tells_the_model_what_policy_forbids(monkeypatch):
+    from authoring import explore as explore_mod
+
+    seen = {}
+
+    def fake_complete(system, user, model, **kwargs):
+        seen["system"], seen["user"] = system, user
+        return '{"action":"stop"}'
+
+    monkeypatch.setattr(explore_mod.llm_backend, "complete", fake_complete)
+    explore_mod.propose_llm({"url": "/", "forbidden": ["logout"], "rejected": ["/#/logout"]},
+                            "m", "k")
+    assert "forbidden" in seen["system"] and "rejected" in seen["system"]
+    assert "/#/logout" in seen["user"]
