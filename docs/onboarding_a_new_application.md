@@ -308,10 +308,22 @@ it names the reason.
 For a scheduled or CI run, add `--require-llm` to `dast author` (or to `authoring.explore` /
 `authoring.generate` directly). It exits non-zero instead of falling back, so an expired token,
 a model id the account is not entitled to, or a missing CLI fails the run rather than quietly
-producing a deterministic bundle that looks like a configuration choice. A *policy* rejection
-still falls back — that is the safety layer working, not a broken provider. `--require-llm`
-with `--no-llm` is contradictory and is rejected. `dast author --explore` also prints
-`steps_by_source`, which is how you see how much of the walk the model actually drove.
+producing a deterministic bundle that looks like a configuration choice.
+
+Exploration makes one model call per step, so the flag distinguishes a flaky provider from a dead
+one rather than failing on the first bad answer:
+
+| during exploration with `--require-llm` | outcome |
+|---|---|
+| provider unavailable (no CLI, no token) | abort immediately — nothing in the run can improve it |
+| an occasional unparseable or off-schema reply | that step falls back; the run continues |
+| three such failures in a row | abort |
+| the walk finishes and the model drove no step | abort |
+| policy refused the proposed action | falls back — the safety layer working, not a broken provider |
+
+`--require-llm` with `--no-llm` is rejected at argument-parse time, before a session is seeded.
+`dast author --explore` prints `steps_by_source` (`{"llm": n, "fallback": n}`), which is how you
+see how much of the walk the model actually drove without reading stderr.
 
 ## 5. Make the scan worth running
 

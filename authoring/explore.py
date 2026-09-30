@@ -221,12 +221,17 @@ def target_key(action: dict) -> str | None:
 
 def next_action(observation: dict, visited, scope: dict, *, deny_actions=None, safe_forms=None,
                 use_llm: bool = True, model: str | None = None, api_key: str | None = None,
-                require_llm: bool = False, rejected: set[str] | None = None):
+                strict: llm_backend.StrictLLM | None = None,
+                rejected: set[str] | None = None):
     """Return (action, source). LLM-primary; on any LLM/validation failure, deterministic fallback.
 
     A rejected target is recorded in `rejected` (when given) so the next observation can tell the
-    model not to propose it again. require_llm raises LLMRequiredError rather than falling back on
-    an LLM *failure*; a policy rejection is the safety layer working, and still falls back.
+    model not to propose it again.
+
+    strict is the --require-llm budget: an unavailable provider is fatal immediately (nothing about
+    the run can improve), while a failed call is reported to it and only becomes fatal once enough
+    of them accumulate to mean the provider is dead rather than flaky. A policy rejection is the
+    safety layer working, so it is not a failure at all and still falls back.
     """
     api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
     model = model or llm_backend.default_model()
@@ -236,6 +241,8 @@ def next_action(observation: dict, visited, scope: dict, *, deny_actions=None, s
                                        observation.get("url"))
             ok, reason = validate_proposal(action, scope, deny_actions, safe_forms)
             if ok:
+                if strict is not None:
+                    strict.success()
                 return action, "llm"
             t = action.get("target") or {}
             if rejected is not None and target_key(action):
@@ -244,15 +251,13 @@ def next_action(observation: dict, visited, scope: dict, *, deny_actions=None, s
                   f"{t.get('method', '')} {t.get('path') or t.get('selector') or ''}; using fallback",
                   file=sys.stderr)
         except Exception as exc:
-            if require_llm:
-                raise llm_backend.LLMRequiredError(f"LLM action unavailable: {exc}") from exc
             print(f"explore: LLM path failed ({exc}); using fallback", file=sys.stderr)
-    elif require_llm and use_llm:
+            if strict is not None:
+                strict.failure(exc)
+    elif strict is not None:
         raise llm_backend.LLMRequiredError(
             f"provider {llm_backend.provider()} is not available "
             "(is the CLI installed / the token or key set?)")
-    elif require_llm:
-        raise llm_backend.LLMRequiredError("--require-llm contradicts --no-llm")
     return propose_fallback(observation, visited, scope, deny_actions, safe_forms), "fallback"
 
 
@@ -303,6 +308,9 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
 
     if not seed_routes:
         raise ValueError("explore requires at least one seed route")
+    if require_llm and not use_llm:
+        raise llm_backend.LLMRequiredError("require_llm contradicts use_llm=False (--no-llm)")
+    strict = llm_backend.StrictLLM() if require_llm else None
     launch_args = ["--no-sandbox", "--disable-dev-shm-usage"] if os.environ.get(
         "RUNNER_CHROMIUM_NO_SANDBOX") else []
     # App-specific knowledge (how auth is proven, what counts as an API call) comes from the
@@ -357,7 +365,7 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
             observation["rejected"] = sorted(rejected)
             action, src = next_action(observation, visited, scope, deny_actions=deny_actions,
                                       safe_forms=safe_forms, use_llm=use_llm, model=model,
-                                      api_key=api_key, require_llm=require_llm,
+                                      api_key=api_key, strict=strict,
                                       rejected=rejected)
             if stats is not None:
                 stats[src] = stats.get(src, 0) + 1
@@ -389,6 +397,8 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
         browser.close()
 
     guard.finalize()  # discovery mode: block-and-continue, does not raise
+    if strict is not None:
+        strict.finish()  # a walk the model never drove is a broken provider, not a fallback run
     events.extend(api_events)  # fold observed API calls into the trace
     return build_trace(app_id, base_url, events), guard
 
@@ -413,6 +423,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--slow-mo", type=int, default=0, metavar="MS",
                    help="Delay each browser action by MS milliseconds (for headed demos/recordings)")
     args = p.parse_args(argv)
+    if args.require_llm and args.no_llm:  # caught here so it costs no session seed and no traffic
+        p.error("--require-llm contradicts --no-llm")
 
     scope = preflight(args.scope, args.schema)  # safety layer 1 before any traffic
     seed = load_seed(args.seed)
