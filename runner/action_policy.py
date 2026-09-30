@@ -74,6 +74,17 @@ _CREDENTIAL_FIELDS = ("password_new", "password_conf", "new_password", "newpassw
                       "password1", "password2")
 
 
+def deny_terms(scope: dict, deny_actions=None) -> list[str]:
+    """The terms an action's target must not contain, as this module will judge it.
+
+    Exposed so the explorer can tell the model what will be refused up front: a model that isn't
+    told spends a round trip per rejection re-proposing the same denied path.
+    """
+    configured = deny_actions if deny_actions is not None else scope.get("avoid_action_list", [])
+    terms = [t.strip().lower() for t in configured if str(t).strip()]
+    return sorted(set(terms) | set(_NEVER))
+
+
 def changes_a_credential(action: dict) -> bool:
     """True when a form's own fields show it sets or confirms a password (not a plain login)."""
     fields = [str(f).lower() for f in action.get("target", {}).get("field_bindings", [])]
