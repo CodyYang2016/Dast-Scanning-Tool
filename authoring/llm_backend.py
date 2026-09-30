@@ -215,15 +215,34 @@ def _run_copilot(prompt: str, model: str, timeout: float,
     return proc
 
 
+def _marked_blocks(text: str) -> list[str]:
+    """Every ``_JSON_START``..``_JSON_END`` block, in order; an unterminated one runs to the end."""
+    blocks, rest = [], text
+    while True:
+        start = rest.find(_JSON_START)
+        if start == -1:
+            return blocks
+        rest = rest[start + len(_JSON_START):]
+        end = rest.find(_JSON_END)
+        if end == -1:
+            blocks.append(rest)
+            return blocks
+        blocks.append(rest[:end])
+        rest = rest[end + len(_JSON_END):]
+
+
 def _read_copilot_output(proc: subprocess.CompletedProcess) -> str:
-    """The marked block of stdout, or all of stdout when the model dropped the markers."""
+    """The last marked block of stdout that looks like an object, else all of stdout.
+
+    An agent transcript can carry the markers more than once — it narrates the instruction it was
+    given before it answers — so the answer is the *last* block, and a block that holds no ``{`` is
+    narration rather than an answer. Anything else is handed over whole: the callers' parsers pull
+    the first JSON object out of raw text and quote what came back when there is none, so a reply
+    that lost its markers still works and a refusal still reaches the operator verbatim.
+    """
     out = proc.stdout or ""
-    start = out.find(_JSON_START)
-    if start != -1:
-        body = out[start + len(_JSON_START):]
-        end = body.find(_JSON_END)
-        block = body if end == -1 else body[:end]
-        if block.strip():
+    for block in reversed(_marked_blocks(out)):
+        if "{" in block:
             return block
     if not out.strip():
         raise RuntimeError(
