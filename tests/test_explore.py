@@ -377,3 +377,11 @@ def test_propose_llm_tells_the_model_what_policy_forbids(monkeypatch):
                             "m", "k")
     assert "forbidden" in seen["system"] and "rejected" in seen["system"]
     assert "/#/logout" in seen["user"]
+
+
+def test_an_unparseable_reply_reports_what_the_model_actually_said():
+    import pytest
+    from authoring.explore import parse_action_text
+
+    with pytest.raises(ValueError, match="I cannot help with that"):
+        parse_action_text("I cannot help with that request.")

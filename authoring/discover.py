@@ -52,7 +52,8 @@ def parse_proposal(text: str) -> dict:
         t = fence.group(1).strip()
     start, end = t.find("{"), t.rfind("}")
     if start == -1 or end == -1 or end < start:
-        raise ValueError("no JSON object found in the model's reply")
+        raise ValueError(
+            f"no JSON object found in the model's reply: {llm_backend.snippet(t)}")
     try:
         proposal = json.loads(t[start:end + 1])
     except json.JSONDecodeError as exc:
