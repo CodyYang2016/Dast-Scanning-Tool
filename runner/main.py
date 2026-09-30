@@ -26,7 +26,7 @@ from detections.normalizer import normalize, write_json_array
 from runner import coverage as coverage_capture
 from runner import evidence
 from runner.preflight import PreflightError, preflight
-from runner.replay import SessionDeadError, load_flow, replay, replay_seeded
+from runner.replay import FlowError, SessionDeadError, load_flow, replay, replay_seeded
 from runner.scan import (ScanScopeError, ZapUnavailableError, exclusion_regexes as scan_exclusions,
                          load_policy, new_session, resolved_policy, scan)
 from runner.scope_guard import ScopeViolation
@@ -232,7 +232,8 @@ def main(argv: list[str] | None = None) -> int:
             wait=not args.no_wait, storage_state=storage_state, seed_routes=seed_routes,
             evidence_dir=args.evidence_dir,
         )
-    except (PreflightError, ScanScopeError, ScopeViolation, ZapUnavailableError) as exc:
+    except (PreflightError, ScanScopeError, ScopeViolation, ZapUnavailableError,
+            FlowError) as exc:
         print(f"RUNNER ABORT: {exc}", file=sys.stderr)
         return 2
 
