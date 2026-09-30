@@ -135,6 +135,21 @@ def test_read_output_takes_the_rest_when_the_end_marker_is_missing():
     assert text.strip() == '{"action":"stop"}'
 
 
+def test_read_output_takes_the_last_block_when_the_agent_echoed_the_markers():
+    """An agent narrates the instruction it was given, markers and all, before answering."""
+    echo = _marked("the JSON object goes here")
+    answer = _marked('{"action":"stop"}')
+    text = llm_backend._read_copilot_output(_proc(stdout=f"I will do this:\n{echo}\n{answer}\n"))
+    assert text.strip() == '{"action":"stop"}'
+
+
+def test_read_output_ignores_a_marked_block_that_holds_no_object():
+    """Narration between the markers is not an answer; the raw reply is more use to the operator."""
+    text = llm_backend._read_copilot_output(
+        _proc(stdout=f"Blocked.\n{_marked('I could not comply')}"))
+    assert "Blocked." in text
+
+
 def test_read_output_falls_back_to_all_of_stdout_without_markers():
     text = llm_backend._read_copilot_output(_proc(stdout='{"action":"stop"}'))
     assert '"action"' in text
