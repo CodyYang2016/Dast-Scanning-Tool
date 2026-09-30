@@ -231,3 +231,21 @@ def test_a_non_utf8_byte_in_the_json_file_does_not_kill_the_call(tmp_path, monke
     out.write_bytes(b'{"ok": "caf\x9d"}')
     text = llm_backend._read_copilot_output(out, _proc(stdout=""))
     assert text.startswith('{"ok"')
+
+
+def test_snippet_shows_what_came_back_on_one_line():
+    assert llm_backend.snippet("") == "<empty>"
+    assert llm_backend.snippet("I\ncannot\ndo that") == "I cannot do that"
+    assert llm_backend.snippet("x" * 400, limit=10) == "x" * 10 + "..."
+
+
+def test_debug_dumps_the_cli_streams_only_when_asked(monkeypatch, capsys):
+    monkeypatch.setattr(llm_backend, "_copilot_cmd", lambda *_a, **_k: ["true"])
+    monkeypatch.setattr(subprocess, "run",
+                        lambda *_a, **_k: _proc(stdout="OUT", stderr="ERR"))
+    llm_backend._run_copilot("P", "m", 5.0)
+    assert "OUT" not in capsys.readouterr().err
+    monkeypatch.setenv("LLM_DEBUG", "1")
+    llm_backend._run_copilot("P", "m", 5.0)
+    err = capsys.readouterr().err
+    assert "OUT" in err and "ERR" in err

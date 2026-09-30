@@ -203,7 +203,7 @@ def parse_action_text(text: str) -> dict:
         t = fence.group(1).strip()
     start = t.find("{")
     if start == -1:
-        raise ValueError("no JSON object found in text")
+        raise ValueError(f"no JSON object found in text: {llm_backend.snippet(t)}")
     try:
         obj, _end = json.JSONDecoder().raw_decode(t[start:])
     except json.JSONDecodeError as exc:
