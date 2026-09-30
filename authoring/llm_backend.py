@@ -8,8 +8,8 @@ validate it against the frozen schemas — the LLM never emits executable code (
 The ``copilot`` path shells out to the ``copilot`` CLI (``@github/copilot``), which authenticates
 with ``COPILOT_GITHUB_TOKEN`` and routes through the GitHub Copilot API. That is the approved path
 inside Nationwide, where the direct Anthropic API is policy-blocked. The CLI is agentic and streams
-status to stdout, so the copilot path asks the model to WRITE the JSON to a temp file and reads that
-back; stdout is only a fallback.
+status to stdout, so the copilot path asks the model to fence the JSON between markers in its final
+message and cuts that block out of stdout.
 
 Pure helpers (provider/command/prompt/output parsing) are unit-tested; the live CLI call is verified
 by running it with a token.
@@ -84,6 +84,8 @@ class StrictLLM:
                 f"last: {self.failures[-1]}")
 
 
+_JSON_START = "<<<DAST_JSON"
+_JSON_END = "DAST_JSON>>>"
 _DEFAULT_ANTHROPIC_MODEL = "claude-opus-4-8"
 _DEFAULT_COPILOT_MODEL = "gpt-5.5"
 # Mirrors the non-interactive flags the Nationwide pen-test-loop uses; override via COPILOT_FLAGS.
@@ -166,13 +168,19 @@ def _complete_anthropic(system: str, user: str, model: str, *, api_key: str | No
 
 # ---- Copilot CLI (Nationwide-approved path) ----------------------------------------------
 
-def _copilot_prompt(system: str, user: str, out_ref: str) -> str:
-    """Build the single-shot prompt. The model must write ONLY the JSON to `out_ref`."""
+def _copilot_prompt(system: str, user: str) -> str:
+    """Build the single-shot prompt: the JSON comes back between markers in the final message.
+
+    Asking the agent to write the JSON to a file puts the answer behind the CLI's tool-permission
+    gate, which denies writes in a non-interactive session it cannot ask the operator about -- so
+    the reply is lost to "Permission denied" even though the model produced it. Markers keep the
+    answer on stdout, which no gate guards, and survive the CLI's own status chatter around it.
+    """
     return (
         f"{system}\n\n{user}\n\n"
-        f"Write ONLY the resulting JSON object to the file {out_ref} using your file-write tool. "
-        "Do not print the JSON to the console, do not add prose or code fences, and create no "
-        "other file."
+        f"Reply with ONLY the resulting JSON object, on its own lines between the markers "
+        f"{_JSON_START} and {_JSON_END}, as the final message of this session. Use no tools, "
+        "write no files, and add no prose or code fences between the markers."
     )
 
 
@@ -207,29 +215,48 @@ def _run_copilot(prompt: str, model: str, timeout: float,
     return proc
 
 
-def _read_copilot_output(out_path: Path, proc: subprocess.CompletedProcess) -> str:
-    """Prefer the JSON file the model wrote; fall back to stdout. Raise if there is nothing."""
-    text = ""
-    try:
-        text = out_path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        text = proc.stdout or ""
-    if not text.strip():
-        text = proc.stdout or ""
-    if not text.strip():
+def _marked_blocks(text: str) -> list[str]:
+    """Every ``_JSON_START``..``_JSON_END`` block, in order; an unterminated one runs to the end."""
+    blocks, rest = [], text
+    while True:
+        start = rest.find(_JSON_START)
+        if start == -1:
+            return blocks
+        rest = rest[start + len(_JSON_START):]
+        end = rest.find(_JSON_END)
+        if end == -1:
+            blocks.append(rest)
+            return blocks
+        blocks.append(rest[:end])
+        rest = rest[end + len(_JSON_END):]
+
+
+def _read_copilot_output(proc: subprocess.CompletedProcess) -> str:
+    """The last marked block of stdout that looks like an object, else all of stdout.
+
+    An agent transcript can carry the markers more than once — it narrates the instruction it was
+    given before it answers — so the answer is the *last* block, and a block that holds no ``{`` is
+    narration rather than an answer. Anything else is handed over whole: the callers' parsers pull
+    the first JSON object out of raw text and quote what came back when there is none, so a reply
+    that lost its markers still works and a refusal still reaches the operator verbatim.
+    """
+    out = proc.stdout or ""
+    for block in reversed(_marked_blocks(out)):
+        if "{" in block:
+            return block
+    if not out.strip():
         raise RuntimeError(
             f"copilot CLI produced no JSON (exit {proc.returncode}): "
             f"{(proc.stderr or '').strip()[:400]}")
-    return text
+    return out
 
 
 def _complete_copilot(system: str, user: str, model: str, *, timeout: float) -> str:
     # Under the working directory: the CLI only trusts paths inside the directory it was started
-    # in, so a system temp dir would put both files out of the agent's reach.
+    # in, so a system temp dir would put the prompt file out of the agent's reach.
     with tempfile.TemporaryDirectory(dir=Path.cwd(), prefix=".dast-copilot-") as td:
-        out_path = Path(td) / "llm_output.json"
-        prompt = _copilot_prompt(system, user, out_path.as_posix())
+        prompt = _copilot_prompt(system, user)
         prompt_path = Path(td) / "llm_prompt.txt"
         prompt_path.write_text(prompt, encoding="utf-8")
         proc = _run_copilot(prompt, model, timeout, prompt_path)
-        return _read_copilot_output(out_path, proc)
+        return _read_copilot_output(proc)
