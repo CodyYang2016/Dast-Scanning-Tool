@@ -321,6 +321,10 @@ one rather than failing on the first bad answer:
 | the walk finishes and the model drove no step | abort |
 | policy refused the proposed action | falls back — the safety layer working, not a broken provider |
 
+When a reply cannot be parsed, the error carries an excerpt of what the model actually said, which
+is usually enough to tell a refusal from a rate-limit notice or a truncated answer. For the full
+picture set `LLM_DEBUG=1`, which prints the CLI's exit code, stdout and stderr for every call.
+
 `--require-llm` with `--no-llm` is rejected at argument-parse time, before a session is seeded.
 `dast author --explore` prints `steps_by_source` (`{"llm": n, "fallback": n}`), which is how you
 see how much of the walk the model actually drove without reading stderr.

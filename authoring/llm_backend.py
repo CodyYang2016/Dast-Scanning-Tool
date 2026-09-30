@@ -20,11 +20,24 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 ANTHROPIC = "anthropic"
 COPILOT = "copilot"
+
+
+def snippet(text: str, limit: int = 300) -> str:
+    """A one-line excerpt of model output, for error messages that must say what came back.
+
+    An unparseable reply is only actionable if the operator can see it: "no JSON object found"
+    alone cannot distinguish a refusal, a rate-limit notice and a truncated answer.
+    """
+    flat = " ".join((text or "").split())
+    if not flat:
+        return "<empty>"
+    return flat[:limit] + ("..." if len(flat) > limit else "")
 
 
 class LLMRequiredError(RuntimeError):
@@ -186,8 +199,12 @@ def _run_copilot(prompt: str, model: str, timeout: float,
     # The CLI writes UTF-8 (box-drawing characters, arrows, curly quotes in its own chatter).
     # text=True alone would decode it with the locale codec — cp1252 on a Windows console, which
     # raises UnicodeDecodeError inside subprocess's reader thread and loses the whole reply.
-    return subprocess.run(_copilot_cmd(prompt, model, prompt_file), capture_output=True,
+    proc = subprocess.run(_copilot_cmd(prompt, model, prompt_file), capture_output=True,
                           text=True, encoding="utf-8", errors="replace", timeout=timeout)
+    if os.environ.get("LLM_DEBUG"):
+        print(f"llm: copilot exit={proc.returncode}\nllm: stdout={proc.stdout}\n"
+              f"llm: stderr={proc.stderr}", file=sys.stderr)
+    return proc
 
 
 def _read_copilot_output(out_path: Path, proc: subprocess.CompletedProcess) -> str:
