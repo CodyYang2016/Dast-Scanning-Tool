@@ -50,10 +50,24 @@ def leading_selectors(steps: list[dict]) -> list[str]:
     return out
 
 
+def _absent_errors() -> tuple[type[BaseException], ...]:
+    """The timeout types that mean "the selector is not on the page".
+
+    Playwright is imported lazily, as in replay(), so the pure helpers stay usable without it.
+    Any other Playwright error -- an invalid selector, a closed page -- is a different fault and
+    propagates rather than being reported as a login form that failed to render.
+    """
+    try:
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+    except ImportError:
+        return (TimeoutError,)
+    return (PlaywrightTimeoutError, TimeoutError)
+
+
 def _selector_present(page, selector: str, timeout_ms: int) -> bool:
     try:
         page.wait_for_selector(selector, state="attached", timeout=timeout_ms)
-    except Exception:
+    except _absent_errors():
         return False
     return True
 

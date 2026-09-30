@@ -221,3 +221,14 @@ def test_leading_selectors_ignores_fields_reached_after_a_navigation():
 
 def test_leading_selectors_of_a_click_only_flow_is_empty():
     assert leading_selectors([{"action": "click", "selector": "#sso"}]) == []
+
+
+def test_preflight_lets_a_non_timeout_page_fault_propagate():
+    # An invalid selector in app.yaml is a config fault, not a login form that failed to render;
+    # reporting it as the latter would send the operator looking at the wrong thing.
+    class BadSelectorPage(FakeLoginPage):
+        def wait_for_selector(self, selector, state=None, timeout=None):
+            raise ValueError(f"Unexpected token while parsing selector: {selector}")
+
+    with pytest.raises(ValueError):
+        preflight_login_page(BadSelectorPage(set()), LOGIN, 200, STEPS, timeout_ms=1)
