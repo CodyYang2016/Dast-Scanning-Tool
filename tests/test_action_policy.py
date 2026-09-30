@@ -115,3 +115,32 @@ def test_deny_terms_prefers_an_explicit_deny_list_over_the_scope():
 
     terms = deny_terms({"avoid_action_list": ["captcha"]}, deny_actions=["upload"])
     assert "upload" in terms and "captcha" not in terms
+
+
+# ---- downloads are not pages ------------------------------------------------------------
+# A crawl picks up documentation and export links like any other href, but Chromium aborts a
+# navigation to one with "Download is starting". Observed on DVWA: the deterministic proposer
+# followed /docs/DVWA_v1.3.pdf, which put that step in the journey and made the generated flow
+# unreplayable -- the scan died on it. Judged here so it never reaches a trace.
+
+def test_download_link_is_not_a_navigable_target():
+    d = validate_action(_a("follow_link", "/docs/DVWA_v1.3.pdf"), SCOPE)
+    assert not d.allowed and "download" in d.reason
+
+
+def test_download_detection_ignores_the_query_string():
+    assert not validate_action(_a("follow_link", "/export/report.csv?range=30d"), SCOPE).allowed
+
+
+def test_download_detection_is_case_insensitive():
+    assert not validate_action(_a("goto", "/files/Handbook.PDF"), SCOPE).allowed
+
+
+def test_a_page_whose_query_merely_names_a_document_is_still_a_page():
+    """The extension has to be the path's: /vulnerabilities/fi/?page=include.php is a page."""
+    assert validate_action(_a("follow_link", "/download?file=report.pdf"), SCOPE).allowed
+
+
+def test_an_api_get_of_a_download_is_allowed():
+    """api_get is fetched beside the page (page.request.get), so no navigation can abort."""
+    assert validate_action(_a("visit_api", "/rest/export.csv", method="GET"), SCOPE).allowed
