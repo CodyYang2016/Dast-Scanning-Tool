@@ -183,15 +183,18 @@ def _copilot_cmd(prompt: str, model: str, prompt_file: Path | None = None) -> li
 
 def _run_copilot(prompt: str, model: str, timeout: float,
                  prompt_file: Path | None = None) -> subprocess.CompletedProcess:
+    # The CLI writes UTF-8 (box-drawing characters, arrows, curly quotes in its own chatter).
+    # text=True alone would decode it with the locale codec — cp1252 on a Windows console, which
+    # raises UnicodeDecodeError inside subprocess's reader thread and loses the whole reply.
     return subprocess.run(_copilot_cmd(prompt, model, prompt_file), capture_output=True,
-                          text=True, timeout=timeout)
+                          text=True, encoding="utf-8", errors="replace", timeout=timeout)
 
 
 def _read_copilot_output(out_path: Path, proc: subprocess.CompletedProcess) -> str:
     """Prefer the JSON file the model wrote; fall back to stdout. Raise if there is nothing."""
     text = ""
     try:
-        text = out_path.read_text(encoding="utf-8")
+        text = out_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         text = proc.stdout or ""
     if not text.strip():
