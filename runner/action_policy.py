@@ -11,6 +11,8 @@ never by the model's own "non-destructive" label. Three independent rules, all f
   3. Embedded off-scope URLs: an in-scope *path* whose query embeds an absolute URL to a host
      outside the allow-list (open-redirect style, e.g. `/redirect?to=https://github.com/...`) is
      rejected — following it would carry the browser off-scope on the app's 302.
+  4. Downloads: a page navigation to a file the browser saves instead of rendering is rejected.
+     Not a posture rule but a correctness one — see `is_download`.
 
 Scope (host allow-list) is still enforced independently at the request boundary by ScopeGuard
 (D2/D6) — this module is the *action* layer, kept separate so both must pass. See
@@ -21,7 +23,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
 from runner.scope_guard import host_of
 
@@ -31,6 +33,27 @@ STATE_CHANGING = {"POST", "PUT", "PATCH", "DELETE"}
 
 # Navigation actions are read-only by nature; visit_api/submit_form carry an explicit method.
 _GET_ACTIONS = {"follow_link", "goto", "expand_nav"}
+
+# Actions that drive the page itself, rather than issuing a request beside it.
+_NAVIGATES = {"follow_link", "goto"}
+
+# Suffixes whose response a browser saves rather than renders. Chromium aborts a navigation to
+# one with "Download is starting", which is an exception, not a page -- so a documentation link
+# picked up from a crawl takes the whole journey down with it when the flow is replayed.
+_DOWNLOAD_SUFFIXES = (
+    ".pdf", ".zip", ".tar", ".tgz", ".gz", ".bz2", ".xz", ".7z", ".rar",
+    ".exe", ".msi", ".dmg", ".pkg", ".deb", ".rpm", ".iso", ".jar", ".war",
+    ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".rtf", ".odt", ".ods",
+    ".csv", ".mp3", ".mp4", ".avi", ".mov", ".wav",
+)
+
+
+def is_download(target: str) -> bool:
+    """True when a target names a file the browser downloads instead of rendering as a page.
+
+    Judged on the path only, so a query string or fragment does not hide the extension.
+    """
+    return urlsplit(target or "").path.lower().endswith(_DOWNLOAD_SUFFIXES)
 
 
 @dataclass
@@ -129,6 +152,12 @@ def validate_action(action: dict, scope: dict, deny_actions=None, safe_forms=Non
             return ActionDecision(False, f"state-changing {verb} not on the safe-form allow-list")
     if action.get("action") == "submit_form" and verb == "GET" and not submit_get_forms:
         return ActionDecision(False, "GET form submission is disabled for this application")
+
+    # A download is a dead end that also aborts the navigation: skip it here so it never enters
+    # a trace, rather than discovering at replay time that the journey cannot be executed. The
+    # bytes are still reachable to the scanner's own spider, which does not drive a browser.
+    if action.get("action") in _NAVIGATES and is_download(target):
+        return ActionDecision(False, "target is a file download, not a page")
 
     # Absolute targets must be in-scope by host; relative paths inherit the (in-scope) base host.
     allow = {h.strip().lower() for h in scope.get("fqdn_allow_list", [])}

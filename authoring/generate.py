@@ -22,6 +22,7 @@ from pathlib import Path
 import jsonschema
 
 from authoring import appconfig, llm_backend
+from runner.action_policy import is_download
 from runner.scope_guard import host_of
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -64,7 +65,8 @@ def journey_from_trace(trace: dict, config: dict) -> dict:
     journey: list[dict] = []
     for route in trace.get("index", []):
         path = _relpath(route, base)
-        if path and "/login" not in path and path not in ("/#/", "/"):
+        if (path and "/login" not in path and path not in ("/#/", "/")
+                and not is_download(path)):
             journey.append({"action": "goto", "target": path})
     for a in trace.get("api", []):
         if a.get("method", "GET").upper() == "GET":
