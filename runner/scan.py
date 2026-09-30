@@ -173,11 +173,37 @@ def exclusion_regexes(avoid_actions, login_url: str | None) -> list[str]:
         if term:
             out.append(f"(?i).*{re.escape(term)}.*")
     if login_url:
-        path = urllib.parse.urlsplit(str(login_url)).path or str(login_url)
-        rx = f"(?i).*{re.escape(path)}.*"
-        if rx not in out:
-            out.append(rx)
+        # Only the PATH reaches the server. A hash-routed login (/#/login, as in any Angular or
+        # hash-mode SPA) is a fragment: the browser requests "/", so there is no server-side
+        # login page to exclude. Measured: treating "/" as the login path produced (?i).*/.*,
+        # which excluded every URL and turned a Juice Shop scan into a scan of nothing.
+        path = urllib.parse.urlsplit(str(login_url)).path
+        if path.strip("/"):
+            rx = f"(?i).*{re.escape(path)}.*"
+            if rx not in out:
+                out.append(rx)
     return out
+
+
+def refuse_exclusions_covering(target: str, regexes) -> None:
+    """Refuse to scan if any exclusion would cover the whole application.
+
+    An exclusion that matches the target's root is never what anyone meant — a hash-routed login
+    path, an avoid term that happens to name the host — and its effect is silent: ZAP skips
+    everything, the scan passes, and the empty result reads as a clean one. Failing here turns
+    that into an error message before any traffic, which is the only honest outcome.
+    """
+    roots = {target.rstrip("/"), target.rstrip("/") + "/"}
+    for rx in regexes or []:
+        try:
+            if any(re.match(rx, root) for root in roots):
+                raise ScanScopeError(
+                    f"refusing to scan {target!r}: exclusion {rx!r} matches the application's "
+                    f"root, which would exclude the whole application from the spider and the "
+                    f"active scan and report the resulting silence as a clean scan. Check "
+                    f"scope.avoid_actions and auth.login_url.")
+        except re.error:
+            continue
 
 
 def apply_exclusions(zap_api: str, regexes) -> None:
@@ -220,6 +246,9 @@ def scan(zap_api: str, target: str, allow_hosts, do_spider: bool = True,
         raise ScanScopeError(
             f"refusing to scan {target!r}: host {host!r} not in allow-list {sorted(allow)} (NFR-2)."
         )
+    # Before ZAP is touched: an exclusion that covers everything must stop the run, not
+    # produce an empty one.
+    refuse_exclusions_covering(target, exclusions)
     configure_policy(zap_api, max_scan_min=max_scan_min, max_rule_min=max_rule_min,
                      policy=policy)
     apply_exclusions(zap_api, exclusions)

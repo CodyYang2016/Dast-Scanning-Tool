@@ -270,3 +270,55 @@ def test_no_policy_keeps_the_historical_default(monkeypatch):
                         lambda z, p, params=None: sent.update({p: params}) or {})
     scan_mod.configure_policy("http://zap")
     assert sent["/JSON/ascan/action/setOptionMaxRuleDurationInMins/"] == {"Integer": 1}
+
+
+# ---- an exclusion must never cover the whole application ---------------------------------
+#
+# Measured: Juice Shop's login is a hash route, /#/login. urlsplit puts "#/login" in the
+# FRAGMENT, so the path came out as "/" and the login exclusion became (?i).*/.* — every URL.
+# ZAP skipped the entire app in spider and active scan, the run raised 60 passive findings
+# instead of ~1,400, and coverage correctly reported 0 routes. Uploaded, it would have closed
+# ~1,400 alerts as "fixed" on the strength of a scan that tested nothing.
+
+@pytest.mark.parametrize("login_url", ["/#/login", "http://juice:3000/#/login", "/", "#/login"])
+def test_a_hash_routed_login_adds_no_exclusion(login_url):
+    # Nothing after '#' reaches the server — the browser requests '/' — so there is no
+    # server-side login page to exclude.
+    assert scan_mod.exclusion_regexes([], login_url) == []
+
+
+def test_a_real_login_path_is_still_excluded():
+    assert scan_mod.exclusion_regexes([], "/login.php") == [r"(?i).*/login\.php.*"]
+
+
+def test_the_juice_shop_config_no_longer_excludes_everything():
+    import re
+    from authoring import appconfig
+    cfg = appconfig.load_app_config("juice-shop")
+    rx = scan_mod.exclusion_regexes(appconfig.avoid_actions(cfg), appconfig.login_url(cfg))
+    assert not any(re.match(p, "http://juice:3000/rest/products/search?q=a") for p in rx)
+
+
+def test_an_exclusion_covering_the_target_root_refuses_the_scan():
+    with pytest.raises(ScanScopeError, match="whole application"):
+        scan_mod.refuse_exclusions_covering("http://juice:3000", [r"(?i).*/.*"])
+
+
+def test_an_avoid_term_that_names_the_host_refuses_the_scan():
+    # `avoid_actions: [juice]` would match every URL on http://juice:3000 the same way.
+    rx = scan_mod.exclusion_regexes(["juice"], None)
+    with pytest.raises(ScanScopeError):
+        scan_mod.refuse_exclusions_covering("http://juice:3000", rx)
+
+
+def test_ordinary_exclusions_pass_the_guard():
+    rx = scan_mod.exclusion_regexes(["logout", "setup"], "/login.php")
+    scan_mod.refuse_exclusions_covering("http://dvwa", rx)          # does not raise
+
+
+def test_the_guard_runs_before_zap_is_touched(monkeypatch):
+    calls = []
+    monkeypatch.setattr(scan_mod, "_api", lambda z, p, params=None: calls.append(p) or {})
+    with pytest.raises(ScanScopeError):
+        scan("http://zap", "http://juice:3000", ["juice"], exclusions=[r"(?i).*/.*"])
+    assert calls == [], "a refused scan must not reach ZAP at all"
