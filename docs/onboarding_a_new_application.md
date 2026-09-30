@@ -325,6 +325,12 @@ When a reply cannot be parsed, the error carries an excerpt of what the model ac
 is usually enough to tell a refusal from a rate-limit notice or a truncated answer. For the full
 picture set `LLM_DEBUG=1`, which prints the CLI's exit code, stdout and stderr for every call.
 
+The Copilot CLI returns its answer on stdout, between `<<<DAST_JSON` markers the prompt asks for.
+It is deliberately not asked to write the JSON to a file: a file write goes through the CLI's
+tool-permission gate, which in a non-interactive session denies it and cannot ask anyone for
+approval, so replies come back as `Blocked: the environment denied every write attempt …` and the
+model's actual answer is lost.
+
 `--require-llm` with `--no-llm` is rejected at argument-parse time, before a session is seeded.
 `dast author --explore` prints `steps_by_source` (`{"llm": n, "fallback": n}`), which is how you
 see how much of the walk the model actually drove without reading stderr.
