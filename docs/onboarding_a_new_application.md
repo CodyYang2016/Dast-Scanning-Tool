@@ -235,6 +235,36 @@ repository with no category share one analysis, and the newer upload **replaces*
 one's alerts. The default of `dast/<app_id>` keeps them apart without any configuration; only
 override it if your organisation already has a naming convention.
 
+**Moving an app that already has alerts.** Changing the category — including going from the old
+no-category uploads to `dast/<app_id>` — starts a new analysis. The old alerts are not migrated;
+they stop receiving updates and sit open alongside the new ones. To keep updating existing alerts
+in place, keep the old category (for pre-category uploads, pass none). Also: GitHub closes as
+**fixed** any alert missing from the newest upload in the same slot, so upload the *labelled*
+output of `dast report`, never raw records — the lifecycle diff carries findings this scan did not
+reach forward as `not_scanned` precisely so they are not falsely closed.
+
+### What a developer sees on an alert
+
+Each alert now says where, what proved it, how sure the scanner is, and how to fix it:
+
+```
+SQL Injection                                                  High
+/rest/user/login
+SQL Injection in parameter `email` — ZAP sent `'` and the server answered
+`HTTP/1.1 500 Internal Server Error`. Confidence: Low.
+
+▾ Rule help
+  SQL injection may be possible.
+  How to fix — Do not trust client side input … use PreparedStatement …
+  References — OWASP SQL Injection Prevention Cheat Sheet
+```
+
+The **confidence** is worth reading first: a Low-confidence finding based on a bare 500 is a lead
+to confirm by hand, not a confirmed injection. The evidence and payload are redacted (tokens,
+bearer values, secret-named fields, emails) and capped at 500 characters before they are stored
+or published; the redactor cannot recognise an opaque session id with no telling key name, so do
+not treat excerpts as guaranteed clean. Not yet included: the full request/response pair (W1-3).
+
 ---
 
 ## 4a. Which path authored the plan?
@@ -318,8 +348,21 @@ scope:
 ```
 
 These terms are matched as substrings anywhere in the URL, case-insensitively, and are excluded
-from **both** the spider and the active scan. The login page is excluded automatically whether or
-not you name it — attacking the form that holds the session is how a scan loses its session.
+from **both** the spider and the active scan. A login page with a real path (`/login.php`,
+`/WebGoat/login`) is excluded automatically whether or not you name it — attacking the form that
+holds the session is how a scan loses its session.
+
+A **hash-routed** login (`/#/login`, as in Juice Shop or any hash-mode SPA) is not excluded,
+because nothing after `#` reaches the server — the browser requests `/`. An earlier version did
+exclude it, derived the pattern `/`, and excluded the entire application: the scan passed its gate
+with 60 passive findings instead of ~1,400 and coverage showed 0 routes. So there is now a guard:
+**if any exclusion would match your application's root, the scan refuses to start** and names the
+offending pattern. If you see that error, the culprit is an `avoid_actions` term that is too short
+or names your host, or an `auth.login_url` whose path is `/`. If your SPA's real login endpoint is
+an API call (Juice Shop's is `POST /rest/user/login`), list it in `avoid_actions` yourself — but
+only if attacking it can end the session; a JWT session usually survives it, a cookie session
+usually does not. Exclusion has a price: Juice Shop's High SQL injection is *on*
+`/rest/user/login`, so excluding that endpoint would have hidden it.
 
 List anything that resets, seeds, migrates, exports, logs out, deletes, or sends mail. On an
 internal application, one of these submitted a few hundred times is not a lost finding; it is an

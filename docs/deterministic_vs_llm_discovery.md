@@ -330,6 +330,7 @@ visible in a passing test suite, and several were invisible *because* the suite 
 | **The scan attacked the app's own controls** | ~325 database resets and ~1,000 login POSTs in one scan; half of all responses redirected to login | `avoid_actions` was enforced during exploration only; ZAP was never told, and a passing suite cannot see what a scanner does to a live app |
 | **Only the last seed route was ever observed** | Two hand-picked findings unreachable from any autonomously authored bundle | Seed routes were walked *before* the loop; `untried_form()` judges only the current page. Every test was of a pure function, and the defect lived entirely in the loop's ordering |
 | **A form policy refuses stayed pending forever** | Exploration reached 6 pages instead of 28, returning to one page 23 times | Found only by reading the trace's own form records after a live run — the fix for one defect created it, and the suite was green throughout |
+| **The fix for the scanner attacking its own controls excluded all of Juice Shop** | A scan passed its gate with 60 passive findings instead of ~1,400; coverage showed 0 routes | A hash-routed login (`/#/login`) has path `/`, so the derived exclusion matched every URL. Tests used `/login.php`; live checks ran on DVWA. Caught before upload by coverage's `0 routes` — the measurement work catching a defect in its own fix |
 
 The last one is the one to carry into any real environment. An autonomous loop submitted a
 password-change form and destroyed the credential the scan depended on, and the rule written

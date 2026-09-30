@@ -31,7 +31,7 @@ Scanner: **OWASP ZAP** 2.17.0. Browser automation: **Playwright + Chromium**. LL
 **Status:** built, tested (518 tests) and verified end-to-end on real data. The headline result:
 against DVWA, autonomous discovery with **zero hand-picked routes** finds **7 high-severity
 findings including all 5** a human's hand-written route list produced, and two consecutive scans
-return the same set. Getting there meant fixing four defects that a green test suite could not
+return the same set. Getting there meant fixing five defects that a green test suite could not
 see — they are worth reading before trusting any scanner's silence, and they are in §12.
 
 ---
@@ -88,7 +88,7 @@ flowchart LR
         norm["normalizer + fingerprint"]:::build
         cov[("coverage.json<br/>routes · params · rules<br/>rule outcomes · app state")]:::data
         recs[("detection records")]:::data
-        sarif["SARIF export<br/>+ automation category"]:::build
+        sarif["SARIF export<br/>+ fix · evidence · confidence<br/>+ automation category"]:::build
         diff["lifecycle diff<br/>new / open / resolved / not_scanned"]:::build
         expl2["explain · reachability<br/>why a finding went, what was never sent"]:::build
     end
@@ -153,9 +153,9 @@ flowchart LR
 
 | Module | FRs | Role |
 |--------|-----|------|
-| `normalizer.py` | N1 | Raw ZAP alert → contract-shaped detection record (streaming) |
+| `normalizer.py` | N1, W1-1 | Raw ZAP alert → contract-shaped detection record (streaming). Carries ZAP's remediation content — description, solution, references, confidence — and the evidence and payload, **redacted at normalisation** and capped at 500 characters, so no later stage ever holds the raw value. None of it feeds the fingerprint |
 | `fingerprint.py` | N2 | Stable `sha256(rule_id \| endpoint_pattern \| parameter \| payload_family)` |
-| `sarif_export.py` | X1 | Records → SARIF 2.1.0 (severity→level, `security-severity`, CWE tags, fingerprint in `partialFingerprints`) |
+| `sarif_export.py` | X1, W1-2 | Records → SARIF 2.1.0 (severity→level, `security-severity`, CWE tags, fingerprint in `partialFingerprints`). Each rule carries `fullDescription`, `help` (how to fix + references) and `helpUri`; each finding's **message** names the parameter, payload, evidence and confidence — because GitHub renders the message and the rule help and does not render `properties`. Target-controlled evidence is fenced so it cannot inject markdown into the alert. `automationDetails.id` keeps one app's analysis from overwriting another's |
 | `github_upload.py` | X2 | gzip+base64 the SARIF, POST to the code-scanning API |
 | `lifecycle_diff.py` | L1/L2 | Compare two scans' fingerprint sets → label new/open/resolved; **coverage-aware** (R2): a previous-only finding is `resolved` only if its route, **its own parameter**, and its rule were exercised this scan — else `not_scanned`. Persist state (+ coverage) |
 | `explain.py` | — (W6-9) | Why a finding disappeared, most specific cause first: `route_excluded` · `route_not_covered` · `parameter_not_exercised` · `rule_not_enabled` · `rule_truncated` · `app_state_changed` · `scan_changed_the_app` · `rule_found_nothing` · `fixed`. Only the last claims a fix, and it carries its evidence |
@@ -493,9 +493,9 @@ R1/R2).
 
 ---
 
-## 12. Four defects a green test suite could not see
+## 12. Five defects a green test suite could not see
 
-Every one of these was found by running the pipeline against a real application while 400+
+Every one of these was found by running the pipeline against a real application while 400–560
 tests passed. They are the most transferable thing in this repository, because each one made the
 scanner **report silence as safety**.
 
@@ -505,12 +505,18 @@ scanner **report silence as safety**.
 | **The state oracle could not see state** (W6-8) | Two scans differing by five highs produced *identical* app-state fingerprints | Probes were fetched with no session, so every one digested the login page — `sha256("")`, forever equal. A constant oracle always agrees |
 | **The scan attacked the app's own controls** (W6-11) | ~325 submissions of DVWA's database-reset form and ~1,000 login POSTs in one run; half of all responses redirected to login | `avoid_actions` was enforced during *exploration* only and ZAP was never told. No unit test observes what a scanner does to a live application |
 | **Only the last seed route was explored** (W6-12) | Two high-severity findings unreachable from any autonomously authored bundle | Seed routes were walked *before* the loop, and `untried_form()` only judges the current page. Every test was of a pure function; the defect lived in the loop's ordering |
+| **The fix for the fourth excluded a whole application** (W6-13) | A Juice Shop scan passed its gate with 60 passive findings instead of ~1,400, and coverage showed **0 routes** | The login exclusion was derived from the URL path, and a hash-routed login (`/#/login`) has path `/` — so the pattern matched every URL. Tests used `/login.php` only; live checks ran on DVWA only. Caught because coverage reported 0 routes, and now guarded: any exclusion matching the target's root refuses the scan |
 
-The pattern: **all four were invisible because "no finding" and "never looked" produced the same
+The pattern: **all five were invisible because "no finding" and "never looked" produced the same
 output.** The work that followed was less about detection and more about making the tool able to
 tell those apart from its own artifacts — which is what `coverage.json`, `explain`, the
 reachability line and `settings.json` exist for. Before arguing about detection rates with any
 scanner, that distinction is what makes the numbers mean anything.
+
+The fifth is the one that shows it working. It was introduced *by the fix for the fourth*, passed
+every test, passed the scan gate, and would have closed ~1,400 GitHub alerts as fixed — and it was
+caught before upload, in one line of `coverage.json`: `0 routes`. A scanner that cannot say what it
+did not test would have reported that run as a quiet week.
 
 Fixing them took DVWA from *5 → 0 → 8 → 2 → 1* highs across runs to a stable **7**, containing
 all five findings a human's hand-written route list produced. Full narrative, with the measured
