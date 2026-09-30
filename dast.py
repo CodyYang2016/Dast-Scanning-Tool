@@ -273,6 +273,10 @@ def cmd_author(args) -> int:
     from authoring import record as record_mod
     from authoring import validate as validate_mod
 
+    if args.require_llm and args.no_llm:  # before seeding a session or sending any traffic
+        print("--require-llm contradicts --no-llm", file=sys.stderr)
+        return 2
+
     global OUT
     OUT = paths_for(args)
     config = appconfig.load_app_config(args.app)

@@ -210,3 +210,24 @@ def test_generate_plan_from_llm_via_copilot(monkeypatch):
                                   "hosts": ["juice"], "index": [], "api": []}, "gpt-5.5")
     assert out["journey"][0]["target"] == "/#/basket"
 
+
+
+def test_copilot_output_is_decoded_as_utf8_not_the_locale_codec(monkeypatch):
+    """The CLI prints UTF-8; a cp1252 locale would raise inside subprocess's reader thread."""
+    monkeypatch.setattr(llm_backend, "_copilot_cmd", lambda *_a, **_k: ["true"])
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen.update(kwargs)
+        return _proc(stdout="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    llm_backend._run_copilot("P", "m", 5.0)
+    assert seen["encoding"] == "utf-8" and seen["errors"] == "replace"
+
+
+def test_a_non_utf8_byte_in_the_json_file_does_not_kill_the_call(tmp_path, monkeypatch):
+    out = tmp_path / "llm_output.json"
+    out.write_bytes(b'{"ok": "caf\x9d"}')
+    text = llm_backend._read_copilot_output(out, _proc(stdout=""))
+    assert text.startswith('{"ok"')
