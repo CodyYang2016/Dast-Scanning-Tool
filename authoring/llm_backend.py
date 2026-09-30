@@ -26,6 +26,16 @@ from pathlib import Path
 ANTHROPIC = "anthropic"
 COPILOT = "copilot"
 
+
+class LLMRequiredError(RuntimeError):
+    """The LLM path was demanded (--require-llm) and could not be taken.
+
+    Without it a wrong model id, an expired token or a missing CLI all surface as
+    ``plan_source: fallback`` — indistinguishable from a deliberate ``--no-llm`` run, so a broken
+    LLM configuration can run unnoticed. Callers that must not silently degrade raise this.
+    """
+
+
 _DEFAULT_ANTHROPIC_MODEL = "claude-opus-4-8"
 _DEFAULT_COPILOT_MODEL = "gpt-5.5"
 # Mirrors the non-interactive flags the Nationwide pen-test-loop uses; override via COPILOT_FLAGS.
