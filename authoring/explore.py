@@ -133,9 +133,31 @@ def dispatch(action: dict) -> tuple[str, str] | None:
     target = action.get("target") or {}
     if kind in ("follow_link", "visit_api"):
         return ("goto", target["path"]) if target.get("path") else None
-    if kind in ("expand_nav", "submit_form"):
+    if kind == "submit_form":
+        return ("submit", target["selector"]) if target.get("selector") else None
+    if kind == "expand_nav":
         return ("click", target["selector"]) if target.get("selector") else None
     return None
+
+
+def field_selector(form_selector: str, field: str) -> str:
+    """A named field inside a form, as a Playwright chained selector. Pure.
+
+    Chained (`>>`) rather than a CSS descendant because a positional form selector
+    (`form >> nth=2`) is not CSS and cannot be concatenated into one.
+    """
+    return f'{form_selector} >> [name="{field}"]'
+
+
+def form_fill_plan(form: dict, test_data: dict) -> list[tuple[str, str]]:
+    """The (field, approved value) pairs to type into a form, in declaration order. Pure.
+
+    Only fields the operator supplied data for in `explore.test_data`. A field with no approved
+    value is left empty rather than guessed at: the values that reach a write path are the
+    operator's decision, not the planner's, so a form nobody has supplied data for yields an
+    empty plan and is not submitted.
+    """
+    return [(name, test_data[name]) for name in form.get("fields", []) if name in test_data]
 
 
 # ---- deterministic fallback proposer (pure) ---------------------------------------------
@@ -148,9 +170,14 @@ def _in_scope_path(path: str, scope: dict) -> bool:
 
 
 def propose_fallback(observation: dict, visited, scope: dict, deny_actions=None,
-                     safe_forms=None) -> dict:
+                     safe_forms=None, test_data=None) -> dict:
     """Pick the next action deterministically: the first unvisited, in-scope, non-destructive link,
-    then an unvisited observed API GET; else stop. No LLM. Used as the D9 fallback and in tests."""
+    then an unvisited observed API GET, then an allow-listed form we hold test data for; else stop.
+    No LLM. Used as the D9 fallback and in tests.
+
+    Forms come last because a submit is the only step with a side effect: everything readable is
+    read first, so a write happens only when it is the sole way to widen coverage.
+    """
     visited = set(visited)
     for href in observation.get("links", []):
         if href and href not in visited and _in_scope_path(href, scope):
@@ -166,6 +193,19 @@ def propose_fallback(observation: dict, visited, scope: dict, deny_actions=None,
                          "reason": "unvisited observed API GET", "confidence": 1.0}
             if validate_proposal(candidate, scope, deny_actions, safe_forms)[0]:
                 return candidate
+    for form in observation.get("forms", []):
+        path, selector = form.get("path"), form.get("selector")
+        if not path or not selector or path in visited:
+            continue
+        if not form_fill_plan(form, dict(test_data or {})):
+            continue
+        candidate = {"action": "submit_form",
+                     "target": {"method": form.get("method", "POST"), "path": path,
+                                "selector": selector,
+                                "field_bindings": [f for f in form.get("fields", [])]},
+                     "reason": "allow-listed form with approved test data", "confidence": 1.0}
+        if validate_proposal(candidate, scope, deny_actions, safe_forms)[0]:
+            return candidate
     return {"action": "stop", "reason": "no unvisited in-scope non-destructive targets"}
 
 
@@ -185,6 +225,9 @@ def propose_llm(observation: dict, model: str, api_key: str | None = None) -> di
         "NOT in `visited`. Use expand_nav / submit_form (with a CSS `selector`) only when no "
         "unvisited link or API path remains. Emit {\"action\":\"stop\"} when nothing useful "
         "remains.\n"
+        "A form may be submitted only if its `fillable` is true and its `path` is on the "
+        "operator's allow-list; propose it with BOTH that `path` and its `selector`, and never "
+        "invent field values -- approved test data is filled in for you.\n"
         "The observation's `forbidden` lists path fragments the operator's policy refuses, and "
         "`rejected` lists targets already refused on this run: proposing either wastes the step, "
         "so never propose a path containing a `forbidden` fragment or appearing in `rejected`."
@@ -220,8 +263,8 @@ def target_key(action: dict) -> str | None:
 
 
 def next_action(observation: dict, visited, scope: dict, *, deny_actions=None, safe_forms=None,
-                use_llm: bool = True, model: str | None = None, api_key: str | None = None,
-                strict: llm_backend.StrictLLM | None = None,
+                test_data=None, use_llm: bool = True, model: str | None = None,
+                api_key: str | None = None, strict: llm_backend.StrictLLM | None = None,
                 rejected: set[str] | None = None):
     """Return (action, source). LLM-primary; on any LLM/validation failure, deterministic fallback.
 
@@ -258,12 +301,13 @@ def next_action(observation: dict, visited, scope: dict, *, deny_actions=None, s
         raise llm_backend.LLMRequiredError(
             f"provider {llm_backend.provider()} is not available "
             "(is the CLI installed / the token or key set?)")
-    return propose_fallback(observation, visited, scope, deny_actions, safe_forms), "fallback"
+    return propose_fallback(observation, visited, scope, deny_actions, safe_forms,
+                            test_data), "fallback"
 
 
 # ---- browser loop -----------------------------------------------------------------------
 
-def _observe(page, base_url: str, api_events: list[dict]) -> dict:
+def _observe(page, base_url: str, api_events: list[dict], test_data: dict) -> dict:
     """Snapshot the current page: url, in-page links, forms (+field names), and API calls seen so
     far. Best-effort; never raises out of the loop."""
     def _safe_eval(expr, default):
@@ -275,11 +319,20 @@ def _observe(page, base_url: str, api_events: list[dict]) -> dict:
     links = _safe_eval(
         "() => Array.from(document.querySelectorAll('a[href]')).map(a => a.getAttribute('href'))",
         [])
+    # The form's own action/method, not just its fields: a submit is allow-listed by the endpoint
+    # it posts to, so the policy needs the path. The positional `form >> nth=i` keeps forms
+    # addressable on pages like WebGoat's lessons, where every form is id-less and a bare `form`
+    # would always select the first one.
     forms = _safe_eval(
-        "() => Array.from(document.querySelectorAll('form')).map(f => ({selector: f.getAttribute('id')"
-        " ? '#' + f.getAttribute('id') : 'form', fields: Array.from(f.querySelectorAll('input,select,"
-        "textarea')).map(i => i.getAttribute('name')).filter(Boolean)}))",
+        "() => Array.from(document.querySelectorAll('form')).map((f, i) => ({selector:"
+        " f.getAttribute('id') ? '#' + f.getAttribute('id') : 'form >> nth=' + i,"
+        " path: f.getAttribute('action') || '', method: (f.getAttribute('method') || 'GET')"
+        ".toUpperCase(), fields: Array.from(f.querySelectorAll('input,select,textarea'))"
+        ".map(i => i.getAttribute('name')).filter(Boolean)}))",
         [])
+    for form in forms:
+        form["path"] = normalize_href(form.get("path", ""), page.url) or ""
+        form["fillable"] = bool(form_fill_plan(form, test_data))
     seen: set[str] = set()
     clean: list[str] = []
     for l in links:
@@ -288,6 +341,25 @@ def _observe(page, base_url: str, api_events: list[dict]) -> dict:
             seen.add(n)
             clean.append(n)
     return {"url": page.url, "links": clean, "forms": forms, "api": list(api_events)}
+
+
+def _submit(page, selector: str, plan: list[tuple[str, str]], events: list[dict]) -> None:
+    """Fill a form with approved values and submit it through the page's own handlers.
+
+    requestSubmit(), not submit(): an application that intercepts its forms in JavaScript (as
+    WebGoat's lessons do) never sees a raw form.submit(), so the request under test would never
+    be issued. Best-effort, like the rest of the loop -- a form that refuses to submit costs a
+    step, not the run.
+    """
+    events.append({"type": "submit", "url": page.url, "selector": selector,
+                   "fields": [name for name, _ in plan]})
+    try:
+        for name, value in plan:
+            page.fill(field_selector(selector, name), value, timeout=3000)
+        page.eval_on_selector(selector, "f => f.requestSubmit ? f.requestSubmit() : f.submit()")
+        page.wait_for_timeout(500)
+    except Exception:
+        pass
 
 
 def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[str], scope: dict, *,
@@ -318,6 +390,7 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
     api_patterns = appconfig.api_patterns(config) if config else ("/rest/", "/api/")
     submit_get_forms = appconfig.submit_get_forms(config) if config else True
     allow_writes = appconfig.writes_allowed(config) if config else False
+    test_data = appconfig.test_data(config) if config else {}
     proof = appconfig.proof(config) if config else None
     guard = ScopeGuard(scope, mode="discovery")  # block-and-continue during discovery (KI4)
     events: list[dict] = []
@@ -359,12 +432,13 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
         rejected: set[str] = set()
         forbidden = deny_terms(scope, deny_actions)
         while steps < max_pages:
-            observation = redact(_observe(page, base_url, api_events))  # redact BEFORE the LLM
+            observation = redact(_observe(page, base_url, api_events, test_data))  # before the LLM
             observation["visited"] = sorted(visited)  # coverage so far, so the model doesn't repeat
             observation["forbidden"] = forbidden      # what policy will refuse, said up front
             observation["rejected"] = sorted(rejected)
             action, src = next_action(observation, visited, scope, deny_actions=deny_actions,
-                                      safe_forms=safe_forms, use_llm=use_llm, model=model,
+                                      safe_forms=safe_forms, test_data=test_data,
+                                      use_llm=use_llm, model=model,
                                       api_key=api_key, strict=strict,
                                       rejected=rejected)
             if stats is not None:
@@ -381,7 +455,15 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
             op, arg = todo
             if op == "goto":
                 _goto(arg)
-            else:  # click a selector (expand_nav / submit_form); never a navigation
+            elif op == "submit":
+                form = next((f for f in observation.get("forms", [])
+                             if f.get("selector") == arg), {})
+                plan = form_fill_plan(form, test_data)
+                if not plan:
+                    break  # no approved value for any field: fail closed rather than post blanks
+                _submit(page, arg, plan, events)
+                visited.add(action["target"]["path"])
+            else:  # click a selector (expand_nav); never a navigation
                 events.append({"type": "click", "selector": arg})
                 try:
                     page.click(arg, timeout=3000)
