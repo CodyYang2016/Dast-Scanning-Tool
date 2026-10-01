@@ -258,7 +258,7 @@ def render_flow(plan: dict, config: dict) -> str:
                     w(f"    page.fill({field}, {json.dumps(test_data[name])})")
             w(f"    page.eval_on_selector({json.dumps(target)}, "
               '"f => f.requestSubmit ? f.requestSubmit() : f.submit()")')
-            w("    page.wait_for_timeout(500)")
+            w('    page.wait_for_load_state("networkidle", timeout=10000)')
         elif action == "api_get":
             if has_token:
                 w(f'    page.request.get({url}, '
