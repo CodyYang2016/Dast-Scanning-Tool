@@ -632,3 +632,116 @@ def test_the_walk_returns_to_the_form_it_read_its_way_past(monkeypatch):
     assert page.filled == [('form >> nth=0 >> [name="query"]', "SELECT 1")]
     # and it happened after the walk had already left the page the form was on
     assert page.url.endswith("/lesson")
+
+
+# ---- inferred fields: the planner supplies content, the operator permission ---------------
+
+INFERRED = {"answer": {"pattern": "^[0-9]{1,3}$", "max_length": 3}}
+GATE_SCOPE = {"app_id": "app", "fqdn_allow_list": ["app"], "avoid_action_list": ["logout"]}
+
+
+def test_a_value_for_an_operator_inferable_field_is_permitted():
+    assert explore_mod.vet_values({"answer": "13"}, INFERRED)[0] is True
+
+
+def test_a_value_for_a_field_nobody_declared_is_refused():
+    ok, reason = explore_mod.vet_values({"token": "9:4:abc"}, INFERRED)
+    assert not ok and "not operator-inferable" in reason
+
+
+def test_a_value_outside_the_operators_shape_is_refused():
+    assert not explore_mod.vet_values({"answer": "' OR 1=1 --"}, INFERRED)[0]
+    assert not explore_mod.vet_values({"answer": "1234"}, INFERRED)[0]
+    assert not explore_mod.vet_values({"answer": 13}, INFERRED)[0]
+
+
+def test_a_submit_carrying_an_approved_shape_passes_validation():
+    action = {"action": "submit_form",
+              "target": {"method": "POST", "path": "/gate", "selector": "form >> nth=0",
+                         "values": {"answer": "13"}}}
+    ok, _reason = explore_mod.validate_proposal(action, GATE_SCOPE, safe_forms=["/gate"],
+                                                allow_writes=True, inferred=INFERRED)
+    assert ok
+
+
+def test_a_submit_carrying_an_unpermitted_value_is_refused_before_it_runs():
+    action = {"action": "submit_form",
+              "target": {"method": "POST", "path": "/gate", "selector": "form >> nth=0",
+                         "values": {"answer": "nil"}}}
+    ok, reason = explore_mod.validate_proposal(action, GATE_SCOPE, safe_forms=["/gate"],
+                                               allow_writes=True, inferred=INFERRED)
+    assert not ok and "approved shape" in reason
+
+
+def test_values_on_a_read_action_are_refused():
+    action = {"action": "follow_link", "target": {"method": "GET", "path": "/home",
+                                                  "values": {"answer": "13"}}}
+    assert not explore_mod.validate_proposal(action, GATE_SCOPE, inferred=INFERRED)[0]
+
+
+def test_an_inferred_value_fills_the_field_the_operator_left_open():
+    form = {"fields": ["token", "answer", "note"]}
+    plan = form_fill_plan(form, {"note": "dast-test"}, {"answer": "13"}, INFERRED)
+    assert plan == [("answer", "13"), ("note", "dast-test")]
+    assert explore_mod.inferred_fields_of(plan, {"note": "dast-test"}) == ["answer"]
+
+
+def test_operator_data_wins_over_an_inferred_value_for_the_same_field():
+    form = {"fields": ["answer"]}
+    assert form_fill_plan(form, {"answer": "7"}, {"answer": "13"}, INFERRED) == [("answer", "7")]
+
+
+def test_an_unpermitted_value_fills_nothing_at_all():
+    """Fail closed: a plan cannot smuggle a payload in beside a legitimate value."""
+    form = {"fields": ["answer", "note"]}
+    plan = form_fill_plan(form, {"note": "dast-test"},
+                          {"answer": "13", "note": "' OR 1=1 --"}, INFERRED)
+    assert plan == [("note", "dast-test")]
+
+
+def test_a_form_with_only_an_inferable_field_is_submittable():
+    """The gate case: nothing in test_data, so without this the model is told not to try."""
+    page = _FakePage("http://app:8080/gate", [
+        {"selector": "form >> nth=0", "path": "/gate", "method": "POST",
+         "fields": ["token", "answer"]},
+    ])
+    obs = explore_mod._observe(page, "http://app:8080", [], {}, safe_forms=["/gate"],
+                               inferred=INFERRED)
+    form = obs["forms"][0]
+    assert form["fillable"] is False
+    assert form["submittable"] is True
+    assert list(form["inferable"]) == ["answer"]
+
+
+def test_a_form_off_the_allow_list_is_not_submittable_however_inferable():
+    page = _FakePage("http://app:8080/gate", [
+        {"selector": "form >> nth=0", "path": "/elsewhere", "method": "POST",
+         "fields": ["answer"]},
+    ])
+    obs = explore_mod._observe(page, "http://app:8080", [], {}, safe_forms=["/gate"],
+                               inferred=INFERRED)
+    assert obs["forms"][0]["submittable"] is False
+
+
+def test_the_deterministic_proposer_does_not_invent_a_value_for_an_inferable_field():
+    """It has no way to read the question, and guessing would make the comparison dishonest."""
+    observation = {"url": "http://app:8080/gate", "links": [], "api": [],
+                   "forms": [{"selector": "form >> nth=0", "path": "/gate", "method": "POST",
+                              "fields": ["answer"], "submittable": True,
+                              "inferable": INFERRED}]}
+    assert propose_fallback(observation, set(), GATE_SCOPE,
+                            safe_forms=["/gate"], test_data={})["action"] == "stop"
+
+
+def test_the_model_is_told_what_an_inferable_field_is_and_what_bounds_it(monkeypatch):
+    seen = {}
+
+    def fake_complete(system, user, model, **kwargs):
+        seen["system"] = system
+        return '{"action":"stop"}'
+
+    monkeypatch.setattr(explore_mod.llm_backend, "complete", fake_complete)
+    explore_mod.propose_llm({"url": "/", "forms": [], "forbidden": [], "rejected": []}, "m", "k")
+    assert "inferable" in seen["system"]
+    assert "target.values" in seen["system"]
+    assert "never guess at a field that is not inferable" in seen["system"]
