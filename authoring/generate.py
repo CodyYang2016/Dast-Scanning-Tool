@@ -97,8 +97,7 @@ def with_submit_steps(journey, trace: dict, base: str) -> list[dict]:
       * a submit the walk performed and the plan omitted is appended, since dropping it would
         scan less of the application than the walk reached.
     """
-    submits = [ev for ev in trace.get("interactions", [])
-               if ev.get("type") == "submit" and ev.get("selector")]
+    submits = replayable_submits(trace)
     pages = {ev["selector"]: _relpath(ev.get("url", ""), base) for ev in submits}
     fields = {ev["selector"]: list(ev.get("fields", [])) for ev in submits}
     steps: list[dict] = []
@@ -125,6 +124,20 @@ def with_submit_steps(journey, trace: dict, base: str) -> list[dict]:
     return steps
 
 
+def replayable_submits(trace: dict) -> list[dict]:
+    """The recorded submits a bundle can honestly replay. Pure.
+
+    A submit that answered an inferred field is excluded: its value was reasoned from what that
+    page said at that moment -- a challenge reissued per load, a computed reference -- so the
+    same post later is answering a question that no longer exists, and the application rejects
+    it. Replaying it would put a step in the bundle that looks like coverage and is not. Those
+    submits are real coverage during exploration and are counted there; a repeatable bundle needs
+    the operator to promote the value into test_data, or the journey to re-read the page.
+    """
+    return [ev for ev in trace.get("interactions", [])
+            if ev.get("type") == "submit" and ev.get("selector") and not ev.get("inferred")]
+
+
 def submit_steps(trace: dict, base: str) -> list[dict]:
     """The goto/submit_form pairs replaying the forms exploration submitted. Pure.
 
@@ -134,9 +147,7 @@ def submit_steps(trace: dict, base: str) -> list[dict]:
     """
     steps: list[dict] = []
     seen: set[tuple[str, str]] = set()
-    for ev in trace.get("interactions", []):
-        if ev.get("type") != "submit" or not ev.get("selector"):
-            continue
+    for ev in replayable_submits(trace):
         page_path = _relpath(ev.get("url", ""), base)
         key = (page_path or "", ev["selector"])
         if not page_path or key in seen:
