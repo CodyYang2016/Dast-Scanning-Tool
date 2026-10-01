@@ -15,8 +15,6 @@ COPY detections/ detections/
 COPY runner/ runner/
 COPY contracts/ contracts/
 COPY security/ security/
-# The stdlib-only lab target, so the semgate compose profile needs no second image.
-COPY labs/ labs/
 
 ENV PYTHONPATH=/app
 
