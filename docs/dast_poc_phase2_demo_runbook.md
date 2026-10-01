@@ -424,12 +424,15 @@ sed -n '1,25p' out/phase2-demo/results.sarif
 
 **Upload — live is the default:**
 
-- *Live (this repo, `gh` is authenticated):* run the command below. It uses `git rev-parse
-  HEAD` as the commit, which **must already be pushed** (`git status` clean, `git push` done).
+- *Live (this repo, `gh` is authenticated):* run the command below. It names this repo's HEAD as
+  the commit **explicitly** — the upload refuses without a commit and ref (W1-8), because GitHub
+  shows them as the affected branch. That commit **must already be pushed** (`git status` clean,
+  `git push` done). Say it out loud: these are Juice Shop findings attributed to this repo only
+  because it is the demo destination; a real app gets its deployed build's SHA, in its own repo.
   **SEE** `uploaded: id=…` and `status url: …`. Processing takes ~30–60 s.
   ```bash
   $PY -m detections.github_upload out/phase2-demo/results.sarif \
-    --owner Nationwide --repo ssd-dast-tool-poc --ref refs/heads/main
+    --owner Nationwide --repo ssd-dast-tool-poc --ref refs/heads/main --commit "$(git rev-parse HEAD)"
   ```
   This has been run live against the real Security tab; the second such upload is what produced
   the false-"fixed" evidence.
@@ -821,7 +824,7 @@ end; everything upstream of the runner was generated."
 *Live upload* (one-way door, same caveat as Part B; HEAD must be pushed):
 ```bash
 $PY -m detections.github_upload out/phase2-demo/live-results.sarif \
-  --owner Nationwide --repo ssd-dast-tool-poc --ref refs/heads/main
+  --owner Nationwide --repo ssd-dast-tool-poc --ref refs/heads/main --commit "$(git rev-parse HEAD)"
 ```
 Then **OPEN** Browser tab 2 and **CLICK** refresh after ~60 s. **CLICK** *Closed* — anything there
 is either a real fix or predates coverage-aware publishing.
@@ -908,7 +911,8 @@ Full teardown at the end of the day: `$CT rm -f juice zap; $CT network rm dast`
 | `services not ready within 120s` from `runner.main` | ZAP can't reach `juice:3000` (different networks / juice exited 133 — KI3 / stale container IPs on Podman) | `$CT exec zap curl … http://juice:3000/`; do the full §1.2 reset (rm both, rm+create network, run both) |
 | `curl: (52) Empty reply` from ZAP API | ZAP started without `api.addrs.addr.name=.*` | restart ZAP with the exact §1.2 command (note the quotes) |
 | A target **on port 8080** returns 400 through the proxy, body `Bad Format`; `docker logs zap` shows `Bad request to API endpoint [...]: No enum constant ...Format.<APP>` | The same `api.addrs.addr.name=.*` that makes ZAP's API reachable also makes ZAP claim **any** proxied request arriving on its own port — so a target on 8080 never reaches the app. Hit onboarding WebGoat, 2026-09-27 | Move the target off 8080 (WebGoat: `-e WEBGOAT_PORT=8083`), or run ZAP's proxy on a different port, or narrow `api.addrs` to the runner's address (W4-4). **Expect this on internal Java apps, which commonly listen on 8080.** |
-| `github_upload` rejected | HEAD commit not on the remote, or token lacks `security_events`/`repo` | `git push` first; `gh auth status` |
+| `refusing to upload: which build was scanned?` | No `--commit`/`--ref` (or `$DAST_TARGET_COMMIT`/`$DAST_TARGET_REF`). There is deliberately no default: the scanner's own checkout is not the target (W1-8) | Pass the deployed build's full SHA and `refs/heads/<branch>`; for this demo, `--commit "$(git rev-parse HEAD)" --ref refs/heads/main` |
+| `github_upload` rejected by GitHub | The commit does not exist in the target repository (not pushed, or a SHA from a different repo), or the token lacks `security_events`/`repo` | `git push` first; check the SHA belongs to the repo you are uploading to; `gh auth status` |
 | Bare `python` → `ModuleNotFoundError` | wrong interpreter (mac 3.9 / Windows Store stub) | `$PY` everywhere |
 | Anthropic smoke test fails with `CERTIFICATE_VERIFY_FAILED` | Python/httpx does not trust the corporate TLS inspection CA yet; `NODE_EXTRA_CA_CERTS` only fixes Node/Playwright | export `SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE` to the same PEM bundle as `NODE_EXTRA_CA_CERTS`, then rerun the smoke test |
 | Anthropic smoke test returns an HTML `Access Blocked by Policy` / Aurascape page | Nationwide policy blocks direct Anthropic API access; TLS and the key may already be fine | switch to the Copilot backend (`export LLM_PROVIDER=copilot` + `COPILOT_GITHUB_TOKEN`, §1.7 Option A), or use `--no-llm` |
@@ -945,7 +949,7 @@ $PY -m authoring.seed --app juice-shop --zap-proxy http://localhost:8080 --assis
 # ---- Part B (Terminal B) ----
 $PY -m detections.normalizer contracts/sample_zap_output.json --app-id juice-shop --scan-id demo-fixture-1 -o out/phase2-demo/records.json
 $PY -m detections.sarif_export out/phase2-demo/records.json --app-id juice-shop --driver-version "ZAP 2.17.0" -o out/phase2-demo/results.sarif
-# (optional) $PY -m detections.github_upload out/phase2-demo/results.sarif --owner Nationwide --repo ssd-dast-tool-poc --ref refs/heads/main
+# (optional) $PY -m detections.github_upload out/phase2-demo/results.sarif --owner Nationwide --repo ssd-dast-tool-poc --ref refs/heads/main --commit "$(git rev-parse HEAD)"
 
 # ---- Part D (Terminal A) ----
 $PY -m authoring.record --app juice-shop --zap-proxy http://localhost:8080 --out-dir out/phase2-demo/trace --headed --slow-mo 700
@@ -966,5 +970,5 @@ time $PY -m runner.main --flow out/phase2-demo/gen/flow.py --scope out/phase2-de
 # ---- Part H (coverage-aware: diff first, export the labeled set) ----
 $PY -m detections.lifecycle_diff out/phase2-demo/live-records.json --app-id juice-shop --state out/state.json --coverage out/phase2-demo/live-coverage.json -o out/phase2-demo/live-labeled.json
 $PY -m detections.sarif_export out/phase2-demo/live-labeled.json --app-id juice-shop --driver-version "ZAP 2.17.0" -o out/phase2-demo/live-results.sarif
-# (optional) $PY -m detections.github_upload out/phase2-demo/live-results.sarif --owner Nationwide --repo ssd-dast-tool-poc --ref refs/heads/main
+# (optional) $PY -m detections.github_upload out/phase2-demo/live-results.sarif --owner Nationwide --repo ssd-dast-tool-poc --ref refs/heads/main --commit "$(git rev-parse HEAD)"
 ```

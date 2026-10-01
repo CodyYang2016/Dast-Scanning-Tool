@@ -237,13 +237,20 @@ override it if your organisation already has a naming convention.
 
 **Branch and commit mean the deployment, not the scanner.** GitHub attaches every alert to a
 branch and commit and shows them as *Affected branches*. For a DAST finding the only meaningful
-values are those of the **build running in the environment you scanned** — which the scanner cannot
-work out for itself. Today the upload defaults to `refs/heads/main` and to the commit the *DAST
-tool's* own checkout is on, so an alert can claim a vulnerability lives in code that has nothing to
-do with the application (this is what the Juice Shop demo alerts on the tool's own repository show).
-Until that default is removed (W1-8), pass the deployed build's commit and branch explicitly:
-`python -m detections.github_upload results.sarif --owner … --repo … --ref refs/heads/<deployed
-branch> --commit <deployed sha>`, uploading to the application's repository, not this one.
+values are those of the **build running in the environment you scanned**, which the scanner cannot
+work out for itself — so you must say, and the upload refuses without it:
+
+```bash
+python -m dast report my-app --upload \
+  --commit <full SHA of the deployed build> --ref refs/heads/<deployed branch>
+```
+
+In a pipeline, set `DAST_TARGET_COMMIT` and `DAST_TARGET_REF` in the deploy step instead; for a
+target pinned to one build, `publish.github.commit`/`ref` in `app.yaml` also work. The commit must
+be a full 40-character SHA and the ref a full `refs/heads/…`. Each run's `settings.json` records
+which of the three supplied them. (Earlier versions defaulted to `refs/heads/main` and to the DAST
+tool's *own* checkout, which is why the Juice Shop demo alerts on this repository claim to live in
+the scanner's `main` — W1-8.) Upload to the **application's** repository, not this one.
 
 **Moving an app that already has alerts.** Changing the category — including going from the old
 no-category uploads to `dast/<app_id>` — starts a new analysis. The old alerts are not migrated;

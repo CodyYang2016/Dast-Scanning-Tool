@@ -156,7 +156,10 @@ python -m detections.lifecycle_diff out/records.json --app-id juice-shop --state
 #    two apps sharing a repository with no category share one analysis and the newer upload
 #    REPLACES the older one's alerts. `dast report` passes dast/<app> automatically.
 python -m detections.sarif_export out/labeled.json --category dast/<app> -o out.sarif
-python -m detections.github_upload out.sarif --owner <owner> --repo <repo>
+#    --commit/--ref name the DEPLOYED build that was scanned; GitHub shows them on every alert
+#    as the affected branch. There is no default — the upload refuses without them (W1-8).
+python -m detections.github_upload out.sarif --owner <owner> --repo <repo> \
+  --commit <full SHA of the deployed build> --ref refs/heads/<deployed branch>
 ```
 
 The results pipeline also runs standalone against the committed fixture (no scanner needed):

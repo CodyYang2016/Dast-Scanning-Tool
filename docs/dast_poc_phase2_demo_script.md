@@ -167,8 +167,11 @@ turns into Security tab alerts."
 If a GitHub token/repo is available, upload it live; otherwise narrate the command:
 
 ```bash
+# --commit/--ref name the build GitHub will say is affected. This demo uploads Juice Shop
+# results to THIS repository as a stand-in, so it attributes them to this repo's pushed
+# HEAD on purpose. For a real app: the deployed build's SHA, to the app's own repository.
 python -m detections.github_upload out/phase2-demo/results.sarif \
-  --owner <org> --repo <repo> --ref refs/heads/main
+  --owner <org> --repo <repo> --ref refs/heads/main --commit "$(git rev-parse HEAD)"
 ```
 
 **Say:** "This is a one-way door worth calling out explicitly: this uploads to GitHub's Security

@@ -156,7 +156,7 @@ flowchart LR
 | `normalizer.py` | N1, W1-1 | Raw ZAP alert → contract-shaped detection record (streaming). Carries ZAP's remediation content — description, solution, references, confidence — and the evidence and payload, **redacted at normalisation** and capped at 500 characters, so no later stage ever holds the raw value. None of it feeds the fingerprint |
 | `fingerprint.py` | N2 | Stable `sha256(rule_id \| endpoint_pattern \| parameter \| payload_family)` |
 | `sarif_export.py` | X1, W1-2 | Records → SARIF 2.1.0 (severity→level, `security-severity`, CWE tags, fingerprint in `partialFingerprints`). Each rule carries `fullDescription`, `help` (how to fix + references) and `helpUri`; each finding's **message** names the parameter, payload, evidence and confidence — because GitHub renders the message and the rule help and does not render `properties`. Target-controlled evidence is fenced so it cannot inject markdown into the alert. `automationDetails.id` keeps one app's analysis from overwriting another's |
-| `github_upload.py` | X2 | gzip+base64 the SARIF, POST to the code-scanning API |
+| `github_upload.py` | X2, W1-8 | gzip+base64 the SARIF, POST to the code-scanning API. Requires the **deployed build's** commit and ref — GitHub shows them as the affected branch — and refuses to upload without them rather than borrow this tool's own checkout |
 | `lifecycle_diff.py` | L1/L2 | Compare two scans' fingerprint sets → label new/open/resolved; **coverage-aware** (R2): a previous-only finding is `resolved` only if its route, **its own parameter**, and its rule were exercised this scan — else `not_scanned`. Persist state (+ coverage) |
 | `explain.py` | — (W6-9) | Why a finding disappeared, most specific cause first: `route_excluded` · `route_not_covered` · `parameter_not_exercised` · `rule_not_enabled` · `rule_truncated` · `app_state_changed` · `scan_changed_the_app` · `rule_found_nothing` · `fixed`. Only the last claims a fix, and it carries its evidence |
 | `reachability.py` | — (W6-12) | What the application **exposes** (GET form fields in the trace) against what the scan **sent** (`coverage.route_params`). The difference is a detection gap nothing measured before; `dast report` prints it |
@@ -411,7 +411,7 @@ export DVWA_USER=… DVWA_PASS=…      # names come from app.yaml; values never
 python -m dast onboard dvwa --base-url http://dvwa    # writes the app.yaml skeleton
 python -m dast author  dvwa --explore --zap-proxy http://localhost:8080
 python -m dast scan    dvwa
-python -m dast report  dvwa                            # add --upload to publish
+python -m dast report  dvwa                            # to publish: --upload --commit <deployed SHA> --ref refs/heads/<branch>
 python -m dast explain dvwa                            # after a second scan
 ```
 

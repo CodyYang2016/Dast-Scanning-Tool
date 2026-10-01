@@ -31,7 +31,8 @@ No network.
 ```bash
 python -m detections.normalizer contracts/sample_zap_output.json --app-id juice-shop \
   | python -m detections.sarif_export --driver-version 2.17.0 -o out.sarif
-python -m detections.github_upload out.sarif --owner CodyYang2016 --repo Dast-Scanning-Tool
+python -m detections.github_upload out.sarif --owner CodyYang2016 --repo Dast-Scanning-Tool \
+  --ref refs/heads/main --commit "$(git rev-parse HEAD)"   # demo destination: see below
 # then poll the returned status url until "complete"
 ```
 
@@ -45,6 +46,14 @@ Uploaded the fixture-derived SARIF to `CodyYang2016/Dast-Scanning-Tool`:
 
 ## Requirements / gotchas
 - Token needs `security_events` (private repos) or `public_repo`/`repo` (public). Ours has `repo`.
-- `commit_sha` must be pushed to the remote, or GitHub rejects the upload.
+- `commit_sha` must exist in the TARGET repository (pushed), or GitHub rejects the upload.
+- **`--commit` and `--ref` describe the scanned deployment, and have no default (W1-8).** GitHub
+  shows them on every alert as the affected branch. They used to default to `refs/heads/main` and
+  to `git rev-parse HEAD` *in this tool's checkout* — so alert #1329, a Juice Shop SQL injection,
+  was recorded against a commit of the scanner. Pointed at an application's real repository that
+  default would have been rejected outright, since the scanner's SHA does not exist there. Now the
+  commit and ref come from `--commit`/`--ref`, `$DAST_TARGET_COMMIT`/`$DAST_TARGET_REF`, or
+  `publish.github` in `app.yaml`, and the upload refuses without them. Uploading demo results to
+  this repository with its own HEAD is fine — as long as it is a choice someone typed.
 - DAST locations are URL endpoints (e.g. `/rest/products/search`), not source files — alerts
   show with the endpoint as location; they don't link to repo source lines (expected for DAST).
