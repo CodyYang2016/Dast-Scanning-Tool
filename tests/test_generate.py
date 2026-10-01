@@ -211,3 +211,56 @@ def test_make_plan_without_require_llm_still_falls_back(monkeypatch):
     monkeypatch.setattr(generate_mod.llm_backend, "available", lambda api_key=None: False)
     _plan, source = generate_mod.make_plan(TRACE, CONFIG, use_llm=True)
     assert source == "fallback"
+
+
+# ---- controlled mutation: a submitted form replays as fill + submit ----------------------
+
+SUBMIT_TRACE = dict(
+    TRACE,
+    interactions=TRACE["interactions"] + [
+        {"type": "goto", "url": "http://juice:3000/#/search"},
+        {"type": "submit", "url": "http://juice:3000/#/search",
+         "selector": "form >> nth=0", "fields": ["q"]},
+    ],
+)
+SUBMIT_CONFIG = dict(CONFIG, explore={"test_data": {"q": "dast-test"}})
+
+
+def test_a_submitted_form_becomes_a_goto_then_a_submit_step():
+    plan = journey_from_trace(SUBMIT_TRACE, SUBMIT_CONFIG)
+    Draft202012Validator(json.loads(JOURNEY_SCHEMA.read_text())).validate(plan)
+    assert plan["journey"][-2:] == [
+        {"action": "goto", "target": "/#/search"},
+        {"action": "submit_form", "target": "form >> nth=0", "fields": ["q"]},
+    ]
+
+
+def test_a_plan_carries_field_names_but_never_values():
+    plan = journey_from_trace(SUBMIT_TRACE, SUBMIT_CONFIG)
+    assert "dast-test" not in json.dumps(plan)
+
+
+def test_rendered_submit_fills_approved_values_and_submits_through_the_page():
+    src = render_flow(journey_from_trace(SUBMIT_TRACE, SUBMIT_CONFIG), SUBMIT_CONFIG)
+    ast.parse(src)
+    assert 'page.fill("form >> nth=0 >> [name=\\"q\\"]", "dast-test")' in src
+    # requestSubmit, so an app that intercepts its own forms in JS still sees the submit
+    assert "requestSubmit" in src
+
+
+def test_rendered_submit_leaves_out_a_field_with_no_approved_value():
+    trace = dict(SUBMIT_TRACE, interactions=TRACE["interactions"] + [
+        {"type": "goto", "url": "http://juice:3000/#/search"},
+        {"type": "submit", "url": "http://juice:3000/#/search",
+         "selector": "form >> nth=0", "fields": ["q", "unapproved"]},
+    ])
+    src = render_flow(journey_from_trace(trace, SUBMIT_CONFIG), SUBMIT_CONFIG)
+    assert "unapproved" not in src and "dast-test" in src
+
+
+def test_rendered_submit_escapes_a_quote_in_a_test_value():
+    """Values are json.dumps'd, so a quote cannot close the literal and break the flow."""
+    config = dict(CONFIG, explore={"test_data": {"q": 'he said "hi"'}})
+    src = render_flow(journey_from_trace(SUBMIT_TRACE, config), config)
+    ast.parse(src)
+    assert '"he said \\"hi\\""' in src

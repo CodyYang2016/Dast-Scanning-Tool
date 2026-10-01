@@ -39,9 +39,36 @@ explore:
   seed_routes:
     - /WebGoat/start.mvc
     - /WebGoat/service/lessonmenu.mvc
-  safe_forms: []
+    # The lesson page itself: /start.mvc builds its menu in JavaScript, so nothing submittable
+    # is reachable from the seed by following links.
+    - /WebGoat/SqlInjection.lesson
+  # Writes stay denied by posture; these endpoints are the only exceptions, named exactly as the
+  # lesson forms post to them. Each is an idempotent SQL-injection exercise against WebGoat's
+  # own throwaway in-memory database, in a disposable dev container.
+  write_mode: deny
+  safe_forms:
+    - /WebGoat/SqlInjection/attack2
+    - /WebGoat/SqlInjection/attack3
+    - /WebGoat/SqlInjection/attack4
+    - /WebGoat/SqlInjection/attack5
+    - /WebGoat/SqlInjection/assignment5a
+    - /WebGoat/SqlInjection/assignment5b
+    - /WebGoat/SqlInjection/attack8
+    - /WebGoat/SqlInjection/attack9
+    - /WebGoat/SqlInjection/attack10
+  # Disposable values for the lesson fields, benign by design: the point is to reach the
+  # endpoint with a well-formed request, not to solve the lesson. No payloads -- the scanner
+  # supplies those once the request is in its site tree.
+  test_data:
+    query: "SELECT * FROM employees"
+    username: "dast-test"
+    userid: "101"
+    login_count: "1"
+    name: "dast-test"
+    auth_tan: "0000"
+    action_string: "dast-test"
   budgets:
-    max_pages: 10
+    max_pages: 25
 
 scan:
   policy:

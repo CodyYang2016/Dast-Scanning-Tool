@@ -6,7 +6,13 @@ fallback proposer, and next_action's fallback when no LLM key is present. Oracle
 observations/actions with known-correct answers.
 """
 
-from authoring.explore import next_action, propose_fallback, validate_proposal
+from authoring.explore import (
+    field_selector,
+    form_fill_plan,
+    next_action,
+    propose_fallback,
+    validate_proposal,
+)
 
 SCOPE = {"app_id": "juice-shop", "fqdn_allow_list": ["juice"],
          "avoid_action_list": ["logout", "delete-account"]}
@@ -202,11 +208,12 @@ def test_dispatch_follow_link_and_visit_api_navigate():
         == ("goto", "/rest/languages")
 
 
-def test_dispatch_expand_nav_and_submit_form_click_selector():
+def test_dispatch_expand_nav_clicks_and_submit_form_submits():
     assert dispatch({"action": "expand_nav", "target": {"selector": "button#navbarAccount"}}) \
         == ("click", "button#navbarAccount")
+    # a form is filled and submitted, not clicked: clicking a <form> does nothing
     assert dispatch({"action": "submit_form", "target": {"selector": "#searchForm"}}) \
-        == ("click", "#searchForm")
+        == ("submit", "#searchForm")
 
 
 def test_dispatch_selector_action_never_navigates_and_path_action_never_clicks():
@@ -385,3 +392,57 @@ def test_an_unparseable_reply_reports_what_the_model_actually_said():
 
     with pytest.raises(ValueError, match="I cannot help with that"):
         parse_action_text("I cannot help with that request.")
+
+
+# ---- controlled mutation: approved test data turns an allow-listed form into a submit ----
+
+LESSON = {
+    "url": "http://webgoat:8083/WebGoat/SqlInjection.lesson",
+    "links": [],
+    "api": [],
+    "forms": [
+        {"selector": "form >> nth=0", "path": "/WebGoat/SqlInjection/attack2",
+         "method": "POST", "fields": ["query"]},
+    ],
+}
+WG_SCOPE = {"app_id": "webgoat", "fqdn_allow_list": ["webgoat"],
+            "avoid_action_list": ["logout", "reset", "delete"]}
+
+
+def test_form_fill_plan_takes_only_fields_the_operator_approved():
+    form = {"fields": ["query", "secret_token"]}
+    assert form_fill_plan(form, {"query": "x"}) == [("query", "x")]
+
+
+def test_field_selector_chains_so_a_positional_form_selector_survives():
+    assert field_selector("form >> nth=2", "query") == 'form >> nth=2 >> [name="query"]'
+
+
+def test_fallback_submits_an_allow_listed_form_once_it_has_test_data():
+    action = propose_fallback(LESSON, set(), WG_SCOPE,
+                              safe_forms=["/WebGoat/SqlInjection/attack2"],
+                              test_data={"query": "SELECT 1"})
+    assert action["action"] == "submit_form"
+    assert action["target"]["path"] == "/WebGoat/SqlInjection/attack2"
+    assert action["target"]["selector"] == "form >> nth=0"
+
+
+def test_fallback_will_not_submit_a_form_that_is_not_allow_listed():
+    action = propose_fallback(LESSON, set(), WG_SCOPE, safe_forms=[],
+                              test_data={"query": "SELECT 1"})
+    assert action["action"] == "stop"
+
+
+def test_fallback_will_not_submit_an_allow_listed_form_with_no_approved_data():
+    """The allow-list says where a write may go; test data says what it may carry. Both or none."""
+    action = propose_fallback(LESSON, set(), WG_SCOPE,
+                              safe_forms=["/WebGoat/SqlInjection/attack2"], test_data={})
+    assert action["action"] == "stop"
+
+
+def test_fallback_reads_before_it_writes():
+    obs = dict(LESSON, links=["/WebGoat/start.mvc"])
+    action = propose_fallback(obs, set(), WG_SCOPE,
+                              safe_forms=["/WebGoat/SqlInjection/attack2"],
+                              test_data={"query": "SELECT 1"})
+    assert action["action"] == "follow_link"
