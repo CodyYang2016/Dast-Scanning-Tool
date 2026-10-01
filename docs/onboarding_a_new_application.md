@@ -593,14 +593,18 @@ when there is no XHR surface; a wrong pattern quietly records nothing.
 
 ## 6. When it goes wrong
 
+A login failure is one line — `RUNNER ABORT: authentication failed — <what>` — followed by
+`next: <what to do>`, exit code 2 (W5-4). A browser that is not installed says so and gives the
+install command.
+
 | Symptom | Cause | Fix |
 |---|---|---|
 | The scan passes but finds nothing interesting on an app you know is vulnerable | Either the parameters were never discovered (see §5) or the app was not in a testable state | `dast explain <app>` after a second scan; check `coverage.json` for the rule's `requests`/`alerts` — a rule that sent hundreds of requests and raised nothing points at app state, not at the scanner |
 | Everything returns **400**, body `Bad Format`; `docker logs zap` shows `No enum constant …Format.<APP>` | The target is on **8080**, ZAP's own port, so ZAP answers as its API and the app never sees the request (W4-7) | Move the app off 8080 (`-e WEBGOAT_PORT=8083`), or run ZAP's proxy elsewhere. **Silent** — the scan "succeeds" against nothing |
-| `AuthProofError: authentication not proven (selector)` while the login clearly worked | The marker is absent on the authenticated page, or you picked one that exists on the login page too | Load both pages and compare; presence-only is enough, visibility is not required |
-| `AuthProofError … (route)` | The route 302s to login, or returns 4xx/5xx | Check the route by hand with a logged-in session; add `forbid_redirect_to` |
-| `Page.fill: Timeout … waiting for locator` | The selector is wrong, or the page did not load through the proxy | Check the ZAP reachability command in §1 first — a proxy problem looks like a selector problem |
-| `credentials not in the environment: MYAPP_USER` | The env vars named in `auth.credentials` are not exported | Export them in the shell that runs `dast` |
+| `authentication failed — the login was submitted, but authentication was not proven …` (selector proof) while the login clearly worked | The marker is absent on the authenticated page, or you picked one that exists on the login page too | Load both pages and compare; presence-only is enough, visibility is not required |
+| `… not proven — auth check redirected to …/login.php` (route proof) | A wrong password lands here too — check the credentials first. Otherwise | The route 302s to login, or returns 4xx/5xx | Check the route by hand with a logged-in session; add `forbid_redirect_to` |
+| `authentication failed — login page element not found: <selector>` | The selector is wrong, or the page did not load through the proxy | Check the ZAP reachability command in §1 first — a proxy problem looks like a selector problem |
+| `authentication failed — credentials not in the environment: MYAPP_USER` (before any traffic) | The env vars named in `auth.credentials` are not exported | Export them in the shell that runs `dast` |
 | Login works by hand, fails here | A password policy (WebGoat caps at 10 characters), or the account was wiped when the container restarted | Re-provision the account; in-memory databases do not survive a restart |
 | `services not ready within 120s` | ZAP cannot reach the target | `docker exec zap curl …` from §1; check both are on the same network |
 | `… matches a production hostname pattern` / `… is not registered` / `… is registered as 'dev'` | The environment registry (W4-6) disagrees with the scope | Register the host in `security/dast/environments.yaml` with its real class; never loosen a production pattern to get a scan through |

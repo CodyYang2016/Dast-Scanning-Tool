@@ -112,10 +112,13 @@ class Paths:
         return d
 
     def latest_scan(self) -> Path | None:
-        """Most recent scan directory, or None when the app has never been scanned."""
+        """Most recent scan that produced records, or None. A run that aborted (a failed login,
+        a refused reset) leaves a directory with no records; it must not hide the last real
+        scan from `report`, `explain` or `triage`."""
         if not self.scans.is_dir():
             return None
-        runs = sorted(p for p in self.scans.iterdir() if p.is_dir())
+        runs = sorted(p for p in self.scans.iterdir()
+                      if p.is_dir() and (p / "records.json").exists())
         return runs[-1] if runs else None
 
 

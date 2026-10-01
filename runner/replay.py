@@ -80,6 +80,41 @@ def wait_for_auth(page, base_url: str, proof: dict, timeout_ms: int = 15000) -> 
     raise AuthProofError(f"unknown auth.proof mode '{mode}'")
 
 
+class AuthenticationError(RuntimeError):
+    """The scan could not log in. One line for the operator, plus what to do (W5-4)."""
+
+    def __init__(self, message: str, hint: str = ""):
+        super().__init__(message)
+        self.hint = hint
+
+
+def classify_login_failure(exc: BaseException, base_url: str) -> AuthenticationError:
+    """Turn whatever the login raised into one actionable line. Never a traceback (W5-4)."""
+    import re
+    text = str(exc)
+    first = text.strip().splitlines()[0] if text.strip() else type(exc).__name__
+    if "Executable doesn't exist" in text:
+        return AuthenticationError(
+            "the browser could not start (Playwright's Chromium is not installed)",
+            hint="run: python -m playwright install chromium")
+    # The generated flow raises a plain RuntimeError("auth check …") for its proof; same meaning.
+    if isinstance(exc, AuthProofError) or first.startswith(("auth check", "authentication not proven")):
+        return AuthenticationError(
+            f"the login was submitted, but authentication was not proven — {first}",
+            hint="check the credentials, and that auth.proof matches a logged-in page")
+    if type(exc).__name__ == "TimeoutError":
+        m = re.search(r'waiting for (?:locator\()?"?([^"\n)]+)"?\)?', text)
+        what = m.group(1) if m else "an element"
+        return AuthenticationError(
+            f"login page element not found: {what}",
+            hint="check auth.selectors / auth.steps against the login page, and that the page "
+                 "loads through ZAP (onboarding §1)")
+    if re.search(r"ERR_(PROXY|CONNECTION|NAME_NOT_RESOLVED|ADDRESS)", text):
+        return AuthenticationError(f"could not reach {base_url} through ZAP — {first}",
+                                   hint="check ZAP is up and can resolve the target host")
+    return AuthenticationError(f"{type(exc).__name__}: {first}")
+
+
 class SessionDeadError(Exception):
     """Raised when a seeded session is not authenticated (expired/invalid). Fail closed: the
     caller must fall back to a login flow, never scan an unauthenticated surface (Phase A)."""

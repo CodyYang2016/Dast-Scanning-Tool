@@ -38,7 +38,7 @@ its score.
 | Criterion | Proposed weight | Must-win? | How it is measured | PoC's expected standing (as of this draft) |
 |---|---:|---|---|---|
 | Authenticated coverage of the target | 15 | **Must-win** | Routes reached while authenticated, and whether the session held for the whole scan | Competitive. Seeded sessions; mid-scan loss is now detected, not silent |
-| Lifecycle honesty | 10 | **Must-win** | Fix one finding and re-scan; separately, ask what each tool claims about a finding whose route was not revisited | Ahead. Coverage-aware diff; `not_scanned` is never shown as fixed |
+| Lifecycle honesty | 10 | **Must-win** | Fix one finding and re-scan; separately, ask what each tool claims about a finding whose route was not revisited | Ahead. Coverage-aware diff; `not_scanned` is never shown as fixed — demonstrated: [fix → re-scan evidence](proof/fix_rescan_resolved.md) |
 | Unique validated findings | 15 | — | Findings no other tool reported, after manual validation | Unknown. This is the most informative number here |
 | Triage experience | 15 | Must not score 0 | Can a developer act on one sampled finding unaided, using only the alert? | Improved. Remediation text, parameter/attack/evidence, a replay line, a linked request/response and suppressions have all shipped |
 | False-positive rate | 10 | — | Manual validation of a random ~30-finding sample per tool | Behind; ZAP's rule set. Confidence is now shown on every alert |

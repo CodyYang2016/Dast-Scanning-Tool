@@ -25,7 +25,8 @@ from detections.normalizer import normalize, write_json_array
 from runner import coverage as coverage_capture
 from runner import evidence
 from runner.preflight import PreflightError, preflight
-from runner.replay import SessionDeadError, load_flow, replay, replay_seeded
+from runner.replay import (AuthenticationError, SessionDeadError, classify_login_failure, load_flow,
+                           replay, replay_seeded)
 from runner import zapapi
 from runner import session_refresh
 from runner.reset import ResetError
@@ -227,6 +228,30 @@ def with_exclusions(scope: dict, app_cfg: dict | None) -> dict:
     return {**scope, "exclude_paths": paths}
 
 
+def _login(do_login, base_url: str):
+    """Run the login; any failure but a scope violation becomes one AuthenticationError (W5-4).
+    A scope violation keeps its own type: crossing the boundary is a safety event, not a login
+    problem, and must read as one."""
+    try:
+        return do_login()
+    except (ScopeViolation, AuthenticationError):
+        raise
+    except Exception as exc:
+        raise classify_login_failure(exc, base_url) from exc
+
+
+def require_credentials(app_cfg: dict | None) -> None:
+    """A provisioned identity's credentials must be in the environment BEFORE a browser starts:
+    otherwise an empty password is typed and the failure surfaces as an unproven login (W5-4)."""
+    if not app_cfg or app_cfg.get("auth", {}).get("identity") == "self-register":
+        return
+    from authoring import appconfig
+    try:
+        appconfig.credentials(app_cfg)
+    except ValueError as exc:
+        raise AuthenticationError(str(exc), hint="export the variables auth.credentials names") from exc
+
+
 def refuse_zap_port(base_url: str, zap_proxy: str) -> None:
     """Refuse a target on the port ZAP itself listens on (W4-7).
 
@@ -279,6 +304,7 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
     ev_dir.mkdir(parents=True, exist_ok=True)
 
     app_cfg = bundle_app_config(scope_path)
+    require_credentials(app_cfg)                     # W5-4: before any traffic or browser
     scope = with_exclusions(scope, app_cfg)          # the browser honours scope.exclude too
     cookies = probes = None
     exclusions: list[str] = []
@@ -311,21 +337,20 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
                 zap_api, url, None, allow=scope["fqdn_allow_list"]))
     if fresh:
         new_session(zap_api)                           # clean per-scan session
-    if storage_state:
-        try:
-            result, guard = replay_seeded(scope, base_url, zap_proxy, storage_state,
-                                          seed_routes or [], evidence_dir=str(ev_dir),
-                                          on_session=live_session.update)
-        except SessionDeadError as exc:
-            print(f"SEEDED SESSION DEAD ({exc}); falling back to hand-authored flow",
-                  file=sys.stderr)
-            flow = load_flow(flow_path)
-            result, guard = replay(scope, flow, base_url, zap_proxy, evidence_dir=str(ev_dir),
-                                   cookies=cookies, on_session=live_session.update)
-    else:
-        flow = load_flow(flow_path)
-        result, guard = replay(scope, flow, base_url, zap_proxy, evidence_dir=str(ev_dir),
-                               cookies=cookies, on_session=live_session.update)
+
+    def first_login():
+        if storage_state:
+            try:
+                return replay_seeded(scope, base_url, zap_proxy, storage_state,
+                                     seed_routes or [], evidence_dir=str(ev_dir),
+                                     on_session=live_session.update)
+            except SessionDeadError as exc:
+                print(f"SEEDED SESSION DEAD ({exc}); falling back to hand-authored flow",
+                      file=sys.stderr)
+        return replay(scope, load_flow(flow_path), base_url, zap_proxy,
+                      evidence_dir=str(ev_dir), cookies=cookies,
+                      on_session=live_session.update)
+    result, guard = _login(first_login, base_url)
 
     # Redact the HAR immediately after capture — before it can be published (hard requirement).
     har = ev_dir / "active-scan.har"
@@ -360,16 +385,17 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
             """Log in again the way this scan first did (W5-2), then point ZAP's attacks at the
             new session. No evidence dir: the scan's own HAR must not be overwritten."""
             jar: dict = {}
-            if storage_state:
-                try:
-                    replay_seeded(scope, base_url, zap_proxy, storage_state, seed_routes or [],
-                                  on_session=jar.update)
-                except SessionDeadError:
-                    replay(scope, load_flow(flow_path), base_url, zap_proxy, cookies=cookies,
-                           on_session=jar.update)
-            else:
-                replay(scope, load_flow(flow_path), base_url, zap_proxy, cookies=cookies,
-                       on_session=jar.update)
+
+            def relogin():
+                if storage_state:
+                    try:
+                        return replay_seeded(scope, base_url, zap_proxy, storage_state,
+                                             seed_routes or [], on_session=jar.update)
+                    except SessionDeadError:
+                        pass
+                return replay(scope, load_flow(flow_path), base_url, zap_proxy,
+                              cookies=cookies, on_session=jar.update)
+            _login(relogin, base_url)    # same one-line reasons as the first login (W5-4)
             fresh_jar = {**jar, **(cookies or {})}
             session_refresh.install(zap_api, fresh_jar, bearer)
             print(f"SESSION RE-ESTABLISHED mid-scan ({len(jar)} session cookies)", file=sys.stderr)
@@ -523,6 +549,10 @@ def main(argv: list[str] | None = None) -> int:
     except (PreflightError, ScanScopeError, ScopeViolation, ZapUnavailableError,
             zapapi.ZapAuthError, SessionStoreError, ResetError) as exc:
         print(f"RUNNER ABORT: {exc}", file=sys.stderr)
+        return 2
+    except AuthenticationError as exc:
+        print(f"RUNNER ABORT: authentication failed — {exc}"
+              + (f"\n  next: {exc.hint}" if exc.hint else ""), file=sys.stderr)
         return 2
     except KeyboardInterrupt:
         # scan._poll has already told ZAP to stop; say so, so nobody wonders if it is still going.

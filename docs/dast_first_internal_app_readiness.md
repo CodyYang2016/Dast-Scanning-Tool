@@ -141,7 +141,7 @@ Do not point a full active scan at a real environment on day one. Climb, and sto
 2. **Authenticated walk, passive only.** Seed, explore, capture coverage. Produces a route inventory and passive findings with zero attack traffic.
 3. **Bounded active scan on one low-risk route,** off-hours, throttled, with the app team watching logs and error rates.
 4. **Full bounded active scan** of the authenticated surface, still off-hours and throttled.
-5. **Second scan for lifecycle:** fix one finding, re-scan, show it flip to `resolved` while an unvisited route's findings correctly show `not_scanned`. This is the project's own definition of done and has still not been demonstrated.
+5. **Second scan for lifecycle:** fix one finding, re-scan, show it flip to `resolved` while an unvisited route's findings correctly show `not_scanned`. This is the project's own definition of done. *Demonstrated on DVWA 2026-10-01: six highs `resolved`, the unvisited route's `not_scanned` and still published — [evidence](proof/fix_rescan_resolved.md).*
 6. **Benchmark run.** With the SP-1 to SP-5 postures settled and written down, run the scan that the commercial tools will be compared against, under the protocol below.
 
 **Exit criteria:** two consecutive scans complete unattended with no environment incident, the app team accepts the findings as useful, and the benchmark run is complete with every posture exclusion recorded.

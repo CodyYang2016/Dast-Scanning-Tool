@@ -169,6 +169,7 @@ def test_latest_scan_dir_is_none_before_any_scan_with_paths(tmp_path):
 def test_latest_scan_dir_picks_the_newest_run_with_paths(tmp_path):
     for stamp in ("20260101T000000Z", "20260301T000000Z", "20260201T000000Z"):
         (tmp_path / "a" / "scans" / stamp).mkdir(parents=True)
+        (tmp_path / "a" / "scans" / stamp / "records.json").write_text("[]")
     assert dast.Paths(tmp_path, "a").latest_scan().name == "20260301T000000Z"
 
 
@@ -492,3 +493,14 @@ def test_report_uses_the_spec_denominator_when_the_scan_recorded_one(tmp_path, m
     out = capsys.readouterr().out
     assert "declared routes" in out and "OpenAPI" in out
     assert "/never" in (d / "summary.md").read_text()
+
+
+def test_an_aborted_scan_does_not_hide_the_last_real_one(tmp_path):
+    # A login failure leaves a run directory with no records; `dast report` must still find
+    # the most recent scan that produced some (W5-4).
+    args = dast.build_parser().parse_args(["report", "gateapp", "--out", str(tmp_path)])
+    paths = dast.paths_for(args)
+    real = paths.scans / "20260101T000000Z"; real.mkdir(parents=True)
+    (real / "records.json").write_text("[]")
+    (paths.scans / "20260102T000000Z" / "evidence").mkdir(parents=True)     # aborted
+    assert paths.latest_scan() == real
