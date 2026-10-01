@@ -141,15 +141,43 @@ def resolve_evidence_dir(scope_path: str, evidence_dir: str | None, scan_id: str
     return Path(scope_path).resolve().parent / "evidence" / scan_id
 
 
-def evaluate_gate(authenticated: bool, scope_ok: bool, records: list[dict]) -> dict:
-    """Phase 1 gate: authenticated + in-scope + >=1 high/medium detection. Pure/testable."""
+def evidence_prefix(evidence_dir: str | None, scan_id: str) -> str:
+    """The evidence directory as a records-relative path — derived from the SAME rule as
+    resolve_evidence_dir, so a recorded path always points at where the file is.
+
+    With an explicit directory (how `dast scan` runs) evidence sits beside the records in
+    `evidence/`; in the legacy layout it sits under the app directory as `evidence/<scan_id>`.
+    Recording the legacy form for both once left every exchange_path pointing at a directory that
+    never existed.
+    """
+    return "evidence" if evidence_dir else f"evidence/{scan_id}"
+
+
+def evaluate_gate(authenticated: bool, scope_ok: bool, records: list[dict], coverage=None,
+                  expect_findings: bool = False) -> dict:
+    """The scan stage's gate. Pure/testable.
+
+    The default is a HEALTH gate: the scan authenticated, stayed in scope, and tested at least one
+    route. It used to require a high/medium finding, which suits a demo against a deliberately
+    vulnerable app and makes a CLEAN application fail every pipeline (W3-2). That condition now
+    applies only with `expect_findings`, for self-tests where zero findings means the scanner is
+    broken. Whether findings should fail a build is decided later, by the report stage's policy
+    gate, which can see which findings are new.
+
+    "Tested at least one route" is the W6-13 lesson: a login exclusion once excluded all of Juice
+    Shop and the old gate passed on passive findings alone. Unknown coverage fails closed.
+    """
     has_high_or_medium = any(r["severity"] in ("critical", "high", "medium") for r in records)
+    routes_tested = len((coverage or {}).get("routes") or [])
+    healthy = bool(authenticated) and bool(scope_ok) and routes_tested > 0
     return {
+        "mode": "expect-findings" if expect_findings else "health",
         "authenticated": bool(authenticated),
         "scope_ok": bool(scope_ok),
+        "routes_tested": routes_tested,
         "has_high_or_medium": has_high_or_medium,
         "detections": len(records),
-        "passed": bool(authenticated) and bool(scope_ok) and has_high_or_medium,
+        "passed": healthy and (has_high_or_medium or not expect_findings),
     }
 
 
@@ -215,9 +243,16 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
                   exclusions=exclusions)
     records = list(normalize(report["alerts"], scope["app_id"], scan_id))
     # Reference the scan's evidence from each record (FR-E1).
-    relpath = evidence.evidence_relpath(scan_id)
+    prefix = evidence_prefix(evidence_dir, scan_id)
+    relpath = f"{prefix}/active-scan.har"
     for r in records:
         r["evidence_path"] = relpath
+    # The request and response behind each high/medium finding (W1-3), fetched NOW: the next
+    # scan starts a fresh ZAP session and they are gone. Redacted before anything is written.
+    from runner import exchange
+    exchange_counts = exchange.attach(
+        report["alerts"], records, ev_dir, prefix,
+        fetch=lambda message_id: exchange.fetch_message(zap_api, message_id))
     # Capture the (route x rule) surface this scan exercised, for the coverage-aware diff (R2).
     # Probes carry the scan's own session: without it they see the login page, and a digest of
     # the login page is the same whatever changed behind it (measured: sha256("") twice over).
@@ -230,6 +265,8 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
     # Pin the policy that produced this coverage, so a later diff can tell "we fixed it" from
     # "we scanned it less hard this time" (R2).
     coverage["policy"] = resolved_policy(policy, max_scan_min, max_rule_min)
+    # Recorded with what the scan did, so a missing reproduction is explained, not mysterious.
+    coverage["exchanges"] = exchange_counts
     return scope, result, guard, records, scan_id, coverage
 
 
@@ -254,6 +291,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-wait", action="store_true", help="Do not wait for ZAP/target readiness")
     p.add_argument("--max-scan-min", type=int, default=None,
                    help="Override the bundle policy's scan budget (minutes)")
+    p.add_argument("--expect-findings", action="store_true",
+                   help="Self-test mode: also require >=1 high/medium finding. For deliberately "
+                        "vulnerable targets, where finding nothing means the scanner is broken")
     args = p.parse_args(argv)
 
     storage_state = seed_routes = None
@@ -274,7 +314,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"RUNNER ABORT: {exc}", file=sys.stderr)
         return 2
 
-    gate = evaluate_gate(result.get("authenticated"), guard.ok, records)
+    gate = evaluate_gate(result.get("authenticated"), guard.ok, records, coverage,
+                         expect_findings=args.expect_findings)
     if args.records_out:
         with open(args.records_out, "w") as fh:
             write_json_array(records, fh)

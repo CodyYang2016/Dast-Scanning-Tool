@@ -508,6 +508,24 @@
           }
         }
       }
+    },
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "When `dast report` fails the build. Findings that already existed are somebody's decision; only NEW ones can fail it.",
+      "properties": {
+        "fail_on": {
+          "type": "string",
+          "enum": [
+            "critical",
+            "high",
+            "medium",
+            "low",
+            "none"
+          ],
+          "description": "Fail (exit 1) when a NEW finding is at or above this severity. Overridden by --fail-on or $DAST_FAIL_ON. Default: high. `none` disables the gate."
+        }
+      }
     }
   }
 }

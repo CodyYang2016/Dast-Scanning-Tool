@@ -394,6 +394,7 @@ def cmd_scan(args) -> int:
         "--evidence-dir", str(run_dir),
         "--records-out", str(run_dir / "records.json"),
         "--coverage-out", str(run_dir / "coverage.json"),
+        *(["--expect-findings"] if getattr(args, "expect_findings", False) else []),
     ])
     print(f"\nscan artifacts: {display(run_dir)} — next: dast report {args.app}")
     return rc
@@ -417,8 +418,26 @@ def cmd_report(args) -> int:
                               "-o", str(labeled)])
     if rc:
         return rc
+
+    # Triage (W1-5): recorded decisions applied as a view over the diff. The lifecycle state
+    # lifecycle_diff just saved keeps the true status; only the labelled output, counts, gate and
+    # SARIF see `suppressed`. An expired suppression says so instead of vanishing.
+    from datetime import date
+    from detections import triage
+    try:
+        suppressions = triage.load(appconfig.suppressions_path(args.app))
+    except Exception as exc:
+        print(f"report: suppressions file is invalid — {exc}", file=sys.stderr)
+        return 2
+    triaged = triage.apply(json.loads(labeled.read_text()), suppressions, date.today())
+    labeled.write_text(json.dumps(triaged, indent=2) + "\n")
+    for rec in triaged:
+        if (rec.get("suppression") or {}).get("expired"):
+            print(f"suppression expired {rec['suppression'].get('expires')}: "
+                  f"[{rec['severity']}] {rec.get('title')} — {rec.get('endpoint')} counts again")
+
     counts: dict[str, int] = {}
-    for rec in json.loads(labeled.read_text()):
+    for rec in triaged:
         counts[rec["status"]] = counts.get(rec["status"], 0) + 1
     print("lifecycle: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
 
@@ -444,17 +463,41 @@ def cmd_report(args) -> int:
     # Where results are published, resolved the same way as the output root and recorded with
     # its provenance: a layered precedence that cannot explain itself looks, from a UI, exactly
     # like the tool ignoring what the operator asked for.
-    gh = {}
+    gh, cfg_fail_on = {}, None
     try:
-        gh = appconfig.github_publish(appconfig.load_app_config(args.app))
+        app_cfg = appconfig.load_app_config(args.app)
+        gh, cfg_fail_on = appconfig.github_publish(app_cfg), appconfig.gate_fail_on(app_cfg)
     except Exception:
         pass
     target = publish_target(args, gh, os.environ)
+
+    # The policy gate (W3-2): only here, after the diff, is it known which findings are NEW. An
+    # existing finding is already somebody's decision; failing every build on it forever is how a
+    # gate gets switched off. The threshold resolves like every other setting and is recorded.
+    from detections.gate import policy_gate
+    fail_on, fail_on_src = _first_set(args.fail_on, os.environ.get("DAST_FAIL_ON"),
+                                      cfg_fail_on, "high")
+    try:
+        gate = policy_gate(json.loads(labeled.read_text()), fail_on)
+    except ValueError as exc:
+        print(f"report: {exc}", file=sys.stderr)
+        return 2
+    if gate["passed"]:
+        print(f"gate: passed — no new findings at or above {fail_on}"
+              if fail_on != "none" else "gate: disabled (fail_on none)")
+    else:
+        shown = "; ".join(f"[{r['severity']}] {r.get('title')} — {r.get('endpoint')}"
+                          for r in gate["blocking"][:5])
+        more = f" (+{len(gate['blocking']) - 5} more)" if len(gate["blocking"]) > 5 else ""
+        print(f"gate: FAILED — {len(gate['blocking'])} new finding(s) at or above {fail_on}: "
+              f"{shown}{more}")
     category = target["category"]["value"]
 
     (run_dir / "settings.json").write_text(json.dumps({
         "output_dir": {"value": str(paths.root), "source": output_source(args)},
         "github": target,
+        "gate": {"fail_on": {"value": fail_on, "source": fail_on_src},
+                 "passed": gate["passed"], "blocking": len(gate["blocking"])},
     }, indent=2) + "\n")
 
     # Coverage-aware publishing: the export drops `resolved` and carries `not_scanned`
@@ -483,8 +526,83 @@ def cmd_report(args) -> int:
                   "$DAST_TARGET_COMMIT/$DAST_TARGET_REF (normally set by the deploy pipeline), or "
                   "publish.github.commit/ref in app.yaml", file=sys.stderr)
             return 2
-        return github_upload.main([str(sarif), "--owner", owner, "--repo", repo,
-                                   "--ref", ref, "--commit", commit])
+        rc = github_upload.main([str(sarif), "--owner", owner, "--repo", repo,
+                                 "--ref", ref, "--commit", commit])
+        if rc:
+            return rc
+    # SARIF is written and an explicit upload has run either way: a failing build still
+    # publishes its evidence. The gate decides only the exit code.
+    return 0 if gate["passed"] else 1
+
+
+def _dismissed_alerts(owner: str, repo: str) -> list[dict]:
+    """Dismissed code-scanning alerts, read-only. Isolated so tests never reach GitHub."""
+    import subprocess
+    out = subprocess.run(["gh", "api", "--paginate",
+                          f"/repos/{owner}/{repo}/code-scanning/alerts?state=dismissed&per_page=100"],
+                         capture_output=True, check=True, text=True).stdout
+    # --paginate concatenates JSON arrays; decode them one after another.
+    decoder, pos, alerts = json.JSONDecoder(), 0, []
+    out = out.strip()
+    while pos < len(out):
+        chunk, pos = decoder.raw_decode(out, pos)
+        alerts.extend(chunk)
+        while pos < len(out) and out[pos].isspace():
+            pos += 1
+    return alerts
+
+
+def cmd_triage(args) -> int:
+    """Propose suppressions from GitHub dismissals, for review. Never applies them."""
+    import yaml
+    from datetime import date
+    from detections import triage
+
+    if not args.from_github:
+        print("triage: nothing to do — pass --from-github", file=sys.stderr)
+        return 2
+    paths = paths_for(args)
+    run_dir = paths.latest_scan()
+    source = None
+    for name in ("labeled.json", "records.json"):
+        if run_dir is not None and (run_dir / name).exists():
+            source = run_dir / name
+            break
+    if source is None:
+        print(f"no scan to match against — run: dast scan {args.app}", file=sys.stderr)
+        return 2
+
+    gh = {}
+    try:
+        gh = appconfig.github_publish(appconfig.load_app_config(args.app))
+    except Exception:
+        pass
+    target = publish_target(args, gh, os.environ)
+    owner, repo = target["owner"]["value"], target["repo"]["value"]
+    if not (owner and repo):
+        print("triage needs the repository: --owner/--repo, $DAST_GH_OWNER/$DAST_GH_REPO, or "
+              "publish.github in app.yaml", file=sys.stderr)
+        return 2
+
+    real = appconfig.suppressions_path(args.app)
+    existing = triage.load(real)
+    result = triage.from_github(_dismissed_alerts(owner, repo), json.loads(source.read_text()),
+                                existing, date.today())
+    proposed = real.with_name("suppressions.proposed.yaml")
+    proposed.parent.mkdir(parents=True, exist_ok=True)
+    header = ("# PROPOSED suppressions, imported from GitHub dismissals by `dast triage`.\n"
+              "# Review each entry, then move the ones you agree with into suppressions.yaml.\n"
+              "# Nothing here takes effect until it is in that file.\n")
+    proposed.write_text(header + yaml.safe_dump({"suppressions": result["proposed"]},
+                                                sort_keys=False))
+    print(f"triage: {len(result['proposed'])} proposed, {len(result['ambiguous'])} ambiguous, "
+          f"{len(result['unmatched'])} unmatched — written to {display(proposed)}")
+    for a in result["ambiguous"]:
+        print(f"  ambiguous: alert #{a['number']} [{a['rule_id']}] {a['path']} could be any of "
+              f"{len(a['candidates'])} findings; its message names no parameter")
+    for a in result["unmatched"]:
+        print(f"  unmatched: alert #{a['number']} [{a['rule_id']}] {a['path']} — no such finding "
+              f"in the latest scan")
     return 0
 
 
@@ -562,7 +680,18 @@ def build_parser() -> argparse.ArgumentParser:
     s = common(sub.add_parser("scan", help="run the generated bundle through the scanner"))
     s.add_argument("--zap-api", default=_DEFAULT_ZAP)
     s.add_argument("--zap-proxy", default=_DEFAULT_ZAP)
+    s.add_argument("--expect-findings", action="store_true",
+                   help="Self-test: also fail unless a high/medium finding is raised. For "
+                        "deliberately vulnerable targets, where finding nothing means the "
+                        "scanner is broken. Default is a health gate only")
     s.set_defaults(func=cmd_scan)
+
+    t = common(sub.add_parser("triage", help="propose suppressions from GitHub dismissals"))
+    t.add_argument("--from-github", action="store_true",
+                   help="Read dismissed alerts and write suppressions.proposed.yaml for review")
+    t.add_argument("--owner", default=None)
+    t.add_argument("--repo", default=None)
+    t.set_defaults(func=cmd_triage, ref=None, commit=None, category=None)
 
     r = common(sub.add_parser("report", help="lifecycle diff -> SARIF -> (optionally) GitHub"))
     r.add_argument("--driver-version", default="ZAP 2.17.0")
@@ -571,6 +700,10 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--repo", default=None)
     r.add_argument("--ref", default=None,
                    help="Ref of the DEPLOYED build that was scanned, e.g. refs/heads/main")
+    r.add_argument("--fail-on", default=None,
+                   choices=["critical", "high", "medium", "low", "none"],
+                   help="Fail (exit 1) when a NEW finding is at or above this severity. "
+                        "Default: gate.fail_on in app.yaml, else high; 'none' disables")
     r.add_argument("--commit", default=None,
                    help="Full SHA of the DEPLOYED build that was scanned. Required to upload; "
                         "there is no default, because this tool's own checkout is not the target")

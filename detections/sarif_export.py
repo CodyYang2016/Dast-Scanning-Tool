@@ -135,6 +135,13 @@ def _message(rec: dict, markdown: bool = False) -> str:
     msg += "."
     if rec.get("confidence"):
         msg += f" Confidence: {rec['confidence'].capitalize()}."
+    # How to replay it (W1-3). The request line carries the attack payload, so it is fenced like
+    # any other target-shaped text; the full redacted exchange sits at exchange_path.
+    if rec.get("request_line"):
+        msg += f" Reproduce: {_code(rec['request_line'], markdown)}"
+        if rec.get("response_status") is not None:
+            msg += f" → {rec['response_status']}"
+        msg += "."
     return msg
 
 
@@ -155,6 +162,15 @@ def _result_for(rec: dict, rule_index: int) -> dict:
             "scan_id": rec.get("scan_id"),
         },
     }
+    # A suppressed finding (W1-5) stays in the upload — dropping it is how GitHub would decide it
+    # was "fixed" — and carries SARIF's own suppression marker with the recorded justification.
+    # GitHub IGNORES this marker (verified 2026-10-01: alert #1501, uploaded suppressed, stayed
+    # open). It is kept because it is valid SARIF that other consumers honour; on GitHub, dismiss
+    # in the UI and `dast triage --from-github` brings that decision back here.
+    sup = rec.get("suppression") or {}
+    if rec.get("status") == "suppressed" and not sup.get("expired"):
+        result["suppressions"] = [{"kind": "external", "status": "accepted",
+                                   "justification": sup.get("justification", "")}]
     # Also machine-readable, for API consumers and filtering — but never the ONLY place a value
     # a person needs lives, since the alert page does not show properties.
     for field in ("confidence", "attack"):
@@ -180,8 +196,11 @@ def to_sarif(records: Iterable[dict], driver_version: str | None = None,
     rules: list[dict] = []
     rule_index: dict[str, int] = {}
     results: list[dict] = []
+    scan_ids: set[str] = set()
 
     for rec in records:
+        if rec.get("scan_id"):
+            scan_ids.add(rec["scan_id"])
         # Coverage-aware publishing (R2): GitHub auto-closes any alert absent from the newest
         # upload. Only a `resolved` record (its route x rule was exercised and the finding is
         # gone) may be omitted; `not_scanned` is carried forward so a route this scan did not
@@ -205,7 +224,13 @@ def to_sarif(records: Iterable[dict], driver_version: str | None = None,
     # REST API has no field for it — as runs[].automationDetails.id, which is exactly what the
     # CodeQL action's `category` input sets.
     if category:
-        run["automationDetails"] = {"id": category}
+        # GitHub splits this id at its LAST "/": before is the category, after is a run id. So the
+        # category must be followed by one — "dast/juice-shop" alone was read as category "dast"
+        # and run "juice-shop", giving every app the same category (measured on an upload). The
+        # scan id is the natural run id; with no records the id still ends in "/".
+        # Carried-forward records keep their older scan ids; the newest is this scan.
+        run_id = max(scan_ids) if scan_ids else ""
+        run["automationDetails"] = {"id": f"{category.rstrip('/')}/{run_id}"}
 
     return {
         "version": SARIF_VERSION,

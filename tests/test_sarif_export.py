@@ -170,7 +170,7 @@ def test_export_keeps_unlabeled_records(records):
 
 def test_a_category_is_carried_as_automation_details(records):
     s = to_sarif(records, driver_version="2.17.0", category="dast/dvwa")
-    assert s["runs"][0]["automationDetails"]["id"] == "dast/dvwa"
+    assert s["runs"][0]["automationDetails"]["id"] == f"dast/dvwa/{SCAN_ID}"
 
 
 def test_a_categorised_document_still_validates_against_the_official_schema(records):
@@ -338,3 +338,94 @@ def test_the_plain_text_message_is_unchanged_by_markdown_escaping(sarif):
 def test_a_multi_line_solution_keeps_its_lines_in_markdown(sarif):
     md = _by_rule(sarif, "40018")["help"]["markdown"]
     assert "place.  \nIn general" in md          # hard line break, not a collapsed paragraph
+
+
+# ---- W1-3: the alert says how to replay it ------------------------------------------------
+
+def _repro(**extra):
+    return {"rule_id": "40018", "title": "SQL Injection", "severity": "high", "endpoint": "/x",
+            "fingerprint": "0" * 64, "scan_id": SCAN_ID, **extra}
+
+
+def test_the_message_says_how_to_reproduce():
+    rec = _repro(parameter="email", attack="'", request_line="POST /rest/user/login",
+                 response_status=500)
+    msg = to_sarif([rec])["runs"][0]["results"][0]["message"]["text"]
+    assert msg.endswith("Reproduce: `POST /rest/user/login` → 500.")
+
+
+def test_a_request_line_without_a_status_still_reads_cleanly():
+    msg = to_sarif([_repro(request_line="GET /a")])["runs"][0]["results"][0]["message"]["text"]
+    assert msg.endswith("Reproduce: `GET /a`.")
+
+
+def test_no_reproduction_adds_nothing():
+    msg = to_sarif([_repro()])["runs"][0]["results"][0]["message"]["text"]
+    assert "Reproduce" not in msg
+
+
+def test_a_hostile_request_line_cannot_inject_markdown():
+    # The path carries the attack payload, which is attacker-shaped text.
+    rec = _repro(request_line="GET /s?q=` [x](http://evil.example) `")
+    md = to_sarif([rec])["runs"][0]["results"][0]["message"]["markdown"]
+    assert "`` GET /s?q=` [x](http://evil.example) ` ``" in md
+
+
+# ---- W1-5: a suppressed finding is still published, and marked ---------------------------
+
+def _sup_rec(status="suppressed"):
+    return {"rule_id": "40018", "title": "SQL Injection", "severity": "high", "endpoint": "/x",
+            "fingerprint": "0" * 64, "scan_id": SCAN_ID, "status": status,
+            "suppression": {"reason": "false_positive", "justification": "checked by hand",
+                            "expired": False, "was": "open"}}
+
+
+def test_a_suppressed_finding_stays_in_the_upload():
+    # Dropping it would be how GitHub decides it was "fixed".
+    assert len(to_sarif([_sup_rec()])["runs"][0]["results"]) == 1
+
+
+def test_it_carries_a_sarif_suppression_with_the_justification():
+    (s,) = to_sarif([_sup_rec()])["runs"][0]["results"][0]["suppressions"]
+    assert s == {"kind": "external", "status": "accepted", "justification": "checked by hand"}
+
+
+def test_an_expired_suppression_is_not_marked():
+    rec = _sup_rec(status="open"); rec["suppression"]["expired"] = True
+    assert "suppressions" not in to_sarif([rec])["runs"][0]["results"][0]
+
+
+def test_a_suppressed_document_validates_against_the_official_schema():
+    schema = json.loads(SARIF_SCHEMA.read_text())
+    validator_for(schema)(schema).validate(to_sarif([_sup_rec()]))
+
+
+# ---- the category as GITHUB derives it --------------------------------------------------
+#
+# GitHub splits runs[].automationDetails.id at its LAST "/": the part before is the category, the
+# part after is a run id. Measured on an upload: id "dast/juice-shop" became category "dast" — so
+# every app got the same category and two apps in one repo would overwrite each other, the very bug
+# a per-app category exists to prevent. Tests that only compared our own ids could not see it.
+
+def _github_category(sarif):
+    run_id = sarif["runs"][0]["automationDetails"]["id"]
+    return run_id[: run_id.rfind("/")]
+
+
+def test_github_derives_the_full_per_app_category(records):
+    assert _github_category(to_sarif(records, category="dast/juice-shop")) == "dast/juice-shop"
+
+
+def test_two_apps_get_different_categories_as_github_sees_them(records):
+    a = _github_category(to_sarif(records, category="dast/dvwa"))
+    b = _github_category(to_sarif(records, category="dast/juice-shop"))
+    assert a != b and a == "dast/dvwa" and b == "dast/juice-shop"
+
+
+def test_the_run_id_is_the_scan(records):
+    run_id = to_sarif(records, category="dast/juice-shop")["runs"][0]["automationDetails"]["id"]
+    assert run_id == f"dast/juice-shop/{SCAN_ID}"
+
+
+def test_a_trailing_slash_in_config_is_not_doubled(records):
+    assert _github_category(to_sarif(records, category="dast/juice-shop/")) == "dast/juice-shop"

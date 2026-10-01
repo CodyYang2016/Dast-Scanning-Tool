@@ -152,3 +152,71 @@ def test_a_jwt_glued_to_a_word_leaves_no_token_text():
 def test_ordinary_emails_are_still_redacted():
     for text in ("contact a.b+c@example.co.uk now", "user@x.io", "id=victim@corp.com&x=1"):
         assert "@" not in redact_text(text), text
+
+
+# ---- W1-3 prerequisite: headers and form bodies -----------------------------------------
+#
+# Reproducible findings mean storing whole request/response pairs, and redact_text did not scrub
+# a Cookie or Authorization header LINE, or a form-encoded password. A real Juice Shop attack
+# request, fetched from ZAP, carried the test account's password in its body and a Cookie header.
+
+_REAL_ATTACK = (
+    "POST http://juice:3000/rest/user/login HTTP/1.1\r\n"
+    "host: juice:3000\r\n"
+    "Content-Type: application/json\r\n"
+    "Cookie: language=en; token=abc123SESSIONvalue; welcomebanner_status=dismiss\r\n"
+    "Authorization: Basic YWRtaW46cGFzc3dvcmQ=\r\n"
+    "\r\n"
+    '{"email":"\'","password":"Dast-POC-passw0rd!"}'
+)
+
+
+@pytest.mark.parametrize("header", ["Cookie", "cookie", "Set-Cookie", "Authorization",
+                                    "Proxy-Authorization", "X-Auth-Token", "X-API-Key"])
+def test_a_sensitive_header_keeps_its_name_and_loses_its_value(header):
+    out = redact_text(f"{header}: secretvalue123; more=stuff")
+    assert out.lower().startswith(header.lower() + ":") and "secretvalue123" not in out
+
+
+def test_an_ordinary_header_is_left_alone():
+    assert redact_text("Content-Type: application/json") == "Content-Type: application/json"
+
+
+def test_the_real_attack_request_leaks_nothing():
+    out = redact_text(_REAL_ATTACK)
+    for raw in ("abc123SESSIONvalue", "YWRtaW46cGFzc3dvcmQ=", "Dast-POC-passw0rd!"):
+        assert raw not in out, raw
+    assert out.startswith("POST http://juice:3000/rest/user/login")   # still replayable
+
+
+@pytest.mark.parametrize("body, raw", [
+    ("username=admin&password=hunter2&Login=Login", "hunter2"),
+    ("password=hunter2", "hunter2"),
+    ("a=1&token=tok999xyz", "tok999xyz"),
+    ("q=x&api_key=k-555&z=1", "k-555"),
+    ("GET /cb?session=s3ss10n&next=/ HTTP/1.1", "s3ss10n"),
+])
+def test_form_encoded_secrets_are_redacted(body, raw):
+    out = redact_text(body)
+    assert raw not in out and "REDACTED" in out
+
+
+def test_form_fields_that_are_not_secret_survive():
+    assert redact_text("username=admin&Login=Login") == "username=admin&Login=Login"
+
+
+def test_a_secret_word_inside_another_word_is_not_a_field():
+    # "mypassword=" is not the field "password"; over-matching would mangle ordinary text.
+    assert redact_text("mypassword=x") == "mypassword=x"
+
+
+@pytest.mark.parametrize("hostile", [
+    "Cookie: " + "a" * 200_000,
+    "password=" + "x" * 200_000,
+    ("&token=" * 30_000),
+    ("Authorization:" * 15_000),
+])
+def test_the_new_rules_are_linear_too(hostile):
+    t = time.perf_counter()
+    redact_text(hostile)
+    assert time.perf_counter() - t < 1.0

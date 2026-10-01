@@ -77,7 +77,8 @@
         "open",
         "new",
         "resolved",
-        "not_scanned"
+        "not_scanned",
+        "suppressed"
       ],
       "description": "Lifecycle state assigned by the diff against the previous scan's fingerprint set. 'resolved' is asserted only when the finding's (route x rule) pair was actually exercised this scan; 'not_scanned' marks a previously-open finding whose (route x rule) pair was not exercised this scan (coverage-driven disappearance, not a confirmed fix) \u2014 see R2 in docs/junior_engineer/seeded_session_exploration_design.md."
     },
@@ -127,6 +128,65 @@
       "minLength": 1,
       "maxLength": 520,
       "description": "The payload ZAP sent. Redacted and capped like evidence_excerpt. Per finding. Optional (W1-1)."
+    },
+    "request_line": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2100,
+      "description": "How to replay the finding: method and path with query, host dropped, redacted \u2014 e.g. `POST /rest/user/login`. High/medium findings only. Optional (W1-3)."
+    },
+    "response_status": {
+      "type": "integer",
+      "minimum": 100,
+      "maximum": 599,
+      "description": "Status of the response that proved the finding. Optional (W1-3)."
+    },
+    "exchange_path": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Relative path to the stored, redacted request/response pair for this finding (evidence/<scan_id>/messages/<fingerprint>.txt). Optional (W1-3)."
+    },
+    "suppression": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason",
+        "justification",
+        "expired"
+      ],
+      "description": "The recorded triage decision that applies to this finding (W1-5), from security/dast/<app>/suppressions.yaml. When `expired` is false the status is `suppressed` and `was` keeps the lifecycle status it replaced; when true the suppression has lapsed and the finding counts again. Optional.",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": [
+            "false_positive",
+            "accepted_risk",
+            "wont_fix",
+            "test_data"
+          ]
+        },
+        "justification": {
+          "type": "string",
+          "minLength": 1
+        },
+        "owner": {
+          "type": "string"
+        },
+        "expires": {
+          "type": "string"
+        },
+        "expired": {
+          "type": "boolean"
+        },
+        "was": {
+          "type": "string",
+          "enum": [
+            "new",
+            "open",
+            "not_scanned"
+          ]
+        }
+      }
     }
   }
 }

@@ -81,6 +81,20 @@ _SECRET_KEYS = {
     "ssn", "creditcard", "credit_card", "card_number", "cvv",
 }
 
+# Headers whose VALUE is a credential. Shared with runner/evidence.py's HAR redaction so there is
+# one list, not two that drift apart. A secret in a header with an unrecognised custom name is not
+# caught by this; extend the list here.
+SENSITIVE_HEADERS = frozenset({"authorization", "cookie", "set-cookie", "proxy-authorization",
+                               "x-auth-token", "x-api-key"})
+
+# A header LINE: the name survives so a stored request still reads as one, the value does not.
+# Anchored at a line start so prose that happens to say "Cookie:" mid-sentence is left alone.
+# Linear: one attempt per line, and the value runs to the end of the line without backtracking.
+_HEADER_LINE = re.compile(
+    r"(?im)^([ \t]*)(" + "|".join(sorted((re.escape(h) for h in SENSITIVE_HEADERS),
+                                          key=len, reverse=True)) + r")([ \t]*:[ \t]*)[^\r\n]*"
+)
+
 # Secret-ish key VALUES inside JSON-like text: "token": "...."  ->  "token": "REDACTED"
 _TOKEN_FIELD = re.compile(
     r'("(?:' + "|".join(sorted(_SECRET_KEYS, key=len, reverse=True)) + r')"\s*:\s*")[^"]*(")',
@@ -88,10 +102,21 @@ _TOKEN_FIELD = re.compile(
 )
 
 
+# A form-encoded or query-string field whose name is secret: password=hunter2 -> password=REDACTED.
+# The name must start at a field boundary, so "mypassword=" is not mistaken for "password=". The
+# value stops at the next delimiter, so each match is a single forward pass.
+_FORM_FIELD = re.compile(
+    r"(?i)(^|[?&;\s])((?:" + "|".join(sorted((re.escape(k) for k in _SECRET_KEYS),
+                                              key=len, reverse=True)) + r")=)[^&\s;#\"']*"
+)
+
+
 def redact_text(text):
     """Scrub secret/PII patterns from a string. Non-strings pass through unchanged."""
     if not isinstance(text, str) or not text:
         return text
+    text = _HEADER_LINE.sub(rf"\1\2\3{REDACTED}", text)
+    text = _FORM_FIELD.sub(rf"\1\2{REDACTED}", text)
     text = _JWT.sub(REDACTED, text)
     text = _BEARER.sub("Bearer " + REDACTED, text)
     text = _TOKEN_FIELD.sub(rf"\1{REDACTED}\2", text)

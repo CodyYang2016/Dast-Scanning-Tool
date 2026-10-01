@@ -258,3 +258,155 @@ def test_a_config_commit_is_accepted_by_the_contract():
 def test_report_accepts_a_commit_flag():
     args = dast.build_parser().parse_args(["report", "dvwa", "--commit", _SHA])
     assert args.commit == _SHA
+
+
+# ---- W3-2: the report's policy gate decides the exit code ----------------------------------
+
+def _scan_dir(root, app="gateapp", severities=("high",)):
+    """A minimal scan on disk: records + coverage, as `dast scan` leaves them."""
+    import json
+    d = root / app / "scans" / "20261001T000000Z"
+    d.mkdir(parents=True)
+    recs = [{"app_id": app, "scan_id": "20261001T000000Z", "fingerprint": f"{i:064x}",
+             "rule_id": "40018", "title": "SQL Injection", "severity": sev,
+             "cwe_id": "CWE-89", "endpoint": f"/r{i}", "parameter": "id", "status": "open",
+             "evidence_path": None} for i, sev in enumerate(severities)]
+    (d / "records.json").write_text(json.dumps(recs))
+    (d / "coverage.json").write_text(json.dumps({"routes": [f"/r{i}" for i in
+                                                            range(len(severities))],
+                                                 "rules": ["40018"]}))
+    return d
+
+
+def _report(tmp_path, *extra, app="gateapp"):
+    args = dast.build_parser().parse_args(["report", app, "--out", str(tmp_path), *extra])
+    return dast.cmd_report(args)
+
+
+def test_a_new_high_fails_the_report(tmp_path, monkeypatch):
+    monkeypatch.delenv("DAST_FAIL_ON", raising=False)
+    _scan_dir(tmp_path)
+    assert _report(tmp_path) == 1
+
+
+def test_the_same_finding_on_the_next_scan_is_open_and_passes(tmp_path, monkeypatch):
+    monkeypatch.delenv("DAST_FAIL_ON", raising=False)
+    _scan_dir(tmp_path)
+    _report(tmp_path)                       # first sight: new
+    assert _report(tmp_path) == 0           # second: open — already somebody's decision
+
+
+def test_fail_on_none_never_fails(tmp_path):
+    _scan_dir(tmp_path)
+    assert _report(tmp_path, "--fail-on", "none") == 0
+
+
+def test_a_new_medium_passes_the_default_threshold(tmp_path, monkeypatch):
+    monkeypatch.delenv("DAST_FAIL_ON", raising=False)
+    _scan_dir(tmp_path, severities=("medium",))
+    assert _report(tmp_path) == 0
+
+
+def test_the_pipeline_can_set_the_threshold(tmp_path, monkeypatch):
+    monkeypatch.setenv("DAST_FAIL_ON", "medium")
+    _scan_dir(tmp_path, severities=("medium",))
+    assert _report(tmp_path) == 1
+
+
+def test_sarif_is_still_written_when_the_gate_fails(tmp_path, monkeypatch):
+    monkeypatch.delenv("DAST_FAIL_ON", raising=False)
+    d = _scan_dir(tmp_path)
+    assert _report(tmp_path) == 1 and (d / "results.sarif").exists()
+
+
+def test_the_gate_and_its_source_are_recorded(tmp_path, monkeypatch):
+    import json
+    monkeypatch.delenv("DAST_FAIL_ON", raising=False)
+    d = _scan_dir(tmp_path)
+    _report(tmp_path)
+    g = json.loads((d / "settings.json").read_text())["gate"]
+    assert g["fail_on"] == {"value": "high", "source": "default"} and g["passed"] is False
+
+
+def test_scan_accepts_expect_findings():
+    assert dast.build_parser().parse_args(["scan", "x", "--expect-findings"]).expect_findings
+
+
+def test_the_contract_accepts_a_gate_threshold():
+    import json, jsonschema, yaml
+    cfg = yaml.safe_load(open(appconfig._APPS_DIR / "dvwa" / "app.yaml"))
+    cfg["gate"] = {"fail_on": "medium"}
+    jsonschema.validate(cfg, json.loads((dast.ROOT / "contracts" / "app.schema.json").read_text()))
+
+
+# ---- W1-5: report applies suppressions; triage proposes them from GitHub ------------------
+
+def _suppress(tmp_path, monkeypatch, app, fps, reason="false_positive"):
+    import yaml
+    monkeypatch.setattr(appconfig, "_APPS_DIR", tmp_path / "apps")
+    d = tmp_path / "apps" / app; d.mkdir(parents=True, exist_ok=True)
+    (d / "suppressions.yaml").write_text(yaml.safe_dump({"suppressions": [
+        {"fingerprint": fp, "reason": reason, "justification": "verified by hand"} for fp in fps]}))
+
+
+def test_a_suppressed_new_high_does_not_fail_the_report(tmp_path, monkeypatch, capsys):
+    import json
+    monkeypatch.delenv("DAST_FAIL_ON", raising=False)
+    d = _scan_dir(tmp_path / "out")
+    _suppress(tmp_path, monkeypatch, "gateapp", [f"{0:064x}"])
+    assert _report(tmp_path / "out") == 0
+    out = capsys.readouterr().out
+    assert "suppressed=1" in out
+    rec = json.loads((d / "labeled.json").read_text())[0]
+    assert rec["status"] == "suppressed" and rec["suppression"]["was"] == "new"
+
+
+def test_suppression_does_not_change_the_lifecycle_history(tmp_path, monkeypatch):
+    # Triage is a view over the diff: the next scan must still see the finding as `open`.
+    import json
+    monkeypatch.delenv("DAST_FAIL_ON", raising=False)
+    _scan_dir(tmp_path / "out")
+    _suppress(tmp_path, monkeypatch, "gateapp", [f"{0:064x}"])
+    _report(tmp_path / "out")
+    state = json.loads((tmp_path / "out" / "gateapp" / "state.json").read_text())
+    assert all(r["status"] != "suppressed" for r in state["gateapp"]["records"])
+
+
+def test_triage_writes_proposals_from_github_dismissals(tmp_path, monkeypatch, capsys):
+    import json
+    import yaml
+    from detections.fingerprint import fingerprint, payload_family
+    d = _scan_dir(tmp_path / "out")
+    # Matching RECOMPUTES the fingerprint from the alert, so this record needs its real one.
+    recs = json.loads((d / "records.json").read_text())
+    recs[0]["fingerprint"] = fingerprint("40018", "/r0", "id", payload_family("40018"))
+    (d / "records.json").write_text(json.dumps(recs))
+    _report(tmp_path / "out", "--fail-on", "none")
+    monkeypatch.setattr(appconfig, "_APPS_DIR", tmp_path / "apps")
+    (tmp_path / "apps" / "gateapp").mkdir(parents=True)
+    alert = {"number": 9, "state": "dismissed", "dismissed_reason": "false positive",
+             "dismissed_comment": "not injectable", "dismissed_by": {"login": "rev"},
+             "rule": {"id": "40018"},
+             "most_recent_instance": {"location": {"path": "/r0"},
+                                      "message": {"text": "SQL Injection in parameter `id`."}}}
+    monkeypatch.setattr(dast, "_dismissed_alerts", lambda owner, repo: [alert])
+    args = dast.build_parser().parse_args(["triage", "gateapp", "--from-github",
+                                           "--owner", "o", "--repo", "r",
+                                           "--out", str(tmp_path / "out")])
+    assert dast.cmd_triage(args) == 0
+    proposed = yaml.safe_load((tmp_path / "apps" / "gateapp" /
+                               "suppressions.proposed.yaml").read_text())
+    assert proposed["suppressions"][0]["github_alert"] == 9
+    assert "1 proposed" in capsys.readouterr().out
+
+
+def test_triage_never_touches_the_real_suppressions_file(tmp_path, monkeypatch):
+    _scan_dir(tmp_path / "out")
+    _report(tmp_path / "out", "--fail-on", "none")
+    monkeypatch.setattr(appconfig, "_APPS_DIR", tmp_path / "apps")
+    (tmp_path / "apps" / "gateapp").mkdir(parents=True)
+    monkeypatch.setattr(dast, "_dismissed_alerts", lambda o, r: [])
+    args = dast.build_parser().parse_args(["triage", "gateapp", "--from-github", "--owner", "o",
+                                           "--repo", "r", "--out", str(tmp_path / "out")])
+    dast.cmd_triage(args)
+    assert not (tmp_path / "apps" / "gateapp" / "suppressions.yaml").exists()

@@ -3,8 +3,9 @@
 #   docker compose up --build --abort-on-container-exit --exit-code-from runner
 #
 # The runner authenticates through ZAP, runs a bounded scope-enforced scan, and exits with the
-# Phase 1 gate as its code (0 = pass). Images are pinned by digest for reproducibility (NFR-1;
-# see versions.lock). Detection records land in ./out/records.json.
+# gate as its code (0 = pass) — here in --expect-findings mode, a self-test against a
+# deliberately vulnerable app. Images are pinned by digest for reproducibility (NFR-1; see
+# versions.lock). Records, coverage and redacted evidence land in ./out/.
 name: ssd-dast-poc
 
 services:
@@ -82,6 +83,12 @@ services:
       - "--zap-api=http://zap:8080"
       - "--zap-proxy=http://zap:8080"
       - "--records-out=/app/out/records.json"
+      # What `dast report` / lifecycle_diff need, kept with the records rather than in the bundle.
+      - "--coverage-out=/app/out/coverage.json"
+      - "--evidence-dir=/app/out/evidence"
+      # Juice Shop is deliberately vulnerable, so finding nothing means the scanner is broken.
+      # This keeps the one-command run a self-test; without it the gate is health-only (W3-2).
+      - "--expect-findings"
     volumes:
       - ./out:/app/out
 

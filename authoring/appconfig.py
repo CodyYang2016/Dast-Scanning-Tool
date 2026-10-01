@@ -311,3 +311,14 @@ def github_publish(cfg: dict) -> dict:
     never decides THAT they go, because a Security tab is a one-way door.
     """
     return dict(cfg.get("publish", {}).get("github", {}))
+
+
+def gate_fail_on(cfg: dict) -> str | None:
+    """The severity at or above which a NEW finding fails `dast report`, or None for the default.
+    `none` disables the gate. See detections/gate.py."""
+    return cfg.get("gate", {}).get("fail_on")
+
+
+def suppressions_path(app_id: str) -> Path:
+    """security/dast/<app>/suppressions.yaml — reviewed triage decisions (W1-5)."""
+    return _APPS_DIR / app_id / "suppressions.yaml"
