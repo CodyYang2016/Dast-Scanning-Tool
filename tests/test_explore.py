@@ -6,6 +6,9 @@ fallback proposer, and next_action's fallback when no LLM key is present. Oracle
 observations/actions with known-correct answers.
 """
 
+import sys
+import types
+
 from authoring.explore import (
     field_selector,
     form_fill_plan,
@@ -510,3 +513,122 @@ def test_an_explicit_empty_allow_list_is_honoured_over_the_config():
     config = {"explore": {"safe_forms": ["/WebGoat/SqlInjection/attack2"]}}
     assert explore_mod.effective_safe_forms([], config) == []
     assert explore_mod.effective_safe_forms(None, None) == []
+
+
+def test_a_submittable_form_is_remembered_against_the_page_it_was_seen_on():
+    """Reading comes first and navigates away: without this the forms are never reachable."""
+    obs = {"url": "http://webgoat:8083/WebGoat/SqlInjection.lesson",
+           "forms": [{"path": "/WebGoat/SqlInjection/attack2", "submittable": True},
+                     {"path": "/WebGoat/SqlInjection/attack3", "submittable": True},
+                     {"path": "/WebGoat/other", "submittable": False}]}
+    here = explore_mod.page_path(obs["url"], "http://webgoat:8083")
+    assert here == "/WebGoat/SqlInjection.lesson"
+    pending = explore_mod.deferred_submits([], obs, here, set(), set())
+    assert pending == [(here, "/WebGoat/SqlInjection/attack2"),
+                       (here, "/WebGoat/SqlInjection/attack3")]
+
+
+def test_a_posted_or_already_revisited_form_is_not_queued_again():
+    obs = {"url": "http://webgoat:8083/WebGoat/SqlInjection.lesson",
+           "forms": [{"path": "/WebGoat/SqlInjection/attack2", "submittable": True},
+                     {"path": "/WebGoat/SqlInjection/attack3", "submittable": True}]}
+    here = "/WebGoat/SqlInjection.lesson"
+    pending = explore_mod.deferred_submits(
+        [], obs, here,
+        submitted={"/WebGoat/SqlInjection/attack2"},
+        offered={(here, "/WebGoat/SqlInjection/attack3")})
+    assert pending == []
+
+
+def test_a_second_form_on_an_already_revisited_page_is_still_queued():
+    """`offered` is per (page, endpoint): one refused form must not strand its neighbours."""
+    here = "/WebGoat/SqlInjection.lesson"
+    obs = {"url": "http://webgoat:8083" + here,
+           "forms": [{"path": "/WebGoat/SqlInjection/attack2", "submittable": True},
+                     {"path": "/WebGoat/SqlInjection/attack3", "submittable": True}]}
+    pending = explore_mod.deferred_submits(
+        [], obs, here, submitted=set(),
+        offered={(here, "/WebGoat/SqlInjection/attack2")})
+    assert pending == [(here, "/WebGoat/SqlInjection/attack3")]
+
+
+# ---- the revisit, through the loop ------------------------------------------------------
+
+class _LoopPage:
+    """Enough of a Playwright page to drive explore(): two pages, forms on only one of them."""
+
+    PAGES = {
+        "/lesson": {"links": ["/data.json"],
+                    "forms": [{"selector": "form >> nth=0", "path": "/lesson/attack",
+                               "method": "POST", "fields": ["query"]}]},
+        "/data.json": {"links": [], "forms": []},
+    }
+
+    def __init__(self, base: str):
+        self._base = base
+        self.url = base + "/lesson"
+        self.filled: list[tuple[str, str]] = []
+        self.submitted: list[str] = []
+
+    def _here(self):
+        return self.PAGES.get(self.url[len(self._base):], {"links": [], "forms": []})
+
+    def route(self, *a, **k): pass
+
+    def on(self, *a, **k): pass
+
+    def goto(self, url, **k): self.url = url
+
+    def evaluate(self, expr):
+        here = self._here()
+        return [dict(f) for f in here["forms"]] if "querySelectorAll('form')" in expr \
+            else list(here["links"])
+
+    def fill(self, selector, value, **k): self.filled.append((selector, value))
+
+    def eval_on_selector(self, selector, _script): self.submitted.append(selector)
+
+    def wait_for_load_state(self, *a, **k): pass
+
+    def click(self, *a, **k): pass
+
+
+def _fake_playwright(page):
+    """A sync_playwright() stand-in handing explore() the one page above."""
+    context = types.SimpleNamespace(new_page=lambda: page, close=lambda: None)
+    browser = types.SimpleNamespace(new_context=lambda **k: context, close=lambda: None)
+    pw = types.SimpleNamespace(chromium=types.SimpleNamespace(launch=lambda **k: browser))
+
+
+    class _Manager:
+        def __enter__(self): return pw
+
+        def __exit__(self, *exc): return False
+
+    return _Manager
+
+
+def test_the_walk_returns_to_the_form_it_read_its_way_past(monkeypatch):
+    """The whole point: reading leaves /lesson, and the submit still happens."""
+    base = "http://app:8080"
+    page = _LoopPage(base)
+    monkeypatch.setitem(sys.modules, "playwright", types.ModuleType("playwright"))
+    sync_api = types.ModuleType("playwright.sync_api")
+    sync_api.sync_playwright = _fake_playwright(page)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", sync_api)
+    monkeypatch.setattr(explore_mod, "prove_auth_live",
+                        lambda *a, **k: {"alive": True, "reason": "ok"})
+
+    trace, _guard = explore_mod.explore(
+        "app", base, {}, ["/lesson"], {"app_id": "app", "fqdn_allow_list": ["app"]},
+        use_llm=False, max_pages=10,
+        config={"base_url": base, "auth": {"proof": {"selector": "#ok"}},
+                "explore": {"safe_forms": ["/lesson/attack"],
+                            "test_data": {"query": "SELECT 1"}}})
+
+    submits = [ev for ev in trace["interactions"] if ev.get("type") == "submit"]
+    assert [ev["selector"] for ev in submits] == ["form >> nth=0"]
+    assert submits[0]["fields"] == ["query"]
+    assert page.filled == [('form >> nth=0 >> [name="query"]', "SELECT 1")]
+    # and it happened after the walk had already left the page the form was on
+    assert page.url.endswith("/lesson")
