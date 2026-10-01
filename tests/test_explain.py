@@ -136,3 +136,15 @@ def test_a_route_absent_for_other_reasons_is_still_route_not_covered():
     rec = _rec("f9", endpoint="/other.php", rule="40018")
     (why,) = explain.explain_disappearance([rec], [], cov, cov)
     assert why["reason"] == "route_not_covered"
+
+
+def test_a_scan_that_lost_its_session_cannot_claim_a_fix():
+    cov = {**BASE_COV, "session": {"alive_throughout": False, "losses": [{"at_s": 91}]}}
+    (why,) = explain.explain_disappearance([_rec("f1")], [], cov, BASE_COV)
+    assert why["reason"] == "scan_degraded" and "91" in why["detail"]
+
+
+def test_an_excluded_route_is_still_the_more_specific_answer():
+    cov = {**BASE_COV, "excluded": ["(?i).*/a.*"], "session": {"alive_throughout": False}}
+    (why,) = explain.explain_disappearance([_rec("f1")], [], cov, BASE_COV)
+    assert why["reason"] == "route_excluded"

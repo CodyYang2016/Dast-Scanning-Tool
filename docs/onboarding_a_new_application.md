@@ -219,25 +219,45 @@ when the gate fails, so the evidence is published either way. Exit `2` means a t
 A `dev` target can be scoped loosely. Anything with other users (`environment_class: test` or
 `staging`) is held to more:
 
+- **Register the host.** Every `test`/`staging` host must be listed in
+  `security/dast/environments.yaml` (or the file `$DAST_ENV_REGISTRY` names) with its class —
+  `my-app.internal: test`. Preflight refuses an unregistered shared host, a host registered as a
+  different class than `environment_class` says, and any host matching a production pattern
+  (`*.prod.*`, `prod-*`, …) whatever the scope says. `dev` hosts need not be registered.
 - **Scope by origin.** `scope.allow: [https://my-app.internal:8443]` — scheme, host and port.
   A bare host (`my-app.internal`) means *every scheme and port on that machine*; preflight accepts
   it for `dev` and refuses it for `test`/`staging`, saying which origin to write instead. ZAP's
   own spider and active scan are confined to the same origins by a context created for each scan.
+- **Keep it off what must not be touched.** `scope.exclude: [/api/payments, /notify, /admin/reset]`
+  — each path and everything beneath it (`*` matches within one segment). Nothing is sent to
+  them: not by ZAP's spider or active scan, not during exploration, and not by the browser,
+  which gets a local 403 instead. Every exclusion is a detection gap to disclose.
 - **Pace.** `scan.throttle: {threads_per_host: 2, delay_ms: 200}` slows ZAP down; the values in
   force are recorded in `coverage.json` under `policy`. Unset means ZAP's defaults.
 - **Session.** The scan re-checks the session during the active scan and once at the end. It
   probes `scan.liveness_path` if set — any path that answers differently logged in and logged out
   (Juice Shop: `/rest/user/whoami`) — else `auth.proof.route.path`, else the first
   `scan.state_probes` entry. If the session is lost (401/403, a redirect to the login path, or the
-  logged-out answer), **the scan fails**: everything after that point attacked a logged-out app.
-  If no probe can tell the difference, `coverage.json` says `alive_throughout: null` — unknown,
-  not alive.
+  logged-out answer), the scan **logs in again**: it pauses ZAP, replays the login, points ZAP's
+  attacks at the new session, and resumes — up to `scan.reauth.max` times (default 3). The loss
+  is still recorded; the summary calls the scan *degraded*, and no finding can be marked
+  `resolved` from it. If the re-login fails or the limit is reached, the active scan is stopped
+  and **the scan fails**. If the app expects the session as a bearer token too, name the cookie
+  that holds it: `auth.bearer_from_cookie: token`. Forms with a per-request anti-CSRF field ZAP
+  does not know: `scan.anti_csrf_tokens: [user_token]`. If no probe can tell logged-in from
+  logged-out, `coverage.json` says `alive_throughout: null` — unknown, not alive.
+- **The stored session.** A seeded `storageState` is a working login. In CI, deliver it from
+  the secret store: `auth.storage_state: env:MY_APP_SESSION` (the JSON, raw or base64); it
+  exists on disk only for the run. A file copy must be mode 600, git-ignored, and younger than
+  `auth.storage_state_ttl_hours` (default 12) — older, and the scan logs in with the flow
+  instead and exploration asks you to re-seed.
 - **Stop.** Ctrl-C stops ZAP's spider and active scan too, not just the runner (exit 130). From
   another terminal: `python -m dast stop my-app`.
 
-**Not covered yet:** ZAP's active scan attacks every write request it has seen, whatever
+**Not decided yet:** ZAP's active scan attacks every write request it has seen, whatever
 `write_mode` says — `write_mode` governs only exploration (W4-8). Agree with the app team which
-write endpoints are acceptable before scanning a shared environment, and exclude the rest.
+write endpoints are acceptable before scanning a shared environment, and put the rest in
+`scope.exclude`.
 
 ### Marking a finding as a false positive, accepted risk, or not yours
 
@@ -547,10 +567,15 @@ when there is no XHR surface; a wrong pattern quietly records nothing.
 | `credentials not in the environment: MYAPP_USER` | The env vars named in `auth.credentials` are not exported | Export them in the shell that runs `dast` |
 | Login works by hand, fails here | A password policy (WebGoat caps at 10 characters), or the account was wiped when the container restarted | Re-provision the account; in-memory databases do not survive a restart |
 | `services not ready within 120s` | ZAP cannot reach the target | `docker exec zap curl …` from §1; check both are on the same network |
+| `… matches a production hostname pattern` / `… is not registered` / `… is registered as 'dev'` | The environment registry (W4-6) disagrees with the scope | Register the host in `security/dast/environments.yaml` with its real class; never loosen a production pattern to get a scan through |
+| `refusing to scan …: it is on port 8080, the port ZAP listens on` | The app shares ZAP's port; ZAP would answer as its API (W4-7) | Move the app (WebGoat: `WEBGOAT_PORT=8083`) |
+| `stored session … is readable by other users` / `… not git-ignored` / `… past its 12 h limit` | The seeded session file is mishandled or stale (W5-3) | `chmod 600` it, keep it under `.secrets/`, or re-seed with `dast author <app> --explore` |
+| Host-run `dast author` against **compose's** ZAP: `ZAP closed the connection` | Compose's ZAP admits only the runner's address (W4-7) | `export ZAP_API_ALLOW='.*'` before `docker compose up` — the key is still required |
+| Compose: `services not ready`, ZAP logs `UnknownHost: juice` | A container from before the network change was reattached without its DNS name | `docker compose down`, then up again |
 | `ZAP closed the connection without answering` | `ZAP_API_KEY` is missing or differs from the key ZAP was started with. A keyed ZAP hangs up rather than answering 401 | Export the same key in the shell that runs `dast` |
 | `refusing to scan a test environment: ZAP's API is open` | ZAP was started with `api.disablekey=true` | Restart it with `-config api.key=…` |
 | `… is a shared environment, so scope must name exact origins` | A bare host in `scope.allow` for `test`/`staging` | Write it as an origin, e.g. `https://my-app.internal:8443` |
-| Health gate fails with `session_alive: false` | The session died mid-scan — the scan logged it out, it expired, or the app was reset | `coverage.json` → `session.lost_after_s`; add the action that logs out to `scope.avoid_actions` (which also excludes it from the scan), or shorten the scan. Re-authentication is not implemented (W5-2) |
+| Health gate fails with `session_alive: false` | The session died mid-scan and logging in again did not bring it back, or `scan.reauth.max` was reached | `coverage.json` → `session.losses` says when and why; add the action that logs out to `scope.avoid_actions`, check `scan.anti_csrf_tokens`, or raise `scan.reauth.max` |
 | `ZapUnavailableError: ZAP stopped responding` | The daemon died — usually OOM (exit 137) from a browser-driven rule | `docker logs zap`; disable `40026` or give the daemon more memory |
 
 ---

@@ -26,7 +26,9 @@ from runner import evidence
 from runner.preflight import PreflightError, preflight
 from runner.replay import SessionDeadError, load_flow, replay, replay_seeded
 from runner import zapapi
-from runner.scan import (ScanScopeError, ZapUnavailableError, load_policy, new_session,
+from runner import session_refresh
+from runner.scan import (ScanScopeError, ZapUnavailableError, add_anti_csrf_tokens, pause_all,
+                         resume_all, load_policy, new_session,
                         exclusion_regexes as scan_exclusions,
                          resolved_policy, scan)
 from runner.scope_guard import ScopeViolation
@@ -173,7 +175,10 @@ def evaluate_gate(authenticated: bool, scope_ok: bool, records: list[dict], cove
     routes_tested = len((coverage or {}).get("routes") or [])
     # W5-1: a session lost mid-scan means everything after that point attacked a logged-out
     # app. Unknown (no usable probe) does not fail the gate, but it is reported as unknown.
-    session_alive = ((coverage or {}).get("session") or {}).get("alive_throughout")
+    # W5-2: a loss re-established by logging in again still counts against the scan — it is
+    # degraded, and lifecycle_diff will not resolve findings from it — but it is not unhealthy.
+    session = (coverage or {}).get("session") or {}
+    session_alive = session.get("alive_at_end", session.get("alive_throughout"))
     healthy = (bool(authenticated) and bool(scope_ok) and routes_tested > 0
                and session_alive is not False)
     return {
@@ -182,10 +187,48 @@ def evaluate_gate(authenticated: bool, scope_ok: bool, records: list[dict], cove
         "scope_ok": bool(scope_ok),
         "routes_tested": routes_tested,
         "session_alive": session_alive,
+        "session_degraded": session.get("alive_throughout") is False,
         "has_high_or_medium": has_high_or_medium,
         "detections": len(records),
         "passed": healthy and (has_high_or_medium or not expect_findings),
     }
+
+
+def with_exclusions(scope: dict, app_cfg: dict | None) -> dict:
+    """The scope with app.yaml's `scope.exclude` merged in, so a bundle generated before an
+    exclusion was added still honours it in the browser (W4-5). app.yaml is the source of truth."""
+    if not app_cfg:
+        return scope
+    from authoring import appconfig
+    paths = list(scope.get("exclude_paths") or [])
+    paths += [p for p in appconfig.exclude_paths(app_cfg) if p not in paths]
+    return {**scope, "exclude_paths": paths}
+
+
+def refuse_zap_port(base_url: str, zap_proxy: str) -> None:
+    """Refuse a target on the port ZAP itself listens on (W4-7).
+
+    ZAP bound to 0.0.0.0 treats a proxied request arriving for its own port as a call to its
+    API, whatever the host. Measured onboarding WebGoat on 8080: every request was answered by
+    ZAP (`No enum constant …Format.WEBGOAT`), the application never saw one, and the scan
+    "succeeded" against nothing. Refusing here turns that silence into an error.
+    """
+    from runner.scope_guard import _parts
+    target, zap = _parts(base_url), _parts(zap_proxy)
+    if target and zap and target[2] == zap[2]:
+        raise ScanScopeError(
+            f"refusing to scan {base_url!r}: it is on port {target[2]}, the port ZAP listens on "
+            f"({zap_proxy}). ZAP would answer every request as its own API and the application "
+            f"would never be reached. Move the application or ZAP to another port.")
+
+
+def _seed_ttl(scope_path) -> float:
+    """The stored-session TTL from the bundle's app config, else the default (W5-3)."""
+    cfg = bundle_app_config(scope_path)
+    if cfg:
+        from authoring import appconfig
+        return appconfig.storage_state_ttl_hours(cfg)
+    return 12.0
 
 
 def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
@@ -197,6 +240,7 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
     If `storage_state` is given, replay a seeded session (Phase A) instead of the login flow,
     falling back to the hand-authored flow if the seeded session is dead (fail closed)."""
     scope = preflight(scope_path, schema)              # safety layer 1 (offline; fail fast)
+    refuse_zap_port(base_url, zap_proxy)               # W4-7: ZAP would answer as its API
     if wait:
         wait_ready(zap_api, base_url)                  # tolerate container startup ordering
     # Is ZAP's API open to anyone who can reach it (W4-4)? Recorded for every scan; refused for a
@@ -213,6 +257,7 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
     ev_dir.mkdir(parents=True, exist_ok=True)
 
     app_cfg = bundle_app_config(scope_path)
+    scope = with_exclusions(scope, app_cfg)          # the browser honours scope.exclude too
     cookies = probes = None
     exclusions: list[str] = []
     throttle: dict = {}
@@ -224,7 +269,8 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
         # What exploration already refuses, the scanner must refuse too: attacking the login
         # form or a database-reset page changes the application underneath its own scan.
         exclusions = scan_exclusions(appconfig.avoid_actions(app_cfg),
-                                     appconfig.login_url(app_cfg))
+                                     appconfig.login_url(app_cfg),
+                                     paths=appconfig.exclude_paths(app_cfg))
 
     # The scan's own session, collected from the browser so the state probes can see the app
     # as the scan saw it. Never written to an artifact — only used to fetch the probes.
@@ -273,22 +319,54 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
         session_result = SessionMonitor.unavailable("no session cookies to probe with")
     else:
         from authoring import appconfig as _ac
+        reauth_cfg = _ac.scan_reauth(app_cfg)
+        bearer = _ac.bearer_from_cookie(app_cfg)
+
+        def login_again() -> dict:
+            """Log in again the way this scan first did (W5-2), then point ZAP's attacks at the
+            new session. No evidence dir: the scan's own HAR must not be overwritten."""
+            jar: dict = {}
+            if storage_state:
+                try:
+                    replay_seeded(scope, base_url, zap_proxy, storage_state, seed_routes or [],
+                                  on_session=jar.update)
+                except SessionDeadError:
+                    replay(scope, load_flow(flow_path), base_url, zap_proxy, cookies=cookies,
+                           on_session=jar.update)
+            else:
+                replay(scope, load_flow(flow_path), base_url, zap_proxy, cookies=cookies,
+                       on_session=jar.update)
+            fresh_jar = {**jar, **(cookies or {})}
+            session_refresh.install(zap_api, fresh_jar, bearer)
+            print(f"SESSION RE-ESTABLISHED mid-scan ({len(jar)} session cookies)", file=sys.stderr)
+            return fresh_jar
+
         monitor = SessionMonitor(
             base_url.rstrip("/") + path, probe_jar, login_path=_ac.login_url(app_cfg),
-            fetch=lambda url, jar: coverage_capture.fetch_probe_full(zap_api, url, jar))
+            fetch=lambda url, jar: coverage_capture.fetch_probe_full(
+                zap_api, url, jar, allow=scope["fqdn_allow_list"]),
+            reauth=login_again if reauth_cfg["enabled"] else None,
+            pause=lambda: pause_all(zap_api), resume=lambda: resume_all(zap_api),
+            max_reauth=reauth_cfg["max"])
         try:
             monitor.start()
         except Exception as exc:
             monitor = None
             session_result = SessionMonitor.unavailable(f"liveness probe failed to start: {exc}")
 
-    report = scan(zap_api, base_url, scope["fqdn_allow_list"],
-                  do_spider=do_spider, max_scan_min=max_scan_min, policy=policy,
-                  max_rule_min=max_rule_min, throttle=throttle,
-                  exclusions=exclusions, liveness=monitor)
-    if monitor is not None:
-        monitor.finish()                 # always a check at the end; see SessionMonitor.finish
-        session_result = monitor.result()
+    if app_cfg:
+        from authoring import appconfig as _ac
+        add_anti_csrf_tokens(zap_api, _ac.anti_csrf_tokens(app_cfg))   # W5-2
+    try:
+        report = scan(zap_api, base_url, scope["fqdn_allow_list"],
+                      do_spider=do_spider, max_scan_min=max_scan_min, policy=policy,
+                      max_rule_min=max_rule_min, throttle=throttle,
+                      exclusions=exclusions, liveness=monitor)
+        if monitor is not None:
+            monitor.finish()             # always a check at the end; see SessionMonitor.finish
+            session_result = monitor.result()
+    finally:
+        session_refresh.remove(zap_api)  # only present if a re-login installed it
     records = list(normalize(report["alerts"], scope["app_id"], scan_id))
     # Reference the scan's evidence from each record (FR-E1).
     prefix = evidence_prefix(evidence_dir, scan_id)
@@ -352,15 +430,32 @@ def main(argv: list[str] | None = None) -> int:
         storage_state = seed_cfg["session"]["storage_state"]
         seed_routes = seed_cfg["seed_routes"]
 
+    from runner.session_store import SessionStoreError, open_storage_state
     try:
-        scope, result, guard, records, scan_id, coverage = run(
-            args.scope, args.schema, args.flow, args.base_url, args.zap_api, args.zap_proxy,
-            fresh=not args.no_fresh, do_spider=not args.no_spider, max_scan_min=args.max_scan_min,
-            wait=not args.no_wait, storage_state=storage_state, seed_routes=seed_routes,
-            evidence_dir=args.evidence_dir,
-        )
+        try:
+            state_cm = open_storage_state(storage_state, ttl_hours=_seed_ttl(args.scope))
+            state_path = state_cm.__enter__()
+        except SessionStoreError as exc:
+            if not exc.stale:
+                raise
+            # A stale session is a dead session: log in with the flow instead (never scan
+            # unauthenticated), exactly as a SessionDeadError does.
+            print(f"STORED SESSION NOT USED ({exc}); falling back to hand-authored flow",
+                  file=sys.stderr)
+            state_cm, state_path = None, None
+        try:
+            scope, result, guard, records, scan_id, coverage = run(
+                args.scope, args.schema, args.flow, args.base_url, args.zap_api, args.zap_proxy,
+                fresh=not args.no_fresh, do_spider=not args.no_spider,
+                max_scan_min=args.max_scan_min, wait=not args.no_wait,
+                storage_state=state_path, seed_routes=seed_routes,
+                evidence_dir=args.evidence_dir,
+            )
+        finally:
+            if state_cm is not None:
+                state_cm.__exit__(None, None, None)
     except (PreflightError, ScanScopeError, ScopeViolation, ZapUnavailableError,
-            zapapi.ZapAuthError) as exc:
+            zapapi.ZapAuthError, SessionStoreError) as exc:
         print(f"RUNNER ABORT: {exc}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:

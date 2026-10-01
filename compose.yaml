@@ -22,11 +22,31 @@ services:
     # api.disablekey=true, open to anything that could reach it. Export ZAP_API_KEY first, e.g.
     #   export ZAP_API_KEY=$(openssl rand -hex 24)
     # compose refuses to start without it rather than fall back to an open API.
-    command: >
-      zap.sh -daemon -host 0.0.0.0 -port 8080 -silent
-      -config api.key=${ZAP_API_KEY:?export ZAP_API_KEY — ZAP no longer runs with an open API}
-      -config api.addrs.addr.name=.*
-      -config api.addrs.addr.regex=true
+    #
+    # And only the runner may call it (W4-7). ZAP checks api.addrs against BOTH the caller's
+    # address and the Host header it was called by (measured: "with host header zap not
+    # permitted"), so the pattern admits the runner's fixed address and the name `zap`;
+    # another container that learned the key, calling from any other address, is refused.
+    # Loopback is admitted for the image's own healthcheck, which runs inside ZAP already. For
+    # host-run authoring against this ZAP (a published port, onboarding guide §1a), widen it
+    # deliberately: export ZAP_API_ALLOW='.*' — the key is still required.
+    #
+    # A list, not a folded string: compose splits a string command like a shell, and the `|`
+    # in the pattern was taken as a pipe — silently dropping it and every flag after it.
+    command:
+      - zap.sh
+      - -daemon
+      - -host
+      - 0.0.0.0
+      - -port
+      - "8080"
+      - -silent
+      - -config
+      - api.key=${ZAP_API_KEY:?export ZAP_API_KEY — ZAP no longer runs with an open API}
+      - -config
+      - api.addrs.addr.name=${ZAP_API_ALLOW:-^(?:172[.]28[.]0[.]10|zap|127[.]0[.]0[.]1|localhost)$}
+      - -config
+      - api.addrs.addr.regex=true
     networks: [dast]
 
   # ---- Additional onboarded targets -------------------------------------------------------
@@ -75,7 +95,10 @@ services:
     # Both only need to have STARTED; the runner's wait_ready() polls until each actually
     # serves (juice-shop is distroless so a compose healthcheck isn't possible — see above).
     depends_on: [juice, zap]
-    networks: [dast]
+    networks:
+      dast:
+        # Fixed, because ZAP's api.addrs admits exactly this address (W4-7).
+        ipv4_address: 172.28.0.10
     environment:
       # Chromium runs as root with a small /dev/shm in-container; enable the needed flags.
       RUNNER_CHROMIUM_NO_SANDBOX: "1"
@@ -98,4 +121,7 @@ services:
       - ./out:/app/out
 
 networks:
-  dast: {}
+  dast:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24

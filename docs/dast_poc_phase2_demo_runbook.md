@@ -219,6 +219,13 @@ terminal that runs `dast`, `runner.*` or a `curl` to ZAP — the same value ZAP 
 A missing or wrong key also shows up as `curl: (52) Empty reply`: a keyed ZAP hangs up rather
 than answering 401.
 
+**Compose's ZAP admits only the runner (W4-7).** Its API accepts calls from the runner's fixed
+address on the compose network and refuses everyone else, key or not. To drive it from the host
+(authoring against compose's ZAP with a published port), start compose with
+`export ZAP_API_ALLOW='.*'`. After pulling the change that introduced this, run
+`docker compose down` once: a container created before the network change is reattached without
+its DNS name, and ZAP then cannot resolve `juice`.
+
 **Stopping a scan.** Ctrl-C in the scanning terminal stops ZAP's spider and active scan as well
 as the runner (exit 130). From another terminal: `$PY -m dast stop <app>`. Check with
 `curl -s -H "X-ZAP-API-Key: $ZAP_API_KEY" http://localhost:8080/JSON/ascan/view/scans/`.

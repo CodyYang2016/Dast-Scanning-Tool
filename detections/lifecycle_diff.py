@@ -40,6 +40,22 @@ def _wrote_to_the_app(covered) -> bool:
                 and covered.get("policy", {}).get("write_mode") == "allow")
 
 
+def degraded(covered) -> bool:
+    """True when the scan that produced this coverage cannot vouch for what it did NOT find.
+
+    A session lost partway — even one recovered by re-authentication — means part of the scan
+    attacked a logged-out application, and a scan that failed its health gate tested less than
+    it claims. Either way a vanished finding may simply have been unreachable, so `resolved` is
+    not available from it. An UNVERIFIED session (no probe could tell) does not count: that is a
+    gap in what we know, recorded as such, not evidence of a loss.
+    """
+    if not isinstance(covered, dict):
+        return False
+    session = covered.get("session") or {}
+    return (session.get("alive_throughout") is False
+            or (covered.get("health_gate") or {}).get("passed") is False)
+
+
 def _parameter_check(covered):
     """Return (route, parameter) -> bool: was this finding's own parameter exercised?
 
@@ -90,7 +106,7 @@ def diff(current_records: Iterable[dict], previous_records: Iterable[dict],
     previous_fps = {r["fingerprint"] for r in previous}
     is_covered = _coverage_check(covered)
     param_exercised = _parameter_check(covered)
-    if _wrote_to_the_app(covered):      # a write-enabled scan cannot claim a fix
+    if _wrote_to_the_app(covered) or degraded(covered):   # neither can claim a fix
         is_covered = lambda route, rule: False    # noqa: E731 — deliberate, one line
 
     out: list[dict] = []

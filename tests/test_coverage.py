@@ -295,12 +295,51 @@ def test_a_malformed_exclusion_does_not_silently_drop_everything(monkeypatch):
     assert out["routes"] == ["/a"]
 
 
+def _site(pages):
+    """A fake ZAP sendRequest over `pages`: url -> (status, location, body). Records each URL
+    requested, and refuses to follow redirects itself (the probe must do it, hop by hop)."""
+    sent = []
+
+    def api(z, path, params=None, timeout=30.0):
+        assert params["followRedirects"] == "false"
+        url = params["request"].split("\r\n", 1)[0].split(" ")[1]
+        sent.append(url)
+        status, location, body = pages[url]
+        head = f"HTTP/1.1 {status} X\r\n" + (f"Location: {location}\r\n" if location else "")
+        return {"sendRequest": [{"requestHeader": f"GET {url} HTTP/1.1\r\n",
+                                 "responseHeader": head, "responseBody": body}]}
+    return api, sent
+
+
 def test_the_full_probe_reports_where_the_redirects_ended(monkeypatch):
     # Liveness needs the FINAL url: a session that died shows up as a bounce to the login page.
-    hops = [{"requestHeader": "GET http://dvwa/index.php HTTP/1.1\r\n",
-             "responseHeader": "HTTP/1.1 302 Found\r\n", "responseBody": ""},
-            {"requestHeader": "GET http://dvwa/login.php HTTP/1.1\r\n",
-             "responseHeader": "HTTP/1.1 200 OK\r\n", "responseBody": "<form>"}]
-    monkeypatch.setattr(coverage, "_api", lambda z, p, params=None, timeout=30.0: {"sendRequest": hops})
+    api, sent = _site({"http://dvwa/index.php": (302, "login.php", ""),
+                       "http://dvwa/login.php": (200, None, "<form>")})
+    monkeypatch.setattr(coverage, "_api", api)
     assert coverage.fetch_probe_full("http://zap", "http://dvwa/index.php", {"a": "b"}) == \
         (200, "<form>", "http://dvwa/login.php")
+
+
+def test_the_probe_never_follows_a_redirect_out_of_scope(monkeypatch):
+    # KI2: ZAP following a redirect would fetch an off-scope host on the scan's behalf.
+    api, sent = _site({"http://dvwa/index.php": (302, "https://idp.example/login", "moved")})
+    monkeypatch.setattr(coverage, "_api", api)
+    status, body, final = coverage.fetch_probe_full("http://zap", "http://dvwa/index.php")
+    assert sent == ["http://dvwa/index.php"]
+    assert (status, final) == (302, "https://idp.example/login")
+
+
+def test_the_probe_may_follow_into_another_allowed_origin(monkeypatch):
+    api, sent = _site({"http://dvwa/a": (302, "http://dvwa2/b", ""),
+                       "http://dvwa2/b": (200, None, "ok")})
+    monkeypatch.setattr(coverage, "_api", api)
+    assert coverage.fetch_probe_full("http://zap", "http://dvwa/a",
+                                     allow=["dvwa", "dvwa2"])[2] == "http://dvwa2/b"
+
+
+def test_the_probe_stops_after_five_hops(monkeypatch):
+    pages = {f"http://dvwa/{i}": (302, f"/{i + 1}", "") for i in range(10)}
+    api, sent = _site(pages)
+    monkeypatch.setattr(coverage, "_api", api)
+    coverage.fetch_probe_full("http://zap", "http://dvwa/0")
+    assert len(sent) == 6

@@ -46,6 +46,11 @@ def _launch_args() -> list[str]:
         "RUNNER_CHROMIUM_NO_SANDBOX") else []
 
 
+def _make_private(path: str) -> None:
+    """A saved session is a working login: readable by its owner only (W5-3)."""
+    os.chmod(path, 0o600)
+
+
 def capture_session(config: dict, storage_state: str | None = None, *,
                     base_url: str | None = None, email: str | None = None,
                     password: str | None = None, zap_proxy: str | None = None,
@@ -118,6 +123,7 @@ def capture_session(config: dict, storage_state: str | None = None, *,
         wait_for_auth(page, base_url, proof, timeout_ms=timeout_ms)
         context.storage_state(path=storage_state)
         browser.close()
+    _make_private(storage_state)
     return storage_state
 
 

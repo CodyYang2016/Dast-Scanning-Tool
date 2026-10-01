@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import urllib.parse
 
 from detections.fingerprint import endpoint_pattern
 from runner import zapapi
@@ -138,23 +139,49 @@ def probe_cookies(storage_state, base_url: str, extra: dict | None = None) -> di
     return out
 
 
-def fetch_probe_full(zap_api: str, url: str, cookies: dict | None = None):
-    """(status, body, final_url) for a probe fetched through ZAP with the given cookies. The final
-    url is where the redirects ended — a session that died shows up as a bounce to the login page
-    (W5-1). Raises on failure; callers decide what a failed probe means."""
-    host = host_of(url) or ""
-    lines = [f"GET {url} HTTP/1.1", f"Host: {host}"]
+_MAX_HOPS = 5
+
+
+def _send_once(zap_api: str, url: str, cookies: dict | None):
+    """One request through ZAP, redirects NOT followed: (status, location, body)."""
+    lines = [f"GET {url} HTTP/1.1", f"Host: {host_of(url) or ''}"]
     if cookies:
         lines.append("Cookie: " + "; ".join(f"{k}={v}" for k, v in sorted(cookies.items())))
-    raw = "\r\n".join(lines) + "\r\n\r\n"
     data = _api(zap_api, "/JSON/core/action/sendRequest/",
-                {"request": raw, "followRedirects": "true"})
+                {"request": "\r\n".join(lines) + "\r\n\r\n", "followRedirects": "false"})
     entry = (data.get("sendRequest") or [{}])[-1]
     header = entry.get("responseHeader", "")
     status = int(header.split()[1]) if header.startswith("HTTP/") else None
-    first = (entry.get("requestHeader") or "").split("\r\n", 1)[0].split(" ")
-    final_url = first[1] if len(first) > 1 else url
-    return status, entry.get("responseBody", ""), final_url
+    location = None
+    for line in header.split("\r\n")[1:]:
+        name, _, value = line.partition(":")
+        if name.strip().lower() == "location":
+            location = value.strip()
+    return status, location, entry.get("responseBody", "")
+
+
+def fetch_probe_full(zap_api: str, url: str, cookies: dict | None = None, allow=None):
+    """(status, body, final_url) for a probe fetched through ZAP with the given cookies. The final
+    url is where the redirects ended — a session that died shows up as a bounce to the login page
+    (W5-1). Raises on failure; callers decide what a failed probe means.
+
+    Redirects are followed HERE, one hop at a time, rather than by ZAP: ZAP would follow one to
+    any host. A hop whose target is outside `allow` (default: the probe's own origin) is not
+    fetched — the redirect itself is returned, with its target as the final url, which is what
+    a bounce to an off-scope identity provider looks like (KI2).
+    """
+    from runner.scope_guard import in_scope, origin_of
+    allow = list(allow) if allow else [origin_of(url)]
+    current = url
+    for _ in range(_MAX_HOPS + 1):
+        status, location, body = _send_once(zap_api, current, cookies)
+        if not (status and 300 <= status < 400 and location):
+            return status, body, current
+        target = urllib.parse.urljoin(current, location)
+        if not in_scope(target, allow):
+            return status, body, target
+        current = target
+    return status, body, current
 
 
 def _fetch_probe(zap_api: str, url: str, cookies: dict | None = None) -> tuple[int | None, str]:

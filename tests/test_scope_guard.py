@@ -197,3 +197,57 @@ def test_host_of_never_raises_on_malformed_url():
 def test_malformed_url_is_blocked_not_crashed():
     d = guard().check("http://juice:3000[/#/about]")
     assert d.allowed is False and d.host is None
+
+
+# ---- redirect chains (KI2) ----------------------------------------------------------------
+# Measured with Playwright: page.route sees only the FIRST request of a redirect chain; the
+# browser followed a 302 to another origin without the route handler being called. Each hop is
+# now checked from the context's request events — after the fact, since it cannot be blocked
+# without taking the request out of ZAP's path, so an off-scope hop fails the scan instead.
+
+class _Req:
+    def __init__(self, url, redirected_from=None):
+        self.url, self.redirected_from = url, redirected_from
+
+
+def _guard(mode="enforce"):
+    from runner.scope_guard import ScopeGuard
+    return ScopeGuard({"fqdn_allow_list": ["https://app.internal"]}, mode=mode)
+
+
+def test_an_off_scope_redirect_hop_is_a_violation():
+    import pytest
+    from runner.scope_guard import ScopeViolation
+    g = _guard()
+    g.on_request(_Req("https://evil.example/x", _Req("https://app.internal/r")))
+    assert not g.ok and "redirect from https://app.internal/r" in g.violations[0].reason
+    with pytest.raises(ScopeViolation):
+        g.finalize()
+
+
+def test_an_in_scope_redirect_hop_is_fine_and_first_requests_are_left_to_route():
+    g = _guard()
+    g.on_request(_Req("https://app.internal/home", _Req("https://app.internal/r")))
+    g.on_request(_Req("https://evil.example/x"))          # not a redirect: page.route's job
+    assert g.ok
+
+
+def test_discovery_mode_logs_a_redirect_violation_without_failing():
+    g = _guard("discovery")
+    g.on_request(_Req("https://evil.example/x", _Req("https://app.internal/r")))
+    assert not g.ok
+    g.finalize()                                           # does not raise
+
+
+def test_attach_wires_both_hooks():
+    calls = {}
+
+    class Ctx:
+        def on(self, ev, fn): calls["ctx"] = ev
+
+    class Page:
+        context = Ctx()
+        def route(self, pattern, fn): calls["route"] = pattern
+
+    _guard().attach(Page())
+    assert calls == {"route": "**/*", "ctx": "request"}

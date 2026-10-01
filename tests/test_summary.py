@@ -134,3 +134,13 @@ def test_the_cli_renders_from_files(tmp_path):
                   "--app-id", "app", "-o", str(tmp_path / "s.md")])
     md = (tmp_path / "s.md").read_text()
     assert "Scan `S9`" in md and "not evaluated" in md
+
+
+def test_a_recovered_session_is_degraded_not_unhealthy():
+    cov = {**COV, "session": {"method": "probe", "alive_throughout": False, "alive_at_end": True,
+                              "losses": [{"at_s": 91, "recovered": True}]}}
+    s = {**SETTINGS, "gate": {**SETTINGS["gate"], "passed": True, "blocking": 0}}
+    md = render([], cov, s, app_id="app", scan_id="S1")
+    head = md.split("\n## ")[0]
+    assert "**Degraded**" in head and "UNHEALTHY" not in head and "Passed" in head
+    assert "re-established each time" in md

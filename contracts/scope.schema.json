@@ -60,6 +60,16 @@
       },
       "uniqueItems": true,
       "description": "Actions the crawler/scanner must never trigger, matched per the documented rule (e.g. URL substring)."
+    },
+    "exclude_paths": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 2,
+        "pattern": "^/"
+      },
+      "uniqueItems": true,
+      "description": "Paths never to be touched, each with everything beneath it (W4-5); from app.yaml scope.exclude."
     }
   }
 }

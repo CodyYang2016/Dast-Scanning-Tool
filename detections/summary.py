@@ -42,6 +42,11 @@ def _plural(n: int, word: str) -> str:
     return f"{n} {word}{'' if n == 1 else 's'}"
 
 
+def _lost_at(session: dict):
+    losses = session.get("losses") or []
+    return losses[0].get("at_s") if losses else session.get("lost_after_s", "?")
+
+
 def _session_line(session: dict | None) -> tuple[str, bool]:
     """(description, is_problem)."""
     s = session or {}
@@ -49,7 +54,11 @@ def _session_line(session: dict | None) -> tuple[str, bool]:
     if alive is True:
         return f"alive throughout ({_plural(s.get('checks', 0), 'check')})", False
     if alive is False:
-        return f"**LOST** after {s.get('lost_after_s', '?')} s", True
+        losses = s.get("losses") or []
+        if s.get("alive_at_end") and losses:
+            return (f"lost {_plural(len(losses), 'time')} (first after {losses[0].get('at_s')} s) "
+                    f"and re-established each time", False)
+        return f"**LOST** after {_lost_at(s)} s", True
     return f"not verified — {s.get('reason') or 'no usable probe'}", False
 
 
@@ -60,9 +69,10 @@ def _verdict(settings: dict, coverage: dict) -> list[str]:
     # A scan that was not healthy says so before any finding is read: its findings describe
     # something other than the logged-in application that was meant to be tested.
     problems = []
-    session = coverage.get("session")
-    if (session or {}).get("alive_throughout") is False:
-        problems.append(f"the session was lost after {session.get('lost_after_s', '?')} s — "
+    session = coverage.get("session") or {}
+    recovered = session.get("alive_throughout") is False and session.get("alive_at_end") is True
+    if session.get("alive_throughout") is False and not recovered:
+        problems.append(f"the session was lost after {_lost_at(session)} s — "
                         f"findings after that point describe a logged-out application")
     if not coverage.get("routes"):
         problems.append("no routes were tested")
@@ -89,6 +99,10 @@ def _verdict(settings: dict, coverage: dict) -> list[str]:
     if unhealthy:
         why = "; ".join(problems) or "see the scan log"
         lines.append(f"**Scan health: UNHEALTHY** — {why}.")
+    elif recovered:
+        lines.append(f"**Degraded** — the session was lost after {_lost_at(session)} s and "
+                     f"re-established, so part of the scan ran logged out. No finding can be "
+                     f"marked resolved from this scan.")
     if coverage.get("zap_api_open"):
         lines.append("**Warning:** ZAP's API answered without a key — anyone who can reach it "
                      "can drive it.")

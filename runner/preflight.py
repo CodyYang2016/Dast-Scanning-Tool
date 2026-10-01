@@ -31,10 +31,12 @@ class PreflightError(Exception):
     """Raised when a scope is unsafe/invalid to scan. Callers MUST abort (send no traffic)."""
 
 
-def check_scope(scope: dict) -> None:
+def check_scope(scope: dict, registry=None) -> None:
     """Safety checks on an in-memory scope. Raise PreflightError if unsafe. Pure; no I/O.
 
-    Rejects: missing environment_class; production (any case); missing/empty fqdn_allow_list.
+    Rejects: missing environment_class; production (any case); missing/empty fqdn_allow_list;
+    and, given an environment `registry` (runner/env_registry.py), production-looking hosts,
+    hosts registered as another class, and unregistered shared hosts (W4-6).
     """
     env = scope.get("environment_class")
     if env is None:
@@ -60,6 +62,31 @@ def check_scope(scope: dict) -> None:
             "scope has no non-empty 'fqdn_allow_list' — refusing to scan an unbounded "
             "target (NFR-2)."
         )
+    if registry is not None:
+        check_registry(scope, registry)
+
+
+def check_registry(scope: dict, registry) -> None:
+    """The declared environment, verified (W4-6). One typed word is not a safety story."""
+    from runner.scope_guard import host_of, is_origin
+    env = str(scope["environment_class"]).strip().lower()
+    for entry in scope["fqdn_allow_list"]:
+        host = host_of(entry) if is_origin(entry) else str(entry).strip().lower()
+        if registry.is_production(host):
+            raise PreflightError(
+                f"{host!r} matches a production hostname pattern — refusing to scan it whatever "
+                f"environment_class says (W4-6). If it is not production, change the pattern "
+                f"in the environment registry, not this scope.")
+        registered = registry.lookup(host)
+        if registered is not None and registered != env:
+            raise PreflightError(
+                f"{host!r} is registered as {registered!r} but this scope declares "
+                f"environment_class={env!r} — refusing to scan until they agree (W4-6).")
+        if registered is None and env in _SHARED:
+            raise PreflightError(
+                f"{host!r} is not registered, and a {env} environment must be: add "
+                f"`{host}: {env}` under `hosts:` in the environment registry "
+                f"(security/dast/environments.yaml or $DAST_ENV_REGISTRY) (W4-6).")
 
 
 def preflight(scope_path: str, schema_path: str = _DEFAULT_SCHEMA) -> dict:
@@ -79,7 +106,12 @@ def preflight(scope_path: str, schema_path: str = _DEFAULT_SCHEMA) -> dict:
         raise PreflightError("scope.json must be a JSON object.")
 
     # Explicit safety checks first (clear, safety-specific messages) ...
-    check_scope(scope)
+    from runner import env_registry
+    try:
+        registry = env_registry.load()
+    except Exception as exc:
+        raise PreflightError(f"could not read the environment registry: {exc}") from exc
+    check_scope(scope, registry=registry)
 
     # ... then full structural validation against the contract schema.
     try:

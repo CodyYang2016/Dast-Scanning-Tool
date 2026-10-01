@@ -479,7 +479,7 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
         browser = pw.chromium.launch(**launch)
         context = browser.new_context(ignore_https_errors=True, storage_state=storage_state)
         page = context.new_page()
-        page.route("**/*", lambda route: guard.route_handler(route))  # safety layer 2
+        guard.attach(page)  # safety layer 2: page.route + redirect hops
         page.on("request", lambda r: api_events.append({"type": "request", "method": r.method,
                 "url": r.url}) if any(m in r.url for m in api_patterns) else None)
 
@@ -661,26 +661,33 @@ def main(argv: list[str] | None = None) -> int:
     if args.scope:
         scope = preflight(args.scope, args.schema)
     else:
+        from runner import env_registry
         scope = appconfig.scope_from_config(config)
-        check_scope(scope)
+        check_scope(scope, registry=env_registry.load())   # W4-6: verified, not trusted
 
     seed = load_seed(args.seed) if args.seed else appconfig.seed_from_config(config)
     base_url = args.base_url or seed["target"]["base_url"]
     app_id = args.app_id or scope["app_id"]
     traces, guard = [], None
+    from runner.session_store import SessionStoreError, open_storage_state
+    ttl = appconfig.storage_state_ttl_hours(config) if config else 12
     try:
-        for _pass in range(max(1, args.repeat)):
-            trace, guard = explore(
-                app_id, base_url, seed["session"]["storage_state"], seed["seed_routes"], scope,
-                config=config, deny_actions=seed.get("deny_actions"),
-                max_pages=args.max_pages, use_llm=not args.no_llm, model=args.model,
-                zap_proxy=args.zap_proxy, headless=not args.headed, slow_mo=args.slow_mo,
-                already_seen={u for t in traces for u in t.get("index", [])},
-            )
-            traces.append(trace)
-        trace = merge_traces(traces)
+        with open_storage_state(seed["session"]["storage_state"], ttl) as state_path:  # W5-3
+            for _pass in range(max(1, args.repeat)):
+                trace, guard = explore(
+                    app_id, base_url, state_path, seed["seed_routes"], scope,
+                    config=config, deny_actions=seed.get("deny_actions"),
+                    max_pages=args.max_pages, use_llm=not args.no_llm, model=args.model,
+                    zap_proxy=args.zap_proxy, headless=not args.headed, slow_mo=args.slow_mo,
+                    already_seen={u for t in traces for u in t.get("index", [])},
+                )
+                traces.append(trace)
+            trace = merge_traces(traces)
     except SessionDeadError as exc:
         print(f"EXPLORE ABORT: seeded session dead ({exc}); re-seed and retry", file=sys.stderr)
+        return 2
+    except SessionStoreError as exc:
+        print(f"EXPLORE ABORT: {exc}", file=sys.stderr)
         return 2
 
     write_trace(trace, args.out_dir)

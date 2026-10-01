@@ -86,6 +86,7 @@ def scope_from_config(cfg: dict) -> dict:
         "fqdn_allow_list": sorted(set(sc.get("allow", [])) | {own}),
         "fqdn_deny_list": list(sc.get("deny", [])),
         "avoid_action_list": list(sc.get("avoid_actions", [])),
+        "exclude_paths": list(sc.get("exclude", [])),
     }
 
 
@@ -225,6 +226,11 @@ def test_data(cfg: dict) -> dict:
     return dict(cfg.get("explore", {}).get("test_data", {}))
 
 
+def exclude_paths(cfg: dict) -> list[str]:
+    """Endpoints never to be touched, by path (W4-5): a path and everything beneath it."""
+    return list(cfg.get("scope", {}).get("exclude", []))
+
+
 def avoid_actions(cfg: dict) -> list[str]:
     return list(cfg.get("scope", {}).get("avoid_actions", []))
 
@@ -241,7 +247,13 @@ def state_probes(cfg: dict) -> list[str]:
 
 
 def storage_state(cfg: dict) -> str | None:
+    """A file path, or `env:VAR` for a session delivered by a secret store (W5-3)."""
     return cfg["auth"].get("storage_state")
+
+
+def storage_state_ttl_hours(cfg: dict) -> float:
+    """How old a stored session file may be before it must be re-seeded (W5-3)."""
+    return float(cfg.get("auth", {}).get("storage_state_ttl_hours", 12))
 
 
 def max_pages(cfg: dict, default: int = 30) -> int:
@@ -333,6 +345,24 @@ def gate_fail_on(cfg: dict) -> str | None:
 def suppressions_path(app_id: str) -> Path:
     """security/dast/<app>/suppressions.yaml — reviewed triage decisions (W1-5)."""
     return _APPS_DIR / app_id / "suppressions.yaml"
+
+
+def scan_reauth(cfg: dict) -> dict:
+    """Whether a session lost mid-scan is re-established by logging in again, and how many times
+    (W5-2). On by default: the alternative is stopping the scan at the first loss."""
+    r = cfg.get("scan", {}).get("reauth", {})
+    return {"enabled": bool(r.get("enabled", True)), "max": int(r.get("max", 3))}
+
+
+def bearer_from_cookie(cfg: dict) -> str | None:
+    """A cookie whose value the application ALSO expects as `Authorization: Bearer` — so a
+    re-established session is sent both ways (W5-2). Juice Shop: `token`."""
+    return cfg.get("auth", {}).get("bearer_from_cookie")
+
+
+def anti_csrf_tokens(cfg: dict) -> list[str]:
+    """Anti-CSRF field names ZAP should refresh per attack (W5-2), beyond its defaults."""
+    return list(cfg.get("scan", {}).get("anti_csrf_tokens", []))
 
 
 def scan_throttle(cfg: dict) -> dict:

@@ -15,6 +15,7 @@ attribution, most specific cause first:
     route_not_covered      this scan never visited the finding's route
     parameter_not_exercised  the route was visited, but never with this parameter
     rule_not_enabled       the rule that found it was switched off
+    scan_degraded          the session was lost during the scan (or the scan was unhealthy)
     rule_truncated         the rule ran out of time before finishing
     app_state_changed      the application answered differently than last time
     scan_changed_the_app   this scan was allowed to write, so state drifted under it
@@ -63,6 +64,20 @@ def _parameter_exercised(record: dict, coverage: dict) -> bool:
     return parameter in set(params.get(record.get("endpoint"), []))
 
 
+def _degraded(coverage: dict) -> str | None:
+    """Why this scan cannot vouch for an absence, if it cannot (see lifecycle_diff.degraded)."""
+    session = coverage.get("session") or {}
+    if session.get("alive_throughout") is False:
+        losses = session.get("losses") or []
+        at = losses[0].get("at_s") if losses else session.get("lost_after_s")
+        recovered = " and was re-established" if session.get("alive_at_end") else ""
+        return (f"the scan's session was lost after {at} s{recovered}; part of the scan "
+                f"attacked a logged-out application, so no fix can be claimed from it")
+    if (coverage.get("health_gate") or {}).get("passed") is False:
+        return "the scan failed its health gate, so its silence is not evidence of a fix"
+    return None
+
+
 def _state_difference(current: dict, previous: dict) -> str | None:
     """The first probe whose response changed between the two scans, if state was recorded."""
     now = (current.get("app_state") or {}).get("probes") or {}
@@ -99,6 +114,8 @@ def explain_one(record: dict, coverage: dict, previous_coverage: dict) -> dict:
             f"nothing tested it")
     elif rule not in set(coverage.get("rules") or []):
         reason, detail = "rule_not_enabled", f"rule {rule} was not enabled for this scan"
+    elif (why := _degraded(coverage)):
+        reason, detail = "scan_degraded", why
     elif rule in set(coverage.get("truncated_rules") or []):
         reason, detail = "rule_truncated", (
             f"rule {rule} was stopped early: {outcome.get('state', 'exceeded its budget')}")

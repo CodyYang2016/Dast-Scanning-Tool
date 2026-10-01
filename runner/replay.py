@@ -202,7 +202,7 @@ def replay(scope: dict, flow_module, base_url: str, zap_proxy: str, headless: bo
         _seed_cookies(context, base_url, cookies or {})
         page = context.new_page()
         # Safety layer 2: every browser request passes the scope guard before the proxy.
-        page.route("**/*", lambda route: guard.route_handler(route))
+        guard.attach(page)  # page.route + redirect hops
         try:
             run_params = inspect.signature(flow_module.run).parameters
             if evidence_dir and "evidence_dir" in run_params:
@@ -248,7 +248,7 @@ def replay_seeded(scope: dict, base_url: str, zap_proxy: str, storage_state: str
             ctx_kwargs["record_har_path"] = str(Path(evidence_dir) / "active-scan.har")
         context = browser.new_context(**ctx_kwargs)
         page = context.new_page()
-        page.route("**/*", lambda route: guard.route_handler(route))  # safety layer 2
+        guard.attach(page)  # safety layer 2: page.route + redirect hops
         try:
             liveness = prove_auth_live(page, base_url, seed_routes[0], token_check)
             if not liveness["alive"]:

@@ -192,3 +192,104 @@ def test_an_unverified_session_does_not_fail_the_gate_but_is_reported():
     cov = {"routes": ["/a"], "session": {"method": "probe", "alive_throughout": None}}
     g = evaluate_gate(True, True, [], cov)
     assert g["passed"] is True and g["session_alive"] is None
+
+
+# ---- W5-2: re-authenticate when the session is lost ------------------------------------------
+# Detection alone ends a long scan unhealthy. With a re-login hook the monitor pauses the scan,
+# logs in again, checks the new session works, and resumes; every loss is still recorded and
+# the scan is degraded (alive_throughout false), but it can finish healthy (alive_at_end).
+
+class Server:
+    """A login server: one valid token at a time; `kill()` invalidates it, `login()` issues one."""
+    def __init__(self):
+        self.valid, self.n = "t", 0
+    def kill(self): self.valid = None
+    def login(self):
+        self.n += 1; self.valid = f"t{self.n}"; return {"token": self.valid}
+    def fetch(self, url, cookies):
+        if cookies and cookies.get("token") == self.valid:
+            return AUTHED
+        return ANON
+
+
+def _reauth_monitor(server, clock, events, max_reauth=3, login=None):
+    def pause(): events.append("pause")
+    def resume(): events.append("resume")
+    def reauth():
+        events.append("login")
+        return (login or server.login)()
+    return SessionMonitor("http://juice:3000/rest/user/whoami", {"token": "t"},
+                          login_path="/login.php", fetch=server.fetch, clock=clock, interval_s=60,
+                          reauth=reauth, pause=pause, resume=resume, max_reauth=max_reauth)
+
+
+def test_a_lost_session_is_re_established_and_the_scan_continues():
+    server, clock, events = Server(), Clock(), []
+    m = _reauth_monitor(server, clock, events)
+    m.start()
+    server.kill(); clock.t = 61
+    assert m.check() is False                      # do not stop: recovered
+    assert events == ["pause", "login", "resume"]
+    clock.t = 122; m.check(); m.finish()
+    r = m.result()
+    assert r["alive_throughout"] is False and r["alive_at_end"] is True
+    assert r["losses"] == [{"at_s": 61, "recovered": True}]
+    assert r["lost_after_s"] == 61 and r["checks"] >= 3
+
+
+def test_the_new_session_is_what_later_checks_use():
+    server, clock, events = Server(), Clock(), []
+    m = _reauth_monitor(server, clock, events)
+    m.start(); server.kill(); clock.t = 61; m.check()
+    assert m.cookies["token"] == "t1"
+
+
+def test_a_re_login_that_does_not_work_stops_the_scan():
+    server, clock, events = Server(), Clock(), []
+    m = _reauth_monitor(server, clock, events, login=lambda: {"token": "wrong"})
+    m.start(); server.kill(); clock.t = 61
+    assert m.check() is True                       # stop: everything after is logged out
+    m.finish()
+    r = m.result()
+    assert r["alive_at_end"] is False
+    assert r["losses"][0]["recovered"] is False and "still logged out" in r["losses"][0]["reason"]
+
+
+def test_a_re_login_that_raises_stops_the_scan_and_says_why():
+    server, clock, events = Server(), Clock(), []
+    def boom(): raise RuntimeError("login form changed")
+    m = _reauth_monitor(server, clock, events, login=boom)
+    m.start(); server.kill(); clock.t = 61
+    assert m.check() is True
+    assert "login form changed" in m.result()["losses"][0]["reason"]
+    assert events[-1] == "resume"                  # never leave ZAP paused
+
+
+def test_re_authentication_is_bounded():
+    server, clock, events = Server(), Clock(), []
+    m = _reauth_monitor(server, clock, events, max_reauth=2)
+    m.start()
+    stops = []
+    for i in range(3):
+        server.kill(); clock.t = 61 * (i + 1); stops.append(m.check())
+    assert stops == [False, False, True]
+    r = m.result()
+    assert [x["recovered"] for x in r["losses"]] == [True, True, False]
+    assert "limit" in r["losses"][2]["reason"]
+
+
+def test_without_a_re_login_hook_a_loss_stops_the_scan():
+    clock = Clock(); m = _monitor(FakeZap(ANON, [AUTHED, ANON]), clock)
+    m.start(); clock.t = 61
+    assert m.check() is True
+    m.finish()
+    assert m.result()["alive_at_end"] is False
+
+
+def test_the_gate_passes_a_recovered_session_and_fails_an_unrecovered_one():
+    from runner.main import evaluate_gate
+    ok = {"routes": ["/a"], "session": {"alive_throughout": False, "alive_at_end": True}}
+    bad = {"routes": ["/a"], "session": {"alive_throughout": False, "alive_at_end": False}}
+    assert evaluate_gate(True, True, [], ok)["passed"] is True
+    assert evaluate_gate(True, True, [], ok)["session_degraded"] is True
+    assert evaluate_gate(True, True, [], bad)["passed"] is False

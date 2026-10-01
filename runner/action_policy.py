@@ -28,7 +28,7 @@ import re
 from dataclasses import dataclass
 from urllib.parse import unquote
 
-from runner.scope_guard import host_of, in_scope
+from runner.scope_guard import host_of, in_scope, path_excluded
 
 _EMBEDDED_URL = re.compile(r"https?://[^\s&\"'<>]+", re.IGNORECASE)
 
@@ -139,6 +139,9 @@ def validate_action(action: dict, scope: dict, deny_actions=None, safe_forms=Non
 
     if is_denied(action, deny_actions):
         return ActionDecision(False, "matches deny-list (avoid_action_list)")
+    if target.startswith(("/", "http://", "https://")) and \
+            path_excluded(target, scope.get("exclude_paths")):
+        return ActionDecision(False, "path is excluded for this application (scope.exclude)")
 
     verb = action_verb(action)
     if verb in STATE_CHANGING and target not in safe_forms:

@@ -41,6 +41,9 @@ auth:
     email_env: AUTH_EMAIL
     password_env: AUTH_PASSWORD
   storage_state: .secrets/storageState.json
+  # The session is a JWT held both as the `token` cookie and as `Authorization: Bearer`. If the
+  # scan has to log in again mid-scan (W5-2), ZAP's attacks get the new token both ways.
+  bearer_from_cookie: token
 
 ui:
   # Juice Shop's welcome banner and cookie bar sit over the login form. A new application

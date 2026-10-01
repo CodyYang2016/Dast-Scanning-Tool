@@ -63,6 +63,16 @@
             "minLength": 1
           },
           "description": "Destructive action terms refused deterministically during exploration (never by LLM judgement)."
+        },
+        "exclude": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 2,
+            "pattern": "^/"
+          },
+          "uniqueItems": true,
+          "description": "Endpoints the scanner must never touch, by path (W4-5) \u2014 mail, SMS, payments, partner systems, resets. Each covers the path and everything beneath it (`/api/payments` covers `/api/payments/42`, not `/api/paymentsx`); `*` matches within one segment; case-insensitive. Enforced on ZAP's spider and active scan, in the per-scan ZAP context, and during exploration. Each one is a detection gap to disclose."
         }
       }
     },
@@ -213,7 +223,7 @@
         "storage_state": {
           "type": "string",
           "minLength": 1,
-          "description": "Where the seeded session lives (gitignored path today; a secret store reference with W5-3)."
+          "description": "Where the seeded session lives (W5-3): a file path (git-ignored, mode 600, re-seeded after storage_state_ttl_hours), or `env:VAR` \u2014 the storageState JSON, raw or base64, delivered by a secret store and written to disk only for the run."
         },
         "steps": {
           "type": "array",
@@ -264,6 +274,16 @@
             "type": "string"
           },
           "description": "Cookies to seed into the scanning browser before replay, e.g. {security: low}. Some applications keep test-relevant state in a cookie the scanner would otherwise never set \u2014 DVWA's security level is one, and not setting it silently changed a five-finding scan into a zero-finding one. State the scan depends on belongs in configuration, not in luck. Never put a credential or a session token here (W6-8)."
+        },
+        "storage_state_ttl_hours": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "How old a stored session FILE may be before it is refused and must be re-seeded (W5-3). Default 12."
+        },
+        "bearer_from_cookie": {
+          "type": "string",
+          "minLength": 1,
+          "description": "A cookie whose value the application also expects as `Authorization: Bearer \u2026`. After a mid-scan re-login (W5-2) both are rewritten on ZAP's attacks. Juice Shop: `token`."
         }
       },
       "oneOf": [
@@ -467,6 +487,32 @@
           "minLength": 1,
           "pattern": "^/",
           "description": "A path whose answer differs when logged in, probed through ZAP at most once a minute during the active scan (W5-1). A redirect to the login page, a 401/403, or the logged-out answer means the session was lost, and the health gate fails. Default: auth.proof.route.path, else the first scan.state_probes entry; with neither, liveness is recorded as unknown."
+        },
+        "reauth": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Re-establish a session lost mid-scan by logging in again (W5-2): the active scan is paused, the login replayed the way the scan first authenticated, ZAP's attacks pointed at the new session, and the scan resumed. The loss is still recorded and the scan marked degraded, so no finding can resolve from it. Without it \u2014 or past `max` \u2014 a loss stops the scan.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Default true."
+            },
+            "max": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 20,
+              "description": "Re-logins allowed per scan. Default 3."
+            }
+          }
+        },
+        "anti_csrf_tokens": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "description": "Anti-CSRF form field names ZAP should refresh for each attack, beyond its built-in list (W5-2). Without this, attacks replay a used token, the app rejects them, and some apps log the session out."
         }
       }
     },

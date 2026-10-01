@@ -402,3 +402,31 @@ def test_the_poll_loop_gives_the_liveness_monitor_a_turn(monkeypatch):
     monkeypatch.setattr(scan_mod, "_api", lambda z, p, params=None, timeout=30.0: {"status": next(seq)})
     scan_mod._poll("http://zap", "/JSON/ascan/view/status/", "0", 0.0, 10, on_tick=lambda: ticks.append(1))
     assert len(ticks) >= 2
+
+
+def test_a_monitor_asking_to_stop_stops_that_scan(monkeypatch):
+    # W5-2: a session that is gone and could not be restored — every request from here on
+    # attacks a logged-out application, so the active scan is stopped rather than finished.
+    calls = []
+    def fake(z, p, params=None, timeout=30.0):
+        calls.append((p, dict(params or {})))
+        return {"status": "40"}
+    monkeypatch.setattr(scan_mod, "_api", fake)
+    scan_mod._poll("http://zap", "/JSON/ascan/view/status/", "7", 0.0, 10, on_tick=lambda: True)
+    assert ("/JSON/ascan/action/stop/", {"scanId": "7"}) in calls
+    assert sum(1 for p, _ in calls if p.endswith("/view/status/")) == 1
+
+
+def test_pause_and_resume_address_every_active_scan(monkeypatch):
+    calls = []
+    monkeypatch.setattr(scan_mod, "_api", lambda z, p, params=None, timeout=30.0: calls.append(p) or {})
+    scan_mod.pause_all("http://zap"); scan_mod.resume_all("http://zap")
+    assert calls == ["/JSON/ascan/action/pauseAllScans/", "/JSON/ascan/action/resumeAllScans/"]
+
+
+def test_anti_csrf_token_names_are_registered(monkeypatch):
+    calls = []
+    monkeypatch.setattr(scan_mod, "_api",
+                        lambda z, p, params=None, timeout=30.0: calls.append((p, params)) or {})
+    scan_mod.add_anti_csrf_tokens("http://zap", ["user_token"])
+    assert calls == [("/JSON/acsrf/action/addOptionToken/", {"String": "user_token"})]

@@ -87,8 +87,8 @@ The PoC's safety model was designed for a disposable container on an isolated ne
 | ✅ *Done 2026-10-01 (W4-1).* Bound ZAP itself with a context and include/exclude regex | `/JSON/context/` is never called; the spider and active scan are bounded only by the seed URL, so the two documented safety layers cover browser-originated requests only | Tool | 1 |
 | ✅ *Done 2026-10-01 (W4-2), redirects excepted.* Extend scope matching to (scheme, host, port) and handle redirects | KI2: host-only matching authorises every port and scheme on an allow-listed host | Tool | 1 |
 | ✅ *Done 2026-10-01 (W4-3): `scan.throttle`, Ctrl-C stops ZAP, `dast stop`.* Add throttling and a kill switch | Rate limiting was explicitly descoped; there is no way to stop a scan today except Ctrl-C | Tool | 1 |
-| Exclude destructive and integration endpoints per app | Active scanning a shared environment can trigger mail, SMS, payments or partner test systems | Tool + App | 0.5 |
-| Verify `environment_class` against the app registry; deny prod hostname patterns | Preflight trusts a hand-typed string — against real hostnames one typo is the entire safety story | Tool + Gov | 1 |
+| ✅ *Done 2026-10-01 (W4-5): `scope.exclude`.* Exclude destructive and integration endpoints per app | Active scanning a shared environment can trigger mail, SMS, payments or partner test systems | Tool + App | 0.5 |
+| ✅ *Done 2026-10-01 (W4-6) against a file registry; a real registry plugs in behind `lookup()`.* Verify `environment_class` against the app registry; deny prod hostname patterns | Preflight trusts a hand-typed string — against real hostnames one typo is the entire safety story | Tool + Gov | 1 |
 | ✅ *Key done 2026-10-01 (W4-4); binding remains.* Enable the ZAP API key and bind the daemon to the runner | Currently `api.disablekey=true` with `api.addrs.addr.regex=.*` | Platform | 0.5 |
 
 **Exit criteria:** a deliberate misconfiguration test suite passes — wrong environment class, off-scope host, off-scope port, IdP host, and an excluded destructive endpoint are each refused, logged, and provable after the fact.
@@ -101,8 +101,8 @@ The seeded-session design already exists and is the right one; what is missing i
 | --- | --- | --- | --- |
 | Corporate TLS and egress | ZAP is a MITM proxy: the Nationwide CA chain must be trusted by Chromium and ZAP, and both need proxy settings. Note `nw-ca-all.pem` is committed **empty** (0 bytes) while two runbooks reference it — source it at runtime, do not commit it. | Platform | 1–2 |
 | Seed an SSO/MFA session for real | Human logs in once through `authoring/seed.py`; capture what breaks (conditional access, device trust, session binding to IP or user agent) | Tool + App | 1–2 |
-| Put `storageState` in a secret store with a TTL | Today it is a live credential in a working tree at `.secrets/storageState.json` | Platform | 1 |
-| ✅ *Detection done 2026-10-01 (W5-1): loss fails the scan; the *degraded ⇒ no `resolved`* rule remains.* Handle mid-scan session expiry | Liveness is proven once before a multi-minute scan. Add a post-scan re-check and mark the scan *degraded* so no finding can be labelled `resolved` from a scan that lost its session | Tool | 1 |
+| ✅ *Done 2026-10-01 (W5-3): `env:VAR` from a secret store, TTL, permission and git-ignore checks.* Put `storageState` in a secret store with a TTL | Today it is a live credential in a working tree at `.secrets/storageState.json` | Platform | 1 |
+| ✅ *Done 2026-10-01 (W5-1, W5-2): loss detected, the session re-established by logging in again, and a degraded scan never resolves findings.* Handle mid-scan session expiry | Liveness is proven once before a multi-minute scan. Add a post-scan re-check and mark the scan *degraded* so no finding can be labelled `resolved` from a scan that lost its session | Tool | 1 |
 | Agree a test identity | A dedicated non-privileged service identity with no access to real customer data, and a documented re-seed cadence | App + Gov | — |
 
 **Exit criteria:** an authenticated page of the real app is reachable through the ZAP proxy, proven by `prove_auth_live()`, with the session sourced from the secret store and no credential on local disk.
@@ -188,7 +188,7 @@ The PoC's current scan configuration was tuned for a repeatable stage demo again
 >
 > *Current state:* no ZAP context, no session-management or re-authentication rules, no anti-CSRF token handling; liveness is proven once before the scan begins.
 >
-> *Update 2026-10-01:* a ZAP context now bounds every scan (W4-1), and the session is re-probed during the active scan and once at the end; a lost session **fails the scan** rather than producing a quietly logged-out result (W5-1). Re-authentication and anti-CSRF handling are still absent, so a write-heavy scan that loses its session ends unhealthy instead of misleading — better, not solved.
+> *Update 2026-10-01:* a ZAP context now bounds every scan (W4-1), and the session is re-probed during the active scan and once at the end (W5-1). A lost session is **re-established**: the scan pauses, logs in again, points ZAP's attacks at the new session and resumes, up to a limit (W5-2). Named anti-CSRF fields are refreshed per attack. Verified by deleting DVWA's sessions mid-scan: re-established at 97 s, all seven highs found. A scan that lost its session is marked degraded and cannot resolve findings; one that could not recover is stopped and fails.
 >
 > *Consequence:* attacking forms logs the scanner out and regenerates CSRF tokens. A longer, write-enabled scan can therefore find *fewer* issues than a short one, because most of it runs unauthenticated against a login page — the single most likely way for the pilot to produce a misleadingly poor result.
 >
@@ -222,7 +222,7 @@ Settling SP-1 through SP-5 should bring the PoC close to credible on the common 
 | Write paths never exercised | Yes | Per-app `safe_forms` allow-list and an agreed data reset (SP-1) |
 | DOM XSS rule disabled | Yes | Re-enable 40026 with browser configuration (SP-3) |
 | Unknown endpoints and parameters | Partly | Specification import; better crawl (SP-4) |
-| Scanner loses its session mid-scan | Partly | ZAP context, re-authentication and anti-CSRF rules (SP-5) |
+| Scanner loses its session mid-scan | Yes — done 2026-10-01 | ZAP context, re-authentication and anti-CSRF tokens (SP-5, W5-2) |
 | Blind / out-of-band vulnerabilities | No | OAST infrastructure and network approval (SP-6) |
 | Broken access control | No | Multi-identity scanning — a new capability (SP-7) |
 | Rule depth and false-positive rate | No | Nothing: this is the ZAP engine, and it is where vendor research budgets go |

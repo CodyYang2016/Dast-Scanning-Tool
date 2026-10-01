@@ -69,6 +69,7 @@ def emit_scope(trace: dict, config: dict) -> dict:
         "fqdn_allow_list": allow,
         "fqdn_deny_list": list(scope_cfg.get("deny", [])),
         "avoid_action_list": appconfig.avoid_actions(config),
+        "exclude_paths": appconfig.exclude_paths(config),
     }
 
 

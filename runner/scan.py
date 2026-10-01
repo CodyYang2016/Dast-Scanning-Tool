@@ -153,6 +153,22 @@ def stop_all(zap_api: str) -> dict:
     return stopped
 
 
+def pause_all(zap_api: str) -> None:
+    """Hold every active scan while the session is re-established (W5-2)."""
+    _api(zap_api, "/JSON/ascan/action/pauseAllScans/")
+
+
+def resume_all(zap_api: str) -> None:
+    _api(zap_api, "/JSON/ascan/action/resumeAllScans/")
+
+
+def add_anti_csrf_tokens(zap_api: str, names) -> None:
+    """Teach ZAP an application's anti-CSRF field names, so it fetches a fresh token for each
+    attack instead of replaying a used one (W5-2). DVWA's `user_token` is not a ZAP default."""
+    for name in names or []:
+        _api(zap_api, "/JSON/acsrf/action/addOptionToken/", {"String": name})
+
+
 def _poll(zap_api: str, view_path: str, scan_id: str, poll_s: float, max_polls: int,
           on_tick=None) -> None:
     """Poll a ZAP scan to completion, tolerating a slow answer but not a dead daemon."""
@@ -184,14 +200,22 @@ def _poll_until_done(zap_api: str, view_path: str, scan_id: str, poll_s: float,
                 ) from exc
             time.sleep(poll_s)
             continue
-        if on_tick:
-            on_tick()            # e.g. the session-liveness check (W5-1); it rate-limits itself
+        # The session-liveness check (W5-1) rate-limits itself. True means the session is gone
+        # and could not be re-established (W5-2): everything from here on would attack a
+        # logged-out application, so this scan is stopped rather than finished.
+        if on_tick and on_tick() is True:
+            kind = view_path.split("/")[2]                  # ascan | spider
+            try:
+                _api(zap_api, f"/JSON/{kind}/action/stop/", {"scanId": scan_id})
+            except Exception:
+                stop_all(zap_api)
+            return
         if status == "100":
             return
         time.sleep(poll_s)
 
 
-def exclusion_regexes(avoid_actions, login_url: str | None) -> list[str]:
+def exclusion_regexes(avoid_actions, login_url: str | None, paths=None) -> list[str]:
     """URL patterns the scanner must not attack, from what the config already declares.
 
     `scope.avoid_actions` was only ever enforced during exploration; ZAP itself was free to
@@ -220,6 +244,13 @@ def exclusion_regexes(avoid_actions, login_url: str | None) -> list[str]:
             rx = f"(?i).*{re.escape(path)}.*"
             if rx not in out:
                 out.append(rx)
+    # Endpoints the application team named as off-limits (W4-5): mail, payments, partner
+    # systems, resets. A path and everything beneath it.
+    from runner.scope_guard import path_exclusion_regex
+    for p in paths or []:
+        rx = path_exclusion_regex(p)
+        if rx not in out:
+            out.append(rx)
     return out
 
 

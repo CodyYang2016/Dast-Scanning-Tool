@@ -72,6 +72,32 @@ def is_origin(entry: str) -> bool:
     return "://" in str(entry)
 
 
+def path_exclusion_regex(pattern: str) -> str:
+    """A regex for "this path and everything beneath it", from an operator's path pattern (W4-5).
+
+    `/api/payments` covers /api/payments, /api/payments/42 and /api/payments?x — never
+    /api/paymentsx, and never a URL that merely mentions it in a query string. `*` matches within
+    one path segment. Case-insensitive, because excluding too much is the safe direction.
+
+    Matches a full URL (what ZAP sees) and a bare path (the routes in coverage and records), and
+    stays within the regex subset Java and Python agree on, since ZAP evaluates it too.
+    """
+    import re
+    pattern = str(pattern).strip()
+    if not pattern.startswith("/"):
+        raise ValueError(f"exclusion {pattern!r} must be a path starting with /")
+    body = pattern.rstrip("/")
+    if not body.strip("*/"):
+        raise ValueError(f"exclusion {pattern!r} would cover the whole application")
+    path_rx = "[^/?#]*".join(re.escape(part) for part in body.split("*"))
+    return f"(?i)^(?:[a-z][a-z0-9+.-]*://[^/?#]+)?{path_rx}(?:[/?#].*)?$"
+
+
+def path_excluded(url: str, patterns) -> bool:
+    import re
+    return any(re.match(path_exclusion_regex(p), url) for p in patterns or [])
+
+
 def entry_matches(url: str, entry: str) -> bool:
     """Does `url` fall under one allow/deny entry? (W4-2)
 
@@ -106,7 +132,9 @@ class ScopeGuard:
         self.mode = mode
         self._allow = [h.strip() for h in scope.get("fqdn_allow_list", [])]
         self._deny = [p.strip().lower() for p in scope.get("fqdn_deny_list", [])]
+        self._exclude = list(scope.get("exclude_paths") or [])
         self._decisions: list[Decision] = []
+        self.excluded: list[str] = []    # in scope, but declared off-limits (W4-5): refused
 
     def _evaluate(self, url: str) -> Decision:
         host = host_of(url)
@@ -160,10 +188,45 @@ class ScopeGuard:
         if self.mode == "enforce":
             self.raise_if_violated()
 
+    def attach(self, page) -> None:
+        """Guard a Playwright page: every first request through page.route (blocked if out of
+        scope), and every redirect hop through the context's request events.
+
+        page.route never sees a redirect hop — measured: a 302 to another origin was followed
+        with the route handler called only for the original request. Blocking the hop would
+        mean fetching outside the browser, which takes the request out of ZAP's path, so a hop
+        is checked as it is issued and an off-scope one fails the scan (D4).
+        """
+        page.route("**/*", lambda route: self.route_handler(route))
+        page.context.on("request", self.on_request)
+
+    def on_request(self, request) -> None:
+        """Check a redirect hop. First requests are page.route's job and are not re-counted."""
+        source = getattr(request, "redirected_from", None)
+        if source is None:
+            return
+        d = self._evaluate(request.url)
+        if d.allowed:
+            return
+        d = Decision(False, d.url, d.host,
+                     f"redirect from {source.url}: {d.reason} — followed by the browser before "
+                     f"it could be blocked")
+        self._decisions.append(d)
+        log.warning("scope BLOCK (redirect): host=%s url=%s reason=%s", d.host, d.url, d.reason)
+
     def route_handler(self, route) -> None:
         """Playwright page.route handler: continue allowed requests, abort blocked ones."""
         d = self.check(route.request.url)
-        if d.allowed:
+        if d.allowed and path_excluded(route.request.url, self._exclude):
+            # An endpoint the application team declared off-limits (W4-5). Refused, and logged,
+            # but not a scope violation: nobody crossed a boundary, a decision was honoured.
+            # Answered here with a 403 rather than aborted: an aborted navigation throws, and a
+            # recorded walk that visits the page would crash. Nothing reaches ZAP or the app.
+            self.excluded.append(route.request.url)
+            log.info("excluded path refused: %s", route.request.url)
+            route.fulfill(status=403, content_type="text/plain",
+                          body="refused by the DAST runner: this path is in scope.exclude (W4-5)")
+        elif d.allowed:
             route.continue_()
         else:
             route.abort()

@@ -116,3 +116,8 @@ scan:
   state_probes:
     - /security.php
     - /vulnerabilities/sqli/?id=1&Submit=Submit
+  # Every DVWA form carries a one-time `user_token`. ZAP does not know the name, so its attacks
+  # replayed a used token and DVWA rejected them; named here, ZAP fetches a fresh one per attack
+  # (W5-2). A session lost mid-scan is re-established by logging in again (scan.reauth, on by
+  # default).
+  anti_csrf_tokens: [user_token]

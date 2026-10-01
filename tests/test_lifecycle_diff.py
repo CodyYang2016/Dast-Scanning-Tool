@@ -303,3 +303,29 @@ def test_coverage_without_parameter_data_behaves_as_before():
     previous = [rec("aaa", endpoint="/sqli", rule_id="40018", parameter="id")]
     assert _by_status(diff([], previous, {"routes": ["/sqli"], "rules": ["40018"]}))["resolved"] \
         == {"aaa"}
+
+
+# ---- a degraded scan may not claim a fix either -------------------------------------------
+# If the session died partway (even if it was recovered), part of the scan attacked a
+# logged-out application: a finding that vanished may simply not have been reachable.
+
+def test_a_scan_that_lost_its_session_labels_vanished_findings_not_scanned():
+    previous = [rec("aaa", endpoint="/orders", rule_id="40018")]
+    coverage = {"routes": ["/orders"], "rules": ["40018"],
+                "session": {"alive_throughout": False, "alive_at_end": True}}
+    labels = _by_status(diff([], previous, coverage))
+    assert labels["not_scanned"] == {"aaa"} and not labels["resolved"]
+
+
+def test_an_unhealthy_scan_labels_vanished_findings_not_scanned():
+    previous = [rec("aaa", endpoint="/orders", rule_id="40018")]
+    coverage = {"routes": ["/orders"], "rules": ["40018"], "health_gate": {"passed": False}}
+    labels = _by_status(diff([], previous, coverage))
+    assert labels["not_scanned"] == {"aaa"} and not labels["resolved"]
+
+
+def test_an_unverified_session_does_not_by_itself_block_resolution():
+    previous = [rec("aaa", endpoint="/orders", rule_id="40018")]
+    coverage = {"routes": ["/orders"], "rules": ["40018"],
+                "session": {"alive_throughout": None}, "health_gate": {"passed": True}}
+    assert _by_status(diff([], previous, coverage))["resolved"] == {"aaa"}

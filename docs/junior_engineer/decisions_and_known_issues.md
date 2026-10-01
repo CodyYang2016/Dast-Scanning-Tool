@@ -19,7 +19,7 @@ should make us act.
 - D10 — authenticated route discovery: OpenAPI first, crawl fallback, recorded walk floor
 - D11 — autonomous exploration is the primary authoring path (supersedes D10's ordering, extends D9)
 - KI1 — endpoint_pattern id-collapsing heuristic (deferred fix)
-- KI2 — scope-enforcement edge cases (deferred)
+- KI2 — scope-enforcement edge cases (mostly closed 2026-10-01; IP literals and aliases remain)
 - KI3 — Juice Shop container exits (133) between sessions
 - KI4 — authenticated route discovery is bounded by the recorded walk (**RESOLVED by D11**)
 
@@ -188,10 +188,23 @@ and the same schema.
 
 ---
 
-## KI2 — Scope-enforcement edge cases (DEFERRED)
+## KI2 — Scope-enforcement edge cases (MOSTLY CLOSED)
 
 **Issue.** Host-only matching (D5) does not handle: alternate ports, scheme differences,
 redirect chains to out-of-scope hosts, host aliases, IPv6/IP-literal forms.
+
+**Status 2026-10-01.**
+- *Ports and schemes:* closed by origin entries (W4-2). Bare hosts are refused for test/staging.
+- *Redirect chains:* closed for detection.
+  - **Browser side.** Measured: Playwright's `page.route` sees only the first request of a
+    redirect chain. A 302 to another origin was followed with the handler never called.
+    Blocking the hop would mean fetching it outside the browser, and `route.fetch` was measured
+    to bypass the proxy, which would hide the traffic from ZAP. So the guard checks every
+    redirect hop from the context's `request` event (`ScopeGuard.attach`), and an off-scope hop
+    fails the scan. The request has already gone by then; it is reported, not prevented.
+  - **Server side.** The liveness and state probes follow redirects hop by hop and never fetch
+    an off-scope target.
+- *Still open:* host aliases, and IPv6/IP-literal forms.
 
 **Why deferred.** Not exercised by the pilot app; production hardening per requirements §3.2.
 
