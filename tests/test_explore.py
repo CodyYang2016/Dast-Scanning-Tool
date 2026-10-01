@@ -961,3 +961,83 @@ def test_a_response_that_cannot_be_read_does_not_break_the_walk(monkeypatch, cap
     submit = next(ev for ev in trace["interactions"] if ev.get("type") == "submit")
     assert "accepted" not in submit          # unknown, not assumed
     assert "could not record a response" in capsys.readouterr().err
+
+
+# ---- the response is waited for around the submit, not after it -------------------------
+
+class _GatePage(_LoopPage):
+    """A gate that only reveals what is behind it in the response to the submit itself.
+
+    `expect_response` is the whole point: the submit navigates asynchronously, so a page that
+    only updates once the response lands is invisible to anything checked before it.
+    """
+
+    PAGES = {
+        "/gate": {"links": [], "forms": [{"selector": "form >> nth=0", "path": "/gate/check",
+                                          "method": "POST", "fields": ["answer"]}]},
+        "/vault": {"links": [], "forms": []},
+    }
+
+    def __init__(self, base: str, status: int = 200):
+        super().__init__(base)
+        self.url = base + "/gate"
+        self._status = status
+        self._opened = False
+
+    def expect_response(self, predicate, timeout=None):
+        page = self
+
+        class _Info:
+            @property
+            def value(self):
+                return types.SimpleNamespace(
+                    url=page._base + "/gate/check", status=page._status,
+                    request=types.SimpleNamespace(method="POST"))
+
+        class _Manager:
+            def __enter__(self):
+                return _Info()
+
+            def __exit__(self, *exc):
+                # The response lands only now: this is what the old code never waited for.
+                if page._status < 400:
+                    page.PAGES = dict(page.PAGES,
+                                      **{"/gate": dict(page.PAGES["/gate"], links=["/vault"])})
+                    page._opened = True
+                return False
+
+        return _Manager()
+
+
+def _run_gate(monkeypatch, page):
+    base = page._base
+    monkeypatch.setitem(sys.modules, "playwright", types.ModuleType("playwright"))
+    sync_api = types.ModuleType("playwright.sync_api")
+    sync_api.sync_playwright = _fake_playwright(page)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", sync_api)
+    monkeypatch.setattr(explore_mod, "prove_auth_live",
+                        lambda *a, **k: {"alive": True, "reason": "ok"})
+    trace, _guard = explore_mod.explore(
+        "app", base, {}, ["/gate"], {"app_id": "app", "fqdn_allow_list": ["app"]},
+        use_llm=False, max_pages=10,
+        config={"base_url": base, "auth": {"proof": {"selector": "#ok"}},
+                "explore": {"safe_forms": ["/gate/check"], "test_data": {"answer": "7"}}})
+    return trace
+
+
+def test_the_submit_waits_for_the_response_it_caused(monkeypatch):
+    trace = _run_gate(monkeypatch, _GatePage("http://app:8080"))
+    submit = next(ev for ev in trace["interactions"] if ev.get("type") == "submit")
+    assert submit["status"] == 200
+    assert submit["accepted"] is True
+    # and what the response revealed is then walked, instead of the pre-submit page
+    assert "/vault" in [ev.get("url", "")[len("http://app:8080"):]
+                        for ev in trace["interactions"] if ev.get("type") == "goto"]
+
+
+def test_a_gate_that_says_no_is_recorded_as_refused_and_opens_nothing(monkeypatch):
+    page = _GatePage("http://app:8080", status=400)
+    trace = _run_gate(monkeypatch, page)
+    submit = next(ev for ev in trace["interactions"] if ev.get("type") == "submit")
+    assert (submit["status"], submit["accepted"]) == (400, False)
+    assert page._opened is False
