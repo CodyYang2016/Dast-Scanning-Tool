@@ -178,3 +178,20 @@ def test_endpoint_pattern_is_idempotent(records):
     # Re-patterning an already-patterned endpoint must not change it.
     for rec in records:
         assert endpoint_pattern("http://h" + rec["endpoint"]) == rec["endpoint"]
+
+
+def test_every_image_build_pins_the_base_the_lock_file_names():
+    """versions.lock is the source of truth, and nothing enforces that but this.
+
+    The lab image exists only to skip the runner's pip layer (which needs PyPI, unavailable
+    behind TLS interception); it must stay on the same Playwright/Chromium build as the runner,
+    or the two drift the next time the base is bumped and only one file is edited.
+    """
+    lock = (ROOT / "versions.lock").read_text(encoding="utf-8")
+    base = next(line.split(":", 1)[1].strip() for line in lock.splitlines()
+                if line.startswith("runner_base_image:"))
+    for name in ("Containerfile", "Containerfile.lab"):
+        froms = [line.split(None, 1)[1].strip()
+                 for line in (ROOT / name).read_text(encoding="utf-8").splitlines()
+                 if line.startswith("FROM ")]
+        assert froms == [base], f"{name} builds on {froms}, not the locked {base}"
