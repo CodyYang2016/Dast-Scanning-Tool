@@ -52,13 +52,14 @@ services:
 
   # Not a vulnerable app: a lab whose /gate validates its input server-side, so the pages behind
   # it are reachable only by answering the question it states (see labs/semgate/server.py). Built
-  # from the runner image because it is stdlib-only Python and needs no image of its own.
+  # from Containerfile.lab, which skips the runner's pip step: the lab imports only the standard
+  # library, so it must not need PyPI to start.
   semgate:
     profiles: [semgate]
     build:
       context: .
-      dockerfile: Containerfile
-    entrypoint: ["python", "-m", "labs.semgate.server", "--port", "8084"]
+      dockerfile: Containerfile.lab
+    command: ["-m", "labs.semgate.server", "--port", "8084"]
     networks: [dast]
     environment:
       # No defaults: the lab refuses to start without the account the operator exports.
