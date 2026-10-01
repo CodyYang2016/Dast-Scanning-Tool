@@ -564,6 +564,10 @@ def _submit(page, selector: str, plan: list[tuple[str, str]], events: list[dict]
     idle: wait_for_load_state() comes straight back, and the walk reads the pre-submit page and
     judges the submit by it. That is how a gate that had been answered could still look like a
     dead end.
+
+    expect_response only sees responses that arrive after it is entered, so what it reports is
+    caused by this submit. If the page issues more than one non-GET request to the form's own
+    path while it is open, the first to answer is the one reported.
     """
     # Field names and which of them the planner answered; never the values. `inferred` is what
     # tells the bundle this submit answered a challenge, so a replay cannot pretend to reproduce
@@ -571,13 +575,21 @@ def _submit(page, selector: str, plan: list[tuple[str, str]], events: list[dict]
     events.append({"type": "submit", "url": page.url, "selector": selector,
                    "fields": [name for name, _ in plan],
                    "inferred": list(inferred_names or [])})
-    want = urlsplit(path or "").path
+    want = urlsplit(path).path if path else ""  # no path to match on -> listener fallback
+    unreadable: list[str] = []
 
     def _caused_by_the_submit(response) -> bool:
         try:
             return (response.request.method.upper() != "GET"
                     and urlsplit(response.url).path == want)
-        except Exception:
+        except Exception as exc:
+            # A response we cannot read is not evidence about this submit, but staying quiet
+            # would make the wait look like the application never answered. Said once: the
+            # predicate runs for every response in flight.
+            if not unreadable:
+                unreadable.append(str(exc))
+                print(f"explore: skipped an unreadable response while waiting for {want} "
+                      f"({exc})", file=sys.stderr)
             return False
 
     outcome: dict = {}
@@ -595,8 +607,11 @@ def _submit(page, selector: str, plan: list[tuple[str, str]], events: list[dict]
     try:
         # Let the response the submit caused finish rendering before the next observation.
         page.wait_for_load_state("networkidle", timeout=10000)
-    except Exception:
-        pass
+    except Exception as exc:
+        # Not fatal -- the next observation reads whatever did render -- but a page that never
+        # settles is worth knowing about when a walk comes back thinner than expected.
+        print(f"explore: page did not settle after the submit on {selector} ({exc})",
+              file=sys.stderr)
     return outcome
 
 
