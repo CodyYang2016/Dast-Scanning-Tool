@@ -140,15 +140,17 @@ flowchart LR
 
 | Module | FRs | Role |
 |--------|-----|------|
-| `preflight.py` | S3, NFR-2 | **Safety layer 1** — refuse to scan before any traffic if scope is missing/`prod`/unbounded |
+| `preflight.py` | S3, NFR-2 | **Safety layer 1** — refuse to scan before any traffic if scope is missing/`prod`/unbounded, or if a `test`/`staging` scope names bare hosts instead of exact origins (W4-2) |
+| `zapapi.py` | W4-4 | The **one** way to call ZAP's API: sends `X-ZAP-API-Key` from `$ZAP_API_KEY`, and turns a refusal — a keyed ZAP *hangs up* on a bad key rather than answering 401 — into a clear key error. At scan start an unkeyed probe records whether the API is open; a `test`/`staging` scan refuses an open one |
 | `replay.py` | S1, R2 | Launch Chromium proxied through ZAP; run the flow (`replay`) or a seeded session (`replay_seeded` + `prove_auth_live`) so ZAP observes authenticated traffic |
-| `scope_guard.py` | S4, NFR-4 | **Safety layer 2** — `page.route` interceptor; block/log/fail out-of-allow-list requests. Phase-split: `enforce` (fail closed) for scans, `discovery` (block-and-continue) for exploration |
+| `scope_guard.py` | S4, NFR-4 | **Safety layer 2** — `page.route` interceptor; block/log/fail out-of-allow-list requests. An allow entry is an **origin** (scheme + host + port, default ports normalised) or a bare host (any scheme, any port; `dev` only). Phase-split: `enforce` (fail closed) for scans, `discovery` (block-and-continue) for exploration |
 | `action_policy.py` | — | Exploration safety: default-deny state-changing verbs + `avoid_action_list`; decides if an LLM-proposed action may execute (never trusts the LLM's label) |
 | `redact.py` | W5-5 | Scrub secrets before anything leaves the boundary: JWTs, bearer tokens, secret-named JSON and form fields, emails, and the values of credential headers (`Cookie`, `Authorization`, `Set-Cookie`, API-key headers). Used on everything the LLM sees, every evidence excerpt and every stored request/response. **Linear in its input** — the text comes from the target, so its length is not ours to choose |
-| `scan.py` | S1, S2 | Spider + bounded active scan → raw ZAP JSON. Also applies **scan exclusions** (W6-11): the `avoid_actions` the config already declares, plus the login page, are excluded from spider and active scan alike — without this the scanner attacks the application's own controls and destroys the state its findings depend on |
+| `scan.py` | S1, S2 | Spider + bounded active scan → raw ZAP JSON. Also applies **scan exclusions** (W6-11): the `avoid_actions` the config already declares, plus the login page, are excluded from spider and active scan alike — without this the scanner attacks the application's own controls and destroys the state its findings depend on. **Safety layer 3** (W4-1): each scan runs inside its own ZAP context whose include regexes are the allowed origins, so ZAP's *own* spider and active scan — which the browser-side guard never sees — are bounded too. Applies `scan.throttle` (W4-3); on Ctrl-C it tells ZAP to stop both scans before exiting |
+| `liveness.py` | W5-1 | Did the session survive the scan? Probes one path with and without the session at the start (identical answers ⇒ *unknown*), re-checks during the active scan at most once a minute and **always once at the end**. Lost = 401/403, redirect to the login path, or the logged-out answer. A lost session fails the health gate |
 | `coverage.py` | — (R2) | What the scan actually exercised: routes, **per-route parameters** (W6-10), enabled rules, **per-rule outcomes** from ZAP's scan progress (W6-2), and an **app-state fingerprint** — digests of a few probe URLs fetched through the scan's own session (W6-8) so two scans can be compared for "was the app even in the same condition?" |
 | `evidence.py` | E1 | Capture HAR + screenshot, **redact secrets**, reference from records/SARIF |
-| `main.py` | all | Chain preflight → fresh ZAP session → replay (or seeded) → scan → normalize → fetch exchanges (+ coverage); exit code = the **health gate** (authenticated, in scope, ≥1 route tested), or with `--expect-findings` also ≥1 high/medium, for self-tests (W3-2) |
+| `main.py` | all | Chain preflight → fresh ZAP session → replay (or seeded) → scan → normalize → fetch exchanges (+ coverage); exit code = the **health gate** (authenticated, in scope, ≥1 route tested, session not lost), or with `--expect-findings` also ≥1 high/medium, for self-tests (W3-2). The gate is also kept in `coverage.json` as `health_gate` |
 | `exchange.py` | W1-3 | For each high/medium finding, fetch the exact request ZAP sent and the response that proved it — inside the same run, since the next scan's fresh session discards them — redact both, cut the response to a window around the evidence, and store it per fingerprint. Gives the finding a `request_line` and `response_status` to replay |
 
 ### 3c. Detections pipeline (`detections/`) — process the results
@@ -157,7 +159,8 @@ flowchart LR
 |--------|-----|------|
 | `normalizer.py` | N1, W1-1 | Raw ZAP alert → contract-shaped detection record (streaming). Carries ZAP's remediation content — description, solution, references, confidence — and the evidence and payload, **redacted at normalisation** and capped at 500 characters, so no later stage ever holds the raw value. None of it feeds the fingerprint |
 | `fingerprint.py` | N2 | Stable `sha256(rule_id \| endpoint_pattern \| parameter \| payload_family)` |
-| `sarif_export.py` | X1, W1-2 | Records → SARIF 2.1.0 (severity→level, `security-severity`, CWE tags, fingerprint in `partialFingerprints`). Each rule carries `fullDescription`, `help` (how to fix + references) and `helpUri`; each finding's **message** names the parameter, payload, evidence and confidence — because GitHub renders the message and the rule help and does not render `properties`. Target-controlled evidence is fenced so it cannot inject markdown into the alert. `automationDetails.id` keeps one app's analysis from overwriting another's |
+| `sarif_export.py` | X1, W1-2 | Records → SARIF 2.1.0 (severity→level, `security-severity`, CWE tags, fingerprint in `partialFingerprints`). Each rule carries `fullDescription`, `help` (how to fix + references) and `helpUri`; each finding's **message** names the parameter, payload, evidence and confidence — because GitHub renders the message and the rule help and does not render `properties`. Target-controlled evidence is fenced so it cannot inject markdown into the alert. `automationDetails.id` keeps one app's analysis from overwriting another's. The message also says where the full request/response is (W1-4): a per-file link from a `{scan_id}`/`{path}` template, a link to the CI run holding the artifact plus the file's name, or just the name |
+| `summary.py` | W1-6 | One Markdown page per scan, verdict first — **NOT RELIABLE** rather than *Passed* when the scan was unhealthy — then counts by severity × status, new findings (grouped), top rules and routes, coverage gaps, session, ZAP API state, suppressions, destination. `dast report` writes `summary.md` and appends it to the GitHub Actions run page |
 | `github_upload.py` | X2, W1-8 | gzip+base64 the SARIF, POST to the code-scanning API. Requires the **deployed build's** commit and ref — GitHub shows them as the affected branch — and refuses to upload without them rather than borrow this tool's own checkout |
 | `lifecycle_diff.py` | L1/L2 | Compare two scans' fingerprint sets → label new/open/resolved; **coverage-aware** (R2): a previous-only finding is `resolved` only if its route, **its own parameter**, and its rule were exercised this scan — else `not_scanned`. Persist state (+ coverage) |
 | `explain.py` | — (W6-9) | Why a finding disappeared, most specific cause first: `route_excluded` · `route_not_covered` · `parameter_not_exercised` · `rule_not_enabled` · `rule_truncated` · `app_state_changed` · `scan_changed_the_app` · `rule_found_nothing` · `fixed`. Only the last claims a fix, and it carries its evidence |
@@ -300,7 +303,9 @@ touches the app, ZAP, or any secret.
 ## 5. The safety model (NFR-2 — the top guardrail)
 
 Two independent, fail-closed layers (preflight + the request-boundary scope guard), so a bug in
-one can't send unsafe traffic. The LLM exploration path keeps both layers and adds two
+one can't send unsafe traffic. Both see the *browser's* traffic; a third layer bounds ZAP's own
+spider and active scan with a per-scan ZAP context built from the same allow list (W4-1). ZAP's
+API itself requires a key (W4-4). The LLM exploration path keeps both layers and adds two
 authoring-only gates — a redactor (before the model) and the action policy (after it) — with the
 scope guard running in **discovery** mode (block-and-continue) instead of **enforce** (block/fail).
 
@@ -411,12 +416,14 @@ Two results have been added since, and they are the ones worth quoting:
 ```bash
 export ANTHROPIC_API_KEY=…          # authoring only; no LLM runs during a scan
 export DVWA_USER=… DVWA_PASS=…      # names come from app.yaml; values never in files
+export ZAP_API_KEY=…                # the key ZAP was started with (compose requires one)
 
 python -m dast onboard dvwa --base-url http://dvwa    # writes the app.yaml skeleton
 python -m dast author  dvwa --explore --zap-proxy http://localhost:8080
 python -m dast scan    dvwa
 python -m dast report  dvwa                            # to publish: --upload --commit <deployed SHA> --ref refs/heads/<branch>
 python -m dast explain dvwa                            # after a second scan
+python -m dast stop    dvwa                            # from another terminal: stop ZAP's scans
 ```
 
 Artifacts land under `out/<app>/` by default; `--out`, `$DAST_OUT` or `output.dir` in `app.yaml`
@@ -465,21 +472,21 @@ are validated by running them. See `validation_and_testing.md`.
 ## 10. Repo map
 
 ```
-dast.py          the operator's CLI: onboard · author · scan · report · explain (a facade)
+dast.py          the operator's CLI: onboard · author · scan · report · explain · triage · stop
 contracts/       frozen interfaces: app · scope · detection · trace · journey · seed · action ·
                  auth_discovery schemas, fingerprint formula, vendored SARIF schema, ZAP fixture
 authoring/       appconfig.py (app.yaml) · record · seed · explore (LLM) · discover (LLM) ·
                  generate (LLM) · validate
-runner/          preflight · replay · scope_guard · action_policy · redact · scan · coverage ·
-                 evidence · exchange · main · capture_zap_fixture.sh
+runner/          preflight · zapapi · replay · scope_guard · action_policy · redact · scan ·
+                 coverage · liveness · evidence · exchange · main · capture_zap_fixture.sh
 detections/      normalizer · fingerprint · sarif_export · github_upload · lifecycle_diff ·
-                 explain · reachability · gate · triage
+                 explain · reachability · gate · triage · summary
 security/dast/   one directory per onboarded app, each holding app.yaml — dvwa · webgoat are
                  config-only; juice-shop also keeps a hand-authored flow.py/scope.json/seed.json
                  from before the config contract
 out/<app>/       artifacts (gitignored): authoring/ · scans/<scan_id>/ · state.json
-tests/           objective suites (674 tests) — one per module + acceptance suites
-docs/            current: requirements · onboarding · remediation plan · readiness ·
+tests/           objective suites (786 tests) — one per module + acceptance suites
+docs/            current: requirements · onboarding · remediation plan · readiness · scorecard (draft) ·
                  deterministic_vs_llm_discovery · phase-2 demo material  (docs/archive/ = superseded)
 docs/junior_engineer/   this file + all design/decision docs  (archive/ = superseded plans)
 .github/workflows/   tests.yml (ruff + suite on every push) · dast-selftest.yml (weekly canary)

@@ -19,19 +19,15 @@ from __future__ import annotations
 
 import hashlib
 import json
-import urllib.parse
-import urllib.request
 
 from detections.fingerprint import endpoint_pattern
+from runner import zapapi
 from runner.scope_guard import host_of
 
 
 def _api(zap_api: str, path: str, params: dict | None = None, timeout: float = 30.0) -> dict:
-    url = zap_api.rstrip("/") + path
-    if params:
-        url += "?" + urllib.parse.urlencode(params)
-    with urllib.request.urlopen(url, timeout=timeout) as resp:
-        return json.loads(resp.read().decode())
+    # Always through the keyed client (W4-4).
+    return zapapi.call(zap_api, path, params, timeout)
 
 
 def accessed_routes(zap_api: str, target: str) -> set[str]:
@@ -142,6 +138,25 @@ def probe_cookies(storage_state, base_url: str, extra: dict | None = None) -> di
     return out
 
 
+def fetch_probe_full(zap_api: str, url: str, cookies: dict | None = None):
+    """(status, body, final_url) for a probe fetched through ZAP with the given cookies. The final
+    url is where the redirects ended — a session that died shows up as a bounce to the login page
+    (W5-1). Raises on failure; callers decide what a failed probe means."""
+    host = host_of(url) or ""
+    lines = [f"GET {url} HTTP/1.1", f"Host: {host}"]
+    if cookies:
+        lines.append("Cookie: " + "; ".join(f"{k}={v}" for k, v in sorted(cookies.items())))
+    raw = "\r\n".join(lines) + "\r\n\r\n"
+    data = _api(zap_api, "/JSON/core/action/sendRequest/",
+                {"request": raw, "followRedirects": "true"})
+    entry = (data.get("sendRequest") or [{}])[-1]
+    header = entry.get("responseHeader", "")
+    status = int(header.split()[1]) if header.startswith("HTTP/") else None
+    first = (entry.get("requestHeader") or "").split("\r\n", 1)[0].split(" ")
+    final_url = first[1] if len(first) > 1 else url
+    return status, entry.get("responseBody", ""), final_url
+
+
 def _fetch_probe(zap_api: str, url: str, cookies: dict | None = None) -> tuple[int | None, str]:
     """Fetch a probe URL THROUGH ZAP, carrying the scan's session so the page is the one the
     scan actually saw.
@@ -151,18 +166,9 @@ def _fetch_probe(zap_api: str, url: str, cookies: dict | None = None) -> tuple[i
     which is what makes a silent bounce to the login page visible as a change rather than as a
     constant.
     """
-    host = host_of(url) or ""
-    lines = [f"GET {url} HTTP/1.1", f"Host: {host}"]
-    if cookies:
-        lines.append("Cookie: " + "; ".join(f"{k}={v}" for k, v in sorted(cookies.items())))
-    raw = "\r\n".join(lines) + "\r\n\r\n"
     try:
-        data = _api(zap_api, "/JSON/core/action/sendRequest/",
-                    {"request": raw, "followRedirects": "true"})
-        entry = (data.get("sendRequest") or [{}])[-1]
-        header = entry.get("responseHeader", "")
-        status = int(header.split()[1]) if header.startswith("HTTP/") else None
-        return status, entry.get("responseBody", "")
+        status, body, _final = fetch_probe_full(zap_api, url, cookies)
+        return status, body
     except Exception:
         return None, ""
 

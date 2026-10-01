@@ -108,9 +108,10 @@ unify this back to `localhost`.
 ```bash
 # containers up first (see reproducing_the_sample.md / runner_design.md)
 docker run -d --name juice --network dast -p 3000:3000 bkimminich/juice-shop
+export ZAP_API_KEY=$(openssl rand -hex 24)   # ZAP refuses unkeyed API calls; the runner sends this (W4-4)
 docker run -d --name zap  --network dast -p 8080:8080 zaproxy/zap-stable \
   zap.sh -daemon -host 0.0.0.0 -port 8080 -silent \
-  -config api.disablekey=true -config 'api.addrs.addr.name=.*' -config api.addrs.addr.regex=true
+  -config api.key="$ZAP_API_KEY" -config 'api.addrs.addr.name=.*' -config api.addrs.addr.regex=true
 
 python -m runner.replay \
   --scope security/dast/juice-shop/scope.json \
@@ -121,7 +122,7 @@ python -m runner.replay \
 
 Verify ZAP saw authenticated traffic:
 ```bash
-curl -s "http://localhost:8080/JSON/search/view/messagesByRequestRegex/?regex=Authorization:%20Bearer" \
+curl -s -H "X-ZAP-API-Key: $ZAP_API_KEY" "http://localhost:8080/JSON/search/view/messagesByRequestRegex/?regex=Authorization:%20Bearer" \
   | python3 -c 'import sys,json;print(len(json.load(sys.stdin)["messagesByRequestRegex"]),"authenticated requests")'
 ```
 

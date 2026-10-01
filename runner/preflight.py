@@ -24,6 +24,7 @@ _DEFAULT_SCHEMA = str(Path(__file__).resolve().parent.parent / "contracts" / "sc
 # Explicit, case-insensitive production denylist — defense-in-depth beyond the schema enum, so
 # loosening scope.schema.json can never silently re-enable production scanning.
 _PROD_VALUES = {"prod", "production"}
+_SHARED = {"test", "staging"}
 
 
 class PreflightError(Exception):
@@ -42,6 +43,18 @@ def check_scope(scope: dict) -> None:
         raise PreflightError(
             f"environment_class={env!r} is production — refusing to scan (NFR-2)."
         )
+    # Shared environments must name exact origins (W4-2). A bare host admits every scheme and
+    # port on that machine — an admin port, another service, a plaintext listener — which is
+    # harmless on a disposable dev container and not acceptable on a shared test/staging host.
+    if str(env).strip().lower() in _SHARED and scope.get("fqdn_allow_list"):
+        from runner.scope_guard import is_origin
+        bare = [h for h in scope["fqdn_allow_list"] if not is_origin(h)]
+        if bare:
+            examples = ", ".join(f"https://{h}" for h in bare[:3])
+            raise PreflightError(
+                f"environment_class={env!r} is a shared environment, so scope must name exact "
+                f"origins, not bare hosts: {bare} admit every scheme and port on those machines. "
+                f"Write them as origins, e.g. {examples} (add :port when it is not the default).")
     if not scope.get("fqdn_allow_list"):  # None or empty list
         raise PreflightError(
             "scope has no non-empty 'fqdn_allow_list' — refusing to scan an unbounded "

@@ -32,7 +32,7 @@ from runner.action_policy import validate_action
 from runner.preflight import check_scope, preflight
 from runner.replay import SessionDeadError, prove_auth_live
 from runner.redact import redact
-from runner.scope_guard import ScopeGuard, host_of
+from runner.scope_guard import ScopeGuard, in_scope
 
 _ROOT = Path(__file__).resolve().parent.parent
 _ACTION_SCHEMA = _ROOT / "contracts" / "action.schema.json"
@@ -278,8 +278,7 @@ def dispatch(action: dict) -> tuple[str, str] | None:
 
 def _in_scope_path(path: str, scope: dict) -> bool:
     if path.startswith("http://") or path.startswith("https://"):
-        allow = {h.strip().lower() for h in scope.get("fqdn_allow_list", [])}
-        return host_of(path) in allow
+        return in_scope(path, scope.get("fqdn_allow_list", []))
     return path.startswith("/") or path.startswith("#") or path.startswith("./")
 
 

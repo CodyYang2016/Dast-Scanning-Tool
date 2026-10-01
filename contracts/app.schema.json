@@ -46,7 +46,7 @@
             "type": "string",
             "minLength": 1
           },
-          "description": "Hosts that may be reached AND attacked. Exact match, case-insensitive (D6)."
+          "description": "Hosts that may be reached AND attacked. Exact match, case-insensitive (D6). A bare host (`app.internal`) admits that host on every scheme and port; an origin (`https://app.internal:8443`) admits exactly that scheme, host and port, default ports normalised (W4-2). test and staging environments must use origins \u2014 preflight refuses bare hosts there, since every port of a shared machine is not 'in scope'."
         },
         "deny": {
           "type": "array",
@@ -442,6 +442,31 @@
             "minLength": 1
           },
           "description": "Paths fetched before the scan whose responses are hashed into the coverage artifact, so two scans can be compared for whether the application was in the same condition. Only a digest is stored (W6-8)."
+        },
+        "throttle": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "How hard the scan may push the application (W4-3). A shared environment has other users; ZAP's defaults are tuned for throughput. Unset keeps ZAP's defaults.",
+          "properties": {
+            "threads_per_host": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20,
+              "description": "Concurrent active-scan threads per host; also the spider's thread count."
+            },
+            "delay_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 60000,
+              "description": "Delay between active-scan requests, in milliseconds."
+            }
+          }
+        },
+        "liveness_path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^/",
+          "description": "A path whose answer differs when logged in, probed through ZAP at most once a minute during the active scan (W5-1). A redirect to the login page, a 401/403, or the logged-out answer means the session was lost, and the health gate fails. Default: auth.proof.route.path, else the first scan.state_probes entry; with neither, liveness is recorded as unknown."
         }
       }
     },
@@ -506,6 +531,11 @@
               "description": "Full SHA of the DEPLOYED build that was scanned. No default \u2014 the scanner's own checkout is not the target (W1-8). Usually supplied per run by --commit or $DAST_TARGET_COMMIT from the deploy pipeline, since it changes every deploy; set it here only for a pinned target."
             }
           }
+        },
+        "evidence_url": {
+          "type": "string",
+          "pattern": "^https?://[^\\s<>\"`]+$",
+          "description": "Where each alert links for its stored request/response (W1-4). Either a per-file template using {scan_id} and {path} (an organisation's own artifact store), or a page that holds the evidence, such as a CI run \u2014 a GitHub artifact is a zip, so that link reaches the run and the alert names the file inside it. Overridden by --evidence-url or $DAST_EVIDENCE_URL. Unset: alerts name the file instead of linking."
         }
       }
     },

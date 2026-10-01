@@ -24,7 +24,8 @@ from pathlib import Path
 import yaml
 
 from runner.preflight import preflight
-from runner.scope_guard import host_of
+from runner import zapapi
+from runner.scope_guard import host_of, in_scope
 
 _DEFAULT_SCHEMA = "contracts/scope.schema.json"
 _SLOW_SCANNERS = "40026"  # DOM-XSS (browser-based) — wedges the API; the historical default
@@ -44,11 +45,8 @@ class ScanScopeError(Exception):
 
 
 def _api(zap_api: str, path: str, params: dict | None = None, timeout: float = 30.0) -> dict:
-    url = zap_api.rstrip("/") + path
-    if params:
-        url += "?" + urllib.parse.urlencode(params)
-    with urllib.request.urlopen(url, timeout=timeout) as resp:
-        return json.loads(resp.read().decode())
+    # Always through the keyed client (W4-4).
+    return zapapi.call(zap_api, path, params, timeout)
 
 
 def new_session(zap_api: str, name: str = "") -> None:
@@ -71,7 +69,8 @@ def load_policy(path: str) -> dict | None:
     return loaded if isinstance(loaded, dict) else None
 
 
-def resolved_policy(policy: dict | None, max_scan_min: int, max_rule_min: int) -> dict:
+def resolved_policy(policy: dict | None, max_scan_min: int, max_rule_min: int,
+                    throttle: dict | None = None) -> dict:
     """What this scan was actually configured to do, for the coverage artifact (R2).
 
     Recording it is what lets two scans of the same application be compared honestly: a
@@ -86,11 +85,12 @@ def resolved_policy(policy: dict | None, max_scan_min: int, max_rule_min: int) -
         "disabled_scanners": list(policy.get("disabled_scanners", [_SLOW_SCANNERS])),
         "max_scan_min": max_scan_min,
         "max_rule_min": max_rule_min,
+        "throttle": dict(throttle) if throttle else "zap defaults",
     }
 
 
 def configure_policy(zap_api: str, max_scan_min: int = 4, max_rule_min: int | None = None,
-                     policy: dict | None = None) -> None:
+                     policy: dict | None = None, throttle: dict | None = None) -> None:
     """Bound the active scan, and apply the bundle's `zap-policy.yaml` when there is one.
 
     Without a policy this behaves as it always did (time budgets + the historically disabled
@@ -108,6 +108,16 @@ def configure_policy(zap_api: str, max_scan_min: int = 4, max_rule_min: int | No
     # value that had not been used — config and artifact agreeing while both contradicted it.
     if max_rule_min is None:
         max_rule_min = int((policy or {}).get("max_rule_min") or 1)
+    # How hard the scan pushes (W4-3). A shared environment has other users; ZAP's defaults are
+    # tuned for throughput, not courtesy. Unset leaves ZAP's defaults exactly as they were.
+    throttle = throttle or {}
+    if throttle.get("threads_per_host"):
+        _api(zap_api, "/JSON/ascan/action/setOptionThreadPerHost/",
+             {"Integer": int(throttle["threads_per_host"])})
+        _api(zap_api, "/JSON/spider/action/setOptionThreadCount/",
+             {"Integer": int(throttle["threads_per_host"])})
+    if throttle.get("delay_ms") is not None:
+        _api(zap_api, "/JSON/ascan/action/setOptionDelayInMs/", {"Integer": int(throttle["delay_ms"])})
     _api(zap_api, "/JSON/ascan/action/setOptionMaxScanDurationInMins/", {"Integer": max_scan_min})
     _api(zap_api, "/JSON/ascan/action/setOptionMaxRuleDurationInMins/", {"Integer": max_rule_min})
 
@@ -130,13 +140,39 @@ def configure_policy(zap_api: str, max_scan_min: int = 4, max_rule_min: int | No
 _MAX_CONSECUTIVE_API_FAILURES = 3
 
 
-def _poll(zap_api: str, view_path: str, scan_id: str, poll_s: float, max_polls: int) -> None:
+def stop_all(zap_api: str) -> dict:
+    """Stop every spider and active scan ZAP is running (W4-3). Both are tried even if one fails:
+    a half-stopped scanner is still attacking. Returns which stopped."""
+    stopped = {}
+    for kind in ("ascan", "spider"):
+        try:
+            _api(zap_api, f"/JSON/{kind}/action/stopAllScans/")
+            stopped[kind] = True
+        except Exception:
+            stopped[kind] = False
+    return stopped
+
+
+def _poll(zap_api: str, view_path: str, scan_id: str, poll_s: float, max_polls: int,
+          on_tick=None) -> None:
     """Poll a ZAP scan to completion, tolerating a slow answer but not a dead daemon."""
+    try:
+        _poll_until_done(zap_api, view_path, scan_id, poll_s, max_polls, on_tick)
+    except KeyboardInterrupt:
+        # Ctrl-C used to kill the runner and leave ZAP attacking the application on its own.
+        stop_all(zap_api)
+        raise
+
+
+def _poll_until_done(zap_api: str, view_path: str, scan_id: str, poll_s: float,
+                     max_polls: int, on_tick=None) -> None:
     failures = 0
     for _ in range(max_polls):
         try:
             status = _api(zap_api, view_path, {"scanId": scan_id}).get("status")
             failures = 0
+        except zapapi.ZapAuthError:
+            raise                       # a refused key is not a busy daemon; say so at once
         except Exception as exc:        # a busy daemon can miss a poll; a dead one misses all
             failures += 1
             if failures >= _MAX_CONSECUTIVE_API_FAILURES:
@@ -148,6 +184,8 @@ def _poll(zap_api: str, view_path: str, scan_id: str, poll_s: float, max_polls: 
                 ) from exc
             time.sleep(poll_s)
             continue
+        if on_tick:
+            on_tick()            # e.g. the session-liveness check (W5-1); it rate-limits itself
         if status == "100":
             return
         time.sleep(poll_s)
@@ -218,15 +256,49 @@ def apply_exclusions(zap_api: str, regexes) -> None:
             _api(zap_api, view, {"regex": rx})
 
 
-def spider(zap_api: str, target: str, poll_s: float = 3.0, max_polls: int = 120) -> str:
-    scan_id = _api(zap_api, "/JSON/spider/action/scan/", {"url": target, "recurse": "true"})["scan"]
+def context_regexes(allow_entries) -> list[str]:
+    """ZAP context include patterns from the allow list (W4-1).
+
+    An origin admits exactly that scheme, host and port (the default port may be written or
+    omitted); a bare host admits that host on any scheme and port — the same meanings the browser
+    guard uses (runner/scope_guard.entry_matches). Anchored, with the host escaped, so a lookalike
+    (`dvwa.evil.example`) or a host buried in a query string never matches. Kept to the regex
+    subset Java and Python agree on, since ZAP evaluates them and the tests use Python.
+    """
+    from runner.scope_guard import _DEFAULT_PORT, _parts, is_origin
+    tail = r"(?:[/?#].*)?$"
+    out = []
+    for entry in allow_entries or []:
+        entry = str(entry).strip()
+        if is_origin(entry):
+            parts = _parts(entry)
+            if parts is None:
+                continue
+            scheme, host, port = parts
+            port_rx = (f"(?::{port})?" if port == _DEFAULT_PORT.get(scheme) else f":{port}")
+            out.append(f"^{scheme}://{re.escape(host)}{port_rx}{tail}")
+        elif entry:
+            out.append(f"^https?://{re.escape(entry.lower())}(?::\\d+)?{tail}")
+    return out
+
+
+def spider(zap_api: str, target: str, poll_s: float = 3.0, max_polls: int = 120,
+           context_name: str | None = None) -> str:
+    params = {"url": target, "recurse": "true"}
+    if context_name:
+        params["contextName"] = context_name
+    scan_id = _api(zap_api, "/JSON/spider/action/scan/", params)["scan"]
     _poll(zap_api, "/JSON/spider/view/status/", scan_id, poll_s, max_polls)
     return scan_id
 
 
-def active_scan(zap_api: str, target: str, poll_s: float = 5.0, max_polls: int = 120) -> str:
-    scan_id = _api(zap_api, "/JSON/ascan/action/scan/", {"url": target, "recurse": "true"})["scan"]
-    _poll(zap_api, "/JSON/ascan/view/status/", scan_id, poll_s, max_polls)
+def active_scan(zap_api: str, target: str, poll_s: float = 5.0, max_polls: int = 120,
+                context_id: str | None = None, on_tick=None) -> str:
+    params = {"url": target, "recurse": "true"}
+    if context_id:
+        params["contextId"] = context_id
+    scan_id = _api(zap_api, "/JSON/ascan/action/scan/", params)["scan"]
+    _poll(zap_api, "/JSON/ascan/view/status/", scan_id, poll_s, max_polls, on_tick)
     return scan_id
 
 
@@ -237,26 +309,47 @@ def export_alerts(zap_api: str, target: str) -> dict:
 
 def scan(zap_api: str, target: str, allow_hosts, do_spider: bool = True,
          max_scan_min: int = 4, policy: dict | None = None, exclusions=None,
-         max_rule_min: int | None = None) -> dict:
+         max_rule_min: int | None = None, throttle: dict | None = None, liveness=None) -> dict:
     """Spider + bounded active-scan `target`; return raw ZAP alerts plus the active scan's
     id. Refuses out-of-scope targets before touching ZAP (safety pre-check)."""
     host = host_of(target)
-    allow = {h.strip().lower() for h in allow_hosts}
-    if host is None or host not in allow:
+    if host is None or not in_scope(target, allow_hosts):
         raise ScanScopeError(
-            f"refusing to scan {target!r}: host {host!r} not in allow-list {sorted(allow)} (NFR-2)."
+            f"refusing to scan {target!r}: host {host!r} not in allow-list {sorted(allow_hosts)} (NFR-2)."
         )
     # Before ZAP is touched: an exclusion that covers everything must stop the run, not
     # produce an empty one.
     refuse_exclusions_covering(target, exclusions)
     configure_policy(zap_api, max_scan_min=max_scan_min, max_rule_min=max_rule_min,
-                     policy=policy)
+                     policy=policy, throttle=throttle)
     apply_exclusions(zap_api, exclusions)
-    _api(zap_api, "/JSON/core/action/accessUrl/", {"url": target, "followRedirects": "true"})
-    if do_spider:
-        spider(zap_api, target)
-    ascan_id = active_scan(zap_api, target)
-    report = export_alerts(zap_api, target)
+    # A ZAP context bounds the spider and the active scan themselves (W4-1). Our two safety
+    # layers only ever covered requests WE send; ZAP's own traffic was bounded by nothing but
+    # the seed URL. Built from the same allow list, removed afterwards whatever happens.
+    import time as _time
+    ctx_name = f"dast-{int(_time.time() * 1000)}"
+    includes = context_regexes(allow_hosts)
+    ctx_id = str(_api(zap_api, "/JSON/context/action/newContext/",
+                      {"contextName": ctx_name}).get("contextId"))
+    try:
+        for rx in includes:
+            _api(zap_api, "/JSON/context/action/includeInContext/",
+                 {"contextName": ctx_name, "regex": rx})
+        for rx in exclusions or []:
+            _api(zap_api, "/JSON/context/action/excludeFromContext/",
+                 {"contextName": ctx_name, "regex": rx})
+        _api(zap_api, "/JSON/core/action/accessUrl/", {"url": target, "followRedirects": "true"})
+        if do_spider:
+            spider(zap_api, target, context_name=ctx_name)
+        ascan_id = active_scan(zap_api, target, context_id=ctx_id,
+                               on_tick=liveness.check if liveness else None)
+        report = export_alerts(zap_api, target)
+    finally:
+        try:
+            _api(zap_api, "/JSON/context/action/removeContext/", {"contextName": ctx_name})
+        except Exception:
+            pass          # the session is replaced on the next scan anyway
+    report["context"] = {"name": ctx_name, "include": includes, "exclude": list(exclusions or [])}
     # Carried so coverage can read back what each rule did (W6-2): "ran and found nothing"
     # and "never ran" are otherwise the same sentence.
     report["ascan_id"] = ascan_id

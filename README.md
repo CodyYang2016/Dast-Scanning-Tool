@@ -135,9 +135,10 @@ records land in `./out/records.json`. Images are pinned by digest (`versions.loc
 # 1. Start the pilot app + ZAP daemon on one network
 docker network create dast
 docker run -d --name juice --network dast -p 3000:3000 bkimminich/juice-shop
+export ZAP_API_KEY=$(openssl rand -hex 24)   # ZAP refuses unkeyed API calls; the runner sends this (W4-4)
 docker run -d --name zap  --network dast -p 8080:8080 zaproxy/zap-stable \
   zap.sh -daemon -host 0.0.0.0 -port 8080 -silent \
-  -config api.disablekey=true -config 'api.addrs.addr.name=.*' -config api.addrs.addr.regex=true
+  -config api.key="$ZAP_API_KEY" -config 'api.addrs.addr.name=.*' -config api.addrs.addr.regex=true
 
 # 2. End-to-end runner (preflight → auth replay → scope-enforced scan → normalize)
 python -m runner.main \

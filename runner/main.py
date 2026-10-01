@@ -17,8 +17,6 @@ import argparse
 import json
 import sys
 import time
-import urllib.parse
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -27,6 +25,7 @@ from runner import coverage as coverage_capture
 from runner import evidence
 from runner.preflight import PreflightError, preflight
 from runner.replay import SessionDeadError, load_flow, replay, replay_seeded
+from runner import zapapi
 from runner.scan import (ScanScopeError, ZapUnavailableError, load_policy, new_session,
                         exclusion_regexes as scan_exclusions,
                          resolved_policy, scan)
@@ -39,14 +38,6 @@ def _scan_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
-def _reachable(url: str, timeout: float = 3.0) -> bool:
-    try:
-        urllib.request.urlopen(url, timeout=timeout)
-        return True
-    except Exception:
-        return False
-
-
 def _zap_can_reach(zap_api: str, target: str, timeout: float = 10.0) -> bool:
     """True if ZAP can fetch the target (checked THROUGH ZAP via accessUrl).
 
@@ -54,11 +45,23 @@ def _zap_can_reach(zap_api: str, target: str, timeout: float = 10.0) -> bool:
     docker network), so readiness must be checked from ZAP's perspective — not by the runner
     polling the target directly, which fails on the host where `juice` doesn't resolve.
     """
-    q = urllib.parse.urlencode({"url": target, "followRedirects": "true"})
-    url = zap_api.rstrip("/") + "/JSON/core/action/accessUrl/?" + q
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
-            return bool(json.loads(resp.read()).get("accessUrl"))
+        return bool(zapapi.call(zap_api, "/JSON/core/action/accessUrl/",
+                                {"url": target, "followRedirects": "true"}, timeout).get("accessUrl"))
+    except zapapi.ZapAuthError:
+        raise                        # a wrong key is not "not ready yet" — say so immediately
+    except Exception:
+        return False
+
+
+def _zap_up(zap_api: str) -> bool:
+    """Is ZAP's API answering? Through the keyed client: an unkeyed probe of a keyed ZAP is
+    refused, which used to read as "ZAP is down" and wait out the whole timeout."""
+    try:
+        zapapi.call(zap_api, "/JSON/core/view/version/", timeout=3.0)
+        return True
+    except zapapi.ZapAuthError:
+        raise
     except Exception:
         return False
 
@@ -69,10 +72,9 @@ def wait_ready(zap_api: str, base_url: str, timeout: float = 120.0, interval: fl
     Works on the host and in compose alike, because both reach ZAP and it's ZAP that resolves
     the target host. Returns immediately when ready; raises after `timeout`.
     """
-    zap_version = zap_api.rstrip("/") + "/JSON/core/view/version/"
     end = time.monotonic() + timeout
     while True:
-        if _reachable(zap_version) and _zap_can_reach(zap_api, base_url):
+        if _zap_up(zap_api) and _zap_can_reach(zap_api, base_url):
             return
         if time.monotonic() >= end:
             raise RuntimeError(f"services not ready within {timeout:.0f}s (zap={zap_api}, target={base_url})")
@@ -169,12 +171,17 @@ def evaluate_gate(authenticated: bool, scope_ok: bool, records: list[dict], cove
     """
     has_high_or_medium = any(r["severity"] in ("critical", "high", "medium") for r in records)
     routes_tested = len((coverage or {}).get("routes") or [])
-    healthy = bool(authenticated) and bool(scope_ok) and routes_tested > 0
+    # W5-1: a session lost mid-scan means everything after that point attacked a logged-out
+    # app. Unknown (no usable probe) does not fail the gate, but it is reported as unknown.
+    session_alive = ((coverage or {}).get("session") or {}).get("alive_throughout")
+    healthy = (bool(authenticated) and bool(scope_ok) and routes_tested > 0
+               and session_alive is not False)
     return {
         "mode": "expect-findings" if expect_findings else "health",
         "authenticated": bool(authenticated),
         "scope_ok": bool(scope_ok),
         "routes_tested": routes_tested,
+        "session_alive": session_alive,
         "has_high_or_medium": has_high_or_medium,
         "detections": len(records),
         "passed": healthy and (has_high_or_medium or not expect_findings),
@@ -192,6 +199,15 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
     scope = preflight(scope_path, schema)              # safety layer 1 (offline; fail fast)
     if wait:
         wait_ready(zap_api, base_url)                  # tolerate container startup ordering
+    # Is ZAP's API open to anyone who can reach it (W4-4)? Recorded for every scan; refused for a
+    # shared test/staging environment, where it would hand the scanner — and every request and
+    # session cookie it has captured — to anyone on that network.
+    zap_open = zapapi.is_open(zap_api)
+    zapapi.require_closed_for(scope["environment_class"], zap_open)
+    if zap_open:
+        print("WARNING: ZAP's API answers without a key. Acceptable for a disposable dev "
+              "container only; start ZAP with -config api.key=<secret> and export ZAP_API_KEY.",
+              file=sys.stderr)
     scan_id = _scan_id()
     ev_dir = resolve_evidence_dir(scope_path, evidence_dir, scan_id)   # FR-E1
     ev_dir.mkdir(parents=True, exist_ok=True)
@@ -199,10 +215,12 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
     app_cfg = bundle_app_config(scope_path)
     cookies = probes = None
     exclusions: list[str] = []
+    throttle: dict = {}
     if app_cfg:
         from authoring import appconfig
         cookies = appconfig.scan_cookies(app_cfg)
         probes = appconfig.state_probes(app_cfg)
+        throttle = appconfig.scan_throttle(app_cfg)
         # What exploration already refuses, the scanner must refuse too: attacking the login
         # form or a database-reset page changes the application underneath its own scan.
         exclusions = scan_exclusions(appconfig.avoid_actions(app_cfg),
@@ -237,10 +255,40 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
     policy = bundle_policy(scope_path)
     max_scan_min = resolve_max_scan_min(max_scan_min, policy)
     max_rule_min = resolve_max_rule_min(None, policy)
+
+    # The scan's session, assembled BEFORE the scan now: the liveness monitor needs it while ZAP
+    # attacks, and the state probes need it afterwards.
+    session = live_session or coverage_capture.session_cookies(storage_state, base_url)
+    probe_jar = {**session, **(cookies or {})}
+
+    # Is the scan still logged in while ZAP attacks (W5-1)? Probed through ZAP at most once a
+    # minute during the active scan; a lost session fails the health gate.
+    from runner.liveness import SessionMonitor, probe_path
+    path = probe_path(app_cfg) if app_cfg else None
+    monitor = None
+    if not path:
+        session_result = SessionMonitor.unavailable(
+            "no scan.liveness_path, auth.proof.route or scan.state_probes to probe")
+    elif not session:
+        session_result = SessionMonitor.unavailable("no session cookies to probe with")
+    else:
+        from authoring import appconfig as _ac
+        monitor = SessionMonitor(
+            base_url.rstrip("/") + path, probe_jar, login_path=_ac.login_url(app_cfg),
+            fetch=lambda url, jar: coverage_capture.fetch_probe_full(zap_api, url, jar))
+        try:
+            monitor.start()
+        except Exception as exc:
+            monitor = None
+            session_result = SessionMonitor.unavailable(f"liveness probe failed to start: {exc}")
+
     report = scan(zap_api, base_url, scope["fqdn_allow_list"],
                   do_spider=do_spider, max_scan_min=max_scan_min, policy=policy,
-                  max_rule_min=max_rule_min,
-                  exclusions=exclusions)
+                  max_rule_min=max_rule_min, throttle=throttle,
+                  exclusions=exclusions, liveness=monitor)
+    if monitor is not None:
+        monitor.finish()                 # always a check at the end; see SessionMonitor.finish
+        session_result = monitor.result()
     records = list(normalize(report["alerts"], scope["app_id"], scan_id))
     # Reference the scan's evidence from each record (FR-E1).
     prefix = evidence_prefix(evidence_dir, scan_id)
@@ -256,17 +304,18 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
     # Capture the (route x rule) surface this scan exercised, for the coverage-aware diff (R2).
     # Probes carry the scan's own session: without it they see the login page, and a digest of
     # the login page is the same whatever changed behind it (measured: sha256("") twice over).
-    session = live_session or coverage_capture.session_cookies(storage_state, base_url)
-    probe_jar = {**session, **(cookies or {})}
     coverage = coverage_capture.capture(zap_api, base_url, scan_id=report.get("ascan_id"),
                                         probes=probes, cookies=probe_jar,
                                         authenticated=bool(session),
                                         excluded=report.get("exclusions"))
     # Pin the policy that produced this coverage, so a later diff can tell "we fixed it" from
     # "we scanned it less hard this time" (R2).
-    coverage["policy"] = resolved_policy(policy, max_scan_min, max_rule_min)
+    coverage["policy"] = resolved_policy(policy, max_scan_min, max_rule_min, throttle)
     # Recorded with what the scan did, so a missing reproduction is explained, not mysterious.
     coverage["exchanges"] = exchange_counts
+    coverage["zap_api_open"] = zap_open
+    coverage["zap_context"] = report.get("context")
+    coverage["session"] = session_result
     return scope, result, guard, records, scan_id, coverage
 
 
@@ -310,12 +359,19 @@ def main(argv: list[str] | None = None) -> int:
             wait=not args.no_wait, storage_state=storage_state, seed_routes=seed_routes,
             evidence_dir=args.evidence_dir,
         )
-    except (PreflightError, ScanScopeError, ScopeViolation, ZapUnavailableError) as exc:
+    except (PreflightError, ScanScopeError, ScopeViolation, ZapUnavailableError,
+            zapapi.ZapAuthError) as exc:
         print(f"RUNNER ABORT: {exc}", file=sys.stderr)
         return 2
+    except KeyboardInterrupt:
+        # scan._poll has already told ZAP to stop; say so, so nobody wonders if it is still going.
+        print("\nRUNNER STOPPED at operator request — ZAP's spider and active scan were told to "
+              "stop. Nothing was recorded for this run.", file=sys.stderr)
+        return 130
 
     gate = evaluate_gate(result.get("authenticated"), guard.ok, records, coverage,
                          expect_findings=args.expect_findings)
+    coverage["health_gate"] = gate      # kept with the scan, for the report's summary
     if args.records_out:
         with open(args.records_out, "w") as fh:
             write_json_array(records, fh)

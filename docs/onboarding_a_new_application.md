@@ -21,6 +21,7 @@ Four facts about the target, and two things that must already be true.
 | The **login form's selectors** | To drive the login | Devtools, or `curl -s <login-url> \| grep -i input` |
 | A **proof of authentication** | So an unproven session is never scanned (§3) | §3's decision table |
 | The environment is **non-production** | `preflight` refuses `prod`, case-insensitively, before any traffic | You state it as `environment_class`; it is the whole safety story, so get it right |
+| ZAP runs **with an API key** | An open ZAP API can be driven by anything that reaches it; a `test`/`staging` scan refuses one (W4-4) | Start ZAP with `-config api.key="$ZAP_API_KEY"` and export the **same** `ZAP_API_KEY` where you run `dast`. Compose refuses to start without it |
 | The app is **not on port 8080** | ZAP claims proxied requests arriving on its own port as API calls, and the app never sees them (W4-7) | See §6 — this is silent, and it is the most confusing failure here |
 
 **Environment prep is not configuration** and is not counted in the timings above: DVWA needs
@@ -175,6 +176,7 @@ Notes earned the hard way:
 
 ```bash
 export MYAPP_USER=…  MYAPP_PASS=…            # the names you put in auth.credentials
+export ZAP_API_KEY=…                         # the key ZAP was started with
 python -m dast author my-app                 # record → generate → validate
 python -m dast scan   my-app                 # preflight → replay → ZAP → normalize → coverage
 python -m dast report my-app                 # lifecycle diff → SARIF   (--upload to publish)
@@ -185,8 +187,11 @@ What good looks like:
 - **author** — `recorded: N interactions … hosts=['my-app']` (the host must be the one ZAP
   resolves), then `"passed": true` for both the allow-list and the live auth replay.
 - **scan** — a gate with `authenticated: true`, `scope_ok: true`, `routes_tested` above zero,
+  `session_alive: true` (or `null` if no probe could tell — see *Shared environments* below),
   `blocked: 0`.
-- **report** — `lifecycle: new=…` on the first run, `open=…` on the next, then a `gate:` line.
+- **report** — `lifecycle: new=…` on the first run, `open=…` on the next, then a `gate:` line and
+  `summary: …/summary.md` — one page with the verdict, counts, new findings, coverage gaps and
+  whether the session held. Read that first.
 
 ### Two gates, and which one fails your build
 
@@ -208,6 +213,31 @@ gate:
 the build again: it has been seen and is somebody's decision, and failing every build on it
 forever is how gates get switched off. SARIF is written and an explicit `--upload` still runs
 when the gate fails, so the evidence is published either way. Exit `2` means a tool error.
+
+### Shared environments: scope, pace, session, stop
+
+A `dev` target can be scoped loosely. Anything with other users (`environment_class: test` or
+`staging`) is held to more:
+
+- **Scope by origin.** `scope.allow: [https://my-app.internal:8443]` — scheme, host and port.
+  A bare host (`my-app.internal`) means *every scheme and port on that machine*; preflight accepts
+  it for `dev` and refuses it for `test`/`staging`, saying which origin to write instead. ZAP's
+  own spider and active scan are confined to the same origins by a context created for each scan.
+- **Pace.** `scan.throttle: {threads_per_host: 2, delay_ms: 200}` slows ZAP down; the values in
+  force are recorded in `coverage.json` under `policy`. Unset means ZAP's defaults.
+- **Session.** The scan re-checks the session during the active scan and once at the end. It
+  probes `scan.liveness_path` if set — any path that answers differently logged in and logged out
+  (Juice Shop: `/rest/user/whoami`) — else `auth.proof.route.path`, else the first
+  `scan.state_probes` entry. If the session is lost (401/403, a redirect to the login path, or the
+  logged-out answer), **the scan fails**: everything after that point attacked a logged-out app.
+  If no probe can tell the difference, `coverage.json` says `alive_throughout: null` — unknown,
+  not alive.
+- **Stop.** Ctrl-C stops ZAP's spider and active scan too, not just the runner (exit 130). From
+  another terminal: `python -m dast stop my-app`.
+
+**Not covered yet:** ZAP's active scan attacks every write request it has seen, whatever
+`write_mode` says — `write_mode` governs only exploration (W4-8). Agree with the app team which
+write endpoints are acceptable before scanning a shared environment, and exclude the rest.
 
 ### Marking a finding as a false positive, accepted risk, or not yours
 
@@ -244,7 +274,10 @@ names no parameter is matched only when that is unambiguous, and listed otherwis
 Every push runs `ruff` and the test suite (`.github/workflows/tests.yml`). A weekly workflow,
 `dast-selftest.yml`, scans Juice Shop through compose with `--expect-findings` — a canary that goes
 red if the scanner ever stops finding vulnerabilities in an app that has them — and keeps the
-results as a downloadable artifact. It publishes nothing unless run by hand with `upload` ticked.
+results as a downloadable artifact. Its run page shows the scan summary, and each alert's
+request/response link points at that run. It publishes nothing unless run by hand with `upload`
+ticked. `dast report` appends the same summary to `$GITHUB_STEP_SUMMARY` whenever it runs inside
+GitHub Actions.
 For your own application, the natural home for `dast scan` and `dast report` is the app's deploy
 pipeline, which knows the deployed commit to pass as `DAST_TARGET_COMMIT`.
 
@@ -359,8 +392,18 @@ stores the full exchange ZAP sent and received, redacted — credential headers 
 `Authorization`, `Set-Cookie`, API-key headers) keep their name and lose their value, and secret
 form and JSON fields are scrubbed — with the response cut to the part around the evidence. It sits
 at `exchange_path` in the scan's evidence directory (`messages/<fingerprint>.txt`). It is captured
-during the scan because ZAP discards it when the next scan starts. It is not yet linked from the
-GitHub alert itself (W1-4); in CI it ships in the run's artifact.
+during the scan because ZAP discards it when the next scan starts.
+
+The alert says where that file is (W1-4) — *Full request/response: …* — in one of three ways:
+
+| Setting | The alert shows |
+|---|---|
+| `publish.evidence_url: https://store.example/dast/{scan_id}/{path}` | a link to the file itself, for an organisation's own artifact store |
+| a page with no `{path}`, e.g. the CI run (`${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`) | the file's name **and** a link to the run. A GitHub artifact is a zip, so a link can reach the run but not the file inside |
+| nothing | the file's name, inside this scan's evidence |
+
+`--evidence-url` and `$DAST_EVIDENCE_URL` override the config, and `settings.json` records which
+one won. Only `http(s)` URLs are accepted.
 
 ---
 
@@ -504,6 +547,10 @@ when there is no XHR surface; a wrong pattern quietly records nothing.
 | `credentials not in the environment: MYAPP_USER` | The env vars named in `auth.credentials` are not exported | Export them in the shell that runs `dast` |
 | Login works by hand, fails here | A password policy (WebGoat caps at 10 characters), or the account was wiped when the container restarted | Re-provision the account; in-memory databases do not survive a restart |
 | `services not ready within 120s` | ZAP cannot reach the target | `docker exec zap curl …` from §1; check both are on the same network |
+| `ZAP closed the connection without answering` | `ZAP_API_KEY` is missing or differs from the key ZAP was started with. A keyed ZAP hangs up rather than answering 401 | Export the same key in the shell that runs `dast` |
+| `refusing to scan a test environment: ZAP's API is open` | ZAP was started with `api.disablekey=true` | Restart it with `-config api.key=…` |
+| `… is a shared environment, so scope must name exact origins` | A bare host in `scope.allow` for `test`/`staging` | Write it as an origin, e.g. `https://my-app.internal:8443` |
+| Health gate fails with `session_alive: false` | The session died mid-scan — the scan logged it out, it expired, or the app was reset | `coverage.json` → `session.lost_after_s`; add the action that logs out to `scope.avoid_actions` (which also excludes it from the scan), or shorten the scan. Re-authentication is not implemented (W5-2) |
 | `ZapUnavailableError: ZAP stopped responding` | The daemon died — usually OOM (exit 137) from a browser-driven rule | `docker logs zap`; disable `40026` or give the daemon more memory |
 
 ---

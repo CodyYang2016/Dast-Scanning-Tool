@@ -410,3 +410,70 @@ def test_triage_never_touches_the_real_suppressions_file(tmp_path, monkeypatch):
                                            "--repo", "r", "--out", str(tmp_path / "out")])
     dast.cmd_triage(args)
     assert not (tmp_path / "apps" / "gateapp" / "suppressions.yaml").exists()
+
+
+def test_dast_stop_stops_both_scanners(monkeypatch, capsys):
+    from runner import scan as scan_mod
+    seen = []
+    monkeypatch.setattr(scan_mod, "stop_all", lambda z: seen.append(z) or {"ascan": True, "spider": True})
+    args = dast.build_parser().parse_args(["stop", "dvwa", "--zap-api", "http://zap:8080"])
+    assert dast.cmd_stop(args) == 0 and seen == ["http://zap:8080"]
+    assert "stopped" in capsys.readouterr().out
+
+
+def test_the_contract_accepts_a_throttle():
+    import json, jsonschema, yaml
+    cfg = yaml.safe_load(open(appconfig._APPS_DIR / "dvwa" / "app.yaml"))
+    cfg["scan"]["throttle"] = {"threads_per_host": 2, "delay_ms": 250}
+    jsonschema.validate(cfg, json.loads((dast.ROOT / "contracts" / "app.schema.json").read_text()))
+    assert appconfig.scan_throttle(cfg) == {"threads_per_host": 2, "delay_ms": 250}
+
+
+# ---- W1-6: a summary per scan ------------------------------------------------------------
+
+def test_report_writes_a_summary_beside_the_sarif(tmp_path, monkeypatch):
+    monkeypatch.delenv("DAST_FAIL_ON", raising=False)
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    d = _scan_dir(tmp_path)
+    _report(tmp_path)
+    md = (d / "summary.md").read_text()
+    assert md.startswith("# DAST scan — gateapp") and "FAILED" in md
+
+
+def test_in_actions_the_summary_is_appended_to_the_run_page(tmp_path, monkeypatch):
+    monkeypatch.delenv("DAST_FAIL_ON", raising=False)
+    page = tmp_path / "step_summary.md"
+    page.write_text("earlier step\n")
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(page))
+    _scan_dir(tmp_path)
+    _report(tmp_path)
+    text = page.read_text()
+    assert text.startswith("earlier step\n") and "# DAST scan — gateapp" in text
+
+
+# ---- W1-4: the evidence link resolves like every other setting -----------------------------
+
+def test_the_evidence_url_is_recorded_with_its_source(tmp_path, monkeypatch):
+    import json
+    monkeypatch.setenv("DAST_EVIDENCE_URL", "https://ci.example/runs/7")
+    d = _scan_dir(tmp_path)
+    _report(tmp_path, "--fail-on", "none")
+    s = json.loads((d / "settings.json").read_text())
+    assert s["evidence_url"] == {"value": "https://ci.example/runs/7", "source": "env"}
+
+
+def test_a_bad_evidence_url_stops_the_report(tmp_path, monkeypatch):
+    monkeypatch.delenv("DAST_EVIDENCE_URL", raising=False)
+    _scan_dir(tmp_path)
+    assert _report(tmp_path, "--evidence-url", "javascript:alert(1)") == 2
+
+
+def test_the_contract_accepts_an_evidence_url_and_refuses_other_schemes():
+    import json, jsonschema, pytest, yaml
+    schema = json.loads((dast.ROOT / "contracts" / "app.schema.json").read_text())
+    cfg = yaml.safe_load(open(appconfig._APPS_DIR / "dvwa" / "app.yaml"))
+    cfg["publish"] = {"evidence_url": "https://store.example/{scan_id}/{path}"}
+    jsonschema.validate(cfg, schema)
+    cfg["publish"] = {"evidence_url": "file:///{path}"}
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(cfg, schema)

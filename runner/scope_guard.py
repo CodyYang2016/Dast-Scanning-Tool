@@ -44,6 +44,54 @@ def host_of(url: str) -> str | None:
         return None
 
 
+_DEFAULT_PORT = {"http": 80, "https": 443}
+
+
+def _parts(url: str):
+    """(scheme, host, port) with the default port filled in, or None if unparseable."""
+    try:
+        p = urlparse(url)
+        if not p.hostname or not p.scheme:
+            return None
+        return p.scheme.lower(), p.hostname, p.port or _DEFAULT_PORT.get(p.scheme.lower())
+    except ValueError:
+        return None
+
+
+def origin_of(url: str) -> str | None:
+    """`scheme://host[:port]`, lowercased, default port dropped — the form an allow-list origin
+    entry is written in."""
+    parts = _parts(url)
+    if parts is None:
+        return None
+    scheme, host, port = parts
+    return f"{scheme}://{host}" if port == _DEFAULT_PORT.get(scheme) else f"{scheme}://{host}:{port}"
+
+
+def is_origin(entry: str) -> bool:
+    return "://" in str(entry)
+
+
+def entry_matches(url: str, entry: str) -> bool:
+    """Does `url` fall under one allow/deny entry? (W4-2)
+
+    An ORIGIN entry (`https://app.internal:8443`) must match scheme, host and port exactly, with
+    default ports normalised. A BARE HOST entry keeps its original meaning — that host on any
+    scheme and any port — which is why shared environments may not use it (preflight).
+    """
+    entry = str(entry).strip()
+    if is_origin(entry):
+        want, got = _parts(entry), _parts(url)
+        return want is not None and got is not None and want == got
+    return host_of(url) == entry.lower()
+
+
+def in_scope(url: str, allow_entries) -> bool:
+    """True when any allow-list entry admits `url`. The single matcher every reader uses, so an
+    origin entry cannot be honoured in one place and silently widened to its host in another."""
+    return any(entry_matches(url, e) for e in (allow_entries or []))
+
+
 class ScopeGuard:
     def __init__(self, scope: dict, mode: str = "enforce"):
         """mode:
@@ -56,7 +104,7 @@ class ScopeGuard:
         if mode not in ("enforce", "discovery"):
             raise ValueError(f"unknown scope-guard mode: {mode!r}")
         self.mode = mode
-        self._allow = {h.strip().lower() for h in scope.get("fqdn_allow_list", [])}
+        self._allow = [h.strip() for h in scope.get("fqdn_allow_list", [])]
         self._deny = [p.strip().lower() for p in scope.get("fqdn_deny_list", [])]
         self._decisions: list[Decision] = []
 
@@ -68,8 +116,9 @@ class ScopeGuard:
         for pattern in self._deny:
             if fnmatch.fnmatch(host, pattern):
                 return Decision(False, url, host, f"deny-list match: {pattern}")
-        if host not in self._allow:
-            return Decision(False, url, host, "host not in allow-list")
+        if not in_scope(url, self._allow):
+            return Decision(False, url, host, "not in allow-list (host, or scheme/port for an "
+                                              "origin entry)")
         return Decision(True, url, host, "allow-list match")
 
     def check(self, url: str) -> Decision:

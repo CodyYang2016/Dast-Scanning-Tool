@@ -12,11 +12,11 @@ developer opens, an artifact, or GitHub.
 
 from __future__ import annotations
 
-import json
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from runner import zapapi
 from runner.redact import redact_text
 
 _FETCH_SEVERITIES = {"critical", "high", "medium"}
@@ -27,10 +27,7 @@ _RESPONSE_WINDOW = 600        # characters either side of the evidence
 
 
 def fetch_message(zap_api: str, message_id) -> dict:
-    url = (zap_api.rstrip("/") + "/JSON/core/view/message/?"
-           + urllib.parse.urlencode({"id": message_id}))
-    with urllib.request.urlopen(url, timeout=30) as resp:
-        return json.loads(resp.read().decode())["message"]
+    return zapapi.call(zap_api, "/JSON/core/view/message/", {"id": message_id})["message"]
 
 
 def request_line(message: dict) -> str | None:

@@ -50,15 +50,19 @@ docker network create dast
 docker run -d --name juice --network dast -p 3000:3000 bkimminich/juice-shop
 
 # ZAP daemon — API exposed on the host at localhost:8080
+export ZAP_API_KEY=$(openssl rand -hex 24)   # ZAP refuses unkeyed API calls; the runner sends this (W4-4)
 docker run -d --name zap --network dast -p 8080:8080 zaproxy/zap-stable \
   zap.sh -daemon -host 0.0.0.0 -port 8080 -silent \
-  -config api.disablekey=true \
+  -config api.key="$ZAP_API_KEY" \
   -config 'api.addrs.addr.name=.*' -config api.addrs.addr.regex=true
 ```
 
 **Why the extra `-config` flags matter (we hit both of these):**
 
-- `api.disablekey=true` + `api.addrs.addr.*` — without the `api.addrs` allow-list, ZAP 2.17
+- `api.key="$ZAP_API_KEY"` — ZAP's API requires a key (W4-4); every runner call sends it in the
+  `X-ZAP-API-Key` header, so export the same variable in the shell that runs `dast`. A missing or
+  wrong key makes ZAP **close the connection** (`curl: (52) Empty reply`) — not a 401.
+- `api.addrs.addr.*` — without the `api.addrs` allow-list, ZAP 2.17
   **rejects API calls that arrive through the Docker port-forward** (they come from the
   container gateway IP, not loopback). Symptom: `curl: (52) Empty reply from server` on the
   host and `Request to API URL ... not permitted` in `docker logs zap`. Quote
@@ -75,7 +79,7 @@ Give the daemon ~30–60s on first boot, then:
 
 ```bash
 # ZAP API alive?
-curl -s "http://localhost:8080/JSON/core/view/version/"      # -> {"version":"2.17.0"}
+curl -s -H "X-ZAP-API-Key: $ZAP_API_KEY" "http://localhost:8080/JSON/core/view/version/"      # -> {"version":"2.17.0"}
 
 # Can the ZAP container reach the pilot app? (must print 200)
 docker exec zap curl -sS -m 10 -o /dev/null -w "%{http_code}\n" http://juice:3000/

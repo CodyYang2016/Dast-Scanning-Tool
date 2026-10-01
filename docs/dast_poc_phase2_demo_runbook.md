@@ -205,13 +205,23 @@ $CT rm -f juice zap 2>/dev/null; $CT network rm dast 2>/dev/null
 
 $CT network create dast
 $CT run -d --name juice --network dast -p 3000:3000 $JUICE_IMG
+export ZAP_API_KEY=$(openssl rand -hex 24)   # ZAP refuses unkeyed API calls; the runner sends this (W4-4)
 $CT run -d --name zap --network dast -p 8080:8080 $ZAP_IMG \
   zap.sh -daemon -host 0.0.0.0 -port 8080 -silent \
-  -config api.disablekey=true -config 'api.addrs.addr.name=.*' -config api.addrs.addr.regex=true
+  -config api.key="$ZAP_API_KEY" -config 'api.addrs.addr.name=.*' -config api.addrs.addr.regex=true
 ```
 
 Keep the single quotes around `'api.addrs.addr.name=.*'` — Git Bash globs `.*` otherwise, and
 without that flag ZAP answers every host call with `curl: (52) Empty reply`.
+
+**The API key (W4-4).** ZAP no longer runs with an open API. Export `ZAP_API_KEY` in **every**
+terminal that runs `dast`, `runner.*` or a `curl` to ZAP — the same value ZAP was started with.
+A missing or wrong key also shows up as `curl: (52) Empty reply`: a keyed ZAP hangs up rather
+than answering 401.
+
+**Stopping a scan.** Ctrl-C in the scanning terminal stops ZAP's spider and active scan as well
+as the runner (exit 130). From another terminal: `$PY -m dast stop <app>`. Check with
+`curl -s -H "X-ZAP-API-Key: $ZAP_API_KEY" http://localhost:8080/JSON/ascan/view/scans/`.
 
 Why these exact names: `runner`, `validate`, and the app `scope.json` all address the target as
 **`juice:3000`** — the container name is the DNS name ZAP resolves on the `dast` network (D7).
@@ -222,7 +232,7 @@ ZAP takes ~20–40 s to come up. Re-run until all three are 200:
 
 ```bash
 curl -s -o /dev/null -w "juice-from-host %{http_code}\n" http://localhost:3000
-curl -s -o /dev/null -w "zap-api        %{http_code}\n" http://localhost:8080/JSON/core/view/version/
+curl -s -H "X-ZAP-API-Key: $ZAP_API_KEY" -o /dev/null -w "zap-api        %{http_code}\n" http://localhost:8080/JSON/core/view/version/
 $CT exec zap curl -sS -m10 -o /dev/null -w "juice-from-zap %{http_code}\n" http://juice:3000/
 ```
 
@@ -749,11 +759,11 @@ of hand-authored ones. Preflight runs first, offline: it would abort here if the
 
 ```bash
 # 1) ZAP saw the *generated* flow authenticate: count Bearer requests
-curl -s "http://localhost:8080/JSON/search/view/messagesByRequestRegex/?regex=Authorization:%20Bearer" \
+curl -s -H "X-ZAP-API-Key: $ZAP_API_KEY" "http://localhost:8080/JSON/search/view/messagesByRequestRegex/?regex=Authorization:%20Bearer" \
   | $PY -c 'import sys,json;print(len(json.load(sys.stdin)["messagesByRequestRegex"]),"authenticated requests seen by ZAP")'
 
 # 2) active-scan progress
-curl -s "http://localhost:8080/JSON/ascan/view/scans/" | $PY -m json.tool
+curl -s -H "X-ZAP-API-Key: $ZAP_API_KEY" "http://localhost:8080/JSON/ascan/view/scans/" | $PY -m json.tool
 
 # 3) evidence is being captured next to the *generated* scope (redacted HAR)
 ls -R out/phase2-demo/gen/evidence/
@@ -943,8 +953,9 @@ Full teardown at the end of the day: `$CT rm -f juice zap; $CT network rm dast`
 # ---- pre-flight (Terminal A) — paste the Platform card for your OS FIRST ----
 $CT rm -f juice zap 2>/dev/null; $CT network rm dast 2>/dev/null; $CT network create dast
 $CT run -d --name juice --network dast -p 3000:3000 $JUICE_IMG
-$CT run -d --name zap --network dast -p 8080:8080 $ZAP_IMG zap.sh -daemon -host 0.0.0.0 -port 8080 -silent -config api.disablekey=true -config 'api.addrs.addr.name=.*' -config api.addrs.addr.regex=true
-curl -s -o /dev/null -w "juice %{http_code}\n" http://localhost:3000; curl -s -o /dev/null -w "zap %{http_code}\n" http://localhost:8080/JSON/core/view/version/; $CT exec zap curl -sS -m10 -o /dev/null -w "juice-from-zap %{http_code}\n" http://juice:3000/
+export ZAP_API_KEY=$(openssl rand -hex 24)   # ZAP refuses unkeyed API calls; the runner sends this (W4-4)
+$CT run -d --name zap --network dast -p 8080:8080 $ZAP_IMG zap.sh -daemon -host 0.0.0.0 -port 8080 -silent -config api.key="$ZAP_API_KEY" -config 'api.addrs.addr.name=.*' -config api.addrs.addr.regex=true
+curl -s -o /dev/null -w "juice %{http_code}\n" http://localhost:3000; curl -s -H "X-ZAP-API-Key: $ZAP_API_KEY" -o /dev/null -w "zap %{http_code}\n" http://localhost:8080/JSON/core/view/version/; $CT exec zap curl -sS -m10 -o /dev/null -w "juice-from-zap %{http_code}\n" http://juice:3000/
 $PY -m pytest -q
 rm -rf out/phase2-demo && mkdir -p out/phase2-demo
 export AUTH_EMAIL="dast-demo-$(date +%H%M%S)@juice-sh.op" AUTH_PASSWORD="Dast-Demo-passw0rd!"; echo $AUTH_EMAIL

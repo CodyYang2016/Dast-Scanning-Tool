@@ -84,12 +84,12 @@ The PoC's safety model was designed for a disposable container on an isolated ne
 | Task | Why | Owner | Sessions |
 | --- | --- | --- | --- |
 | Split scope into "may traverse" and "may attack" | An SSO login must be reachable but must never be scanned; today `fqdn_allow_list` authorises both | Tool | 1 |
-| Bound ZAP itself with a context and include/exclude regex | `/JSON/context/` is never called; the spider and active scan are bounded only by the seed URL, so the two documented safety layers cover browser-originated requests only | Tool | 1 |
-| Extend scope matching to (scheme, host, port) and handle redirects | KI2: host-only matching authorises every port and scheme on an allow-listed host | Tool | 1 |
-| Add throttling and a kill switch | Rate limiting was explicitly descoped; there is no way to stop a scan today except Ctrl-C | Tool | 1 |
+| ✅ *Done 2026-10-01 (W4-1).* Bound ZAP itself with a context and include/exclude regex | `/JSON/context/` is never called; the spider and active scan are bounded only by the seed URL, so the two documented safety layers cover browser-originated requests only | Tool | 1 |
+| ✅ *Done 2026-10-01 (W4-2), redirects excepted.* Extend scope matching to (scheme, host, port) and handle redirects | KI2: host-only matching authorises every port and scheme on an allow-listed host | Tool | 1 |
+| ✅ *Done 2026-10-01 (W4-3): `scan.throttle`, Ctrl-C stops ZAP, `dast stop`.* Add throttling and a kill switch | Rate limiting was explicitly descoped; there is no way to stop a scan today except Ctrl-C | Tool | 1 |
 | Exclude destructive and integration endpoints per app | Active scanning a shared environment can trigger mail, SMS, payments or partner test systems | Tool + App | 0.5 |
 | Verify `environment_class` against the app registry; deny prod hostname patterns | Preflight trusts a hand-typed string — against real hostnames one typo is the entire safety story | Tool + Gov | 1 |
-| Enable the ZAP API key and bind the daemon to the runner | Currently `api.disablekey=true` with `api.addrs.addr.regex=.*` | Platform | 0.5 |
+| ✅ *Key done 2026-10-01 (W4-4); binding remains.* Enable the ZAP API key and bind the daemon to the runner | Currently `api.disablekey=true` with `api.addrs.addr.regex=.*` | Platform | 0.5 |
 
 **Exit criteria:** a deliberate misconfiguration test suite passes — wrong environment class, off-scope host, off-scope port, IdP host, and an excluded destructive endpoint are each refused, logged, and provable after the fact.
 
@@ -102,7 +102,7 @@ The seeded-session design already exists and is the right one; what is missing i
 | Corporate TLS and egress | ZAP is a MITM proxy: the Nationwide CA chain must be trusted by Chromium and ZAP, and both need proxy settings. Note `nw-ca-all.pem` is committed **empty** (0 bytes) while two runbooks reference it — source it at runtime, do not commit it. | Platform | 1–2 |
 | Seed an SSO/MFA session for real | Human logs in once through `authoring/seed.py`; capture what breaks (conditional access, device trust, session binding to IP or user agent) | Tool + App | 1–2 |
 | Put `storageState` in a secret store with a TTL | Today it is a live credential in a working tree at `.secrets/storageState.json` | Platform | 1 |
-| Handle mid-scan session expiry | Liveness is proven once before a multi-minute scan. Add a post-scan re-check and mark the scan *degraded* so no finding can be labelled `resolved` from a scan that lost its session | Tool | 1 |
+| ✅ *Detection done 2026-10-01 (W5-1): loss fails the scan; the *degraded ⇒ no `resolved`* rule remains.* Handle mid-scan session expiry | Liveness is proven once before a multi-minute scan. Add a post-scan re-check and mark the scan *degraded* so no finding can be labelled `resolved` from a scan that lost its session | Tool | 1 |
 | Agree a test identity | A dedicated non-privileged service identity with no access to real customer data, and a documented re-seed cadence | App + Gov | — |
 
 **Exit criteria:** an authenticated page of the real app is reachable through the ZAP proxy, proven by `prove_auth_live()`, with the session sourced from the secret store and no credential on local disk.
@@ -188,6 +188,8 @@ The PoC's current scan configuration was tuned for a repeatable stage demo again
 >
 > *Current state:* no ZAP context, no session-management or re-authentication rules, no anti-CSRF token handling; liveness is proven once before the scan begins.
 >
+> *Update 2026-10-01:* a ZAP context now bounds every scan (W4-1), and the session is re-probed during the active scan and once at the end; a lost session **fails the scan** rather than producing a quietly logged-out result (W5-1). Re-authentication and anti-CSRF handling are still absent, so a write-heavy scan that loses its session ends unhealthy instead of misleading — better, not solved.
+>
 > *Consequence:* attacking forms logs the scanner out and regenerates CSRF tokens. A longer, write-enabled scan can therefore find *fewer* issues than a short one, because most of it runs unauthenticated against a login page — the single most likely way for the pilot to produce a misleadingly poor result.
 >
 > *Recommendation:* configure ZAP session management and re-authentication before the first full scan, and pair it with the post-scan liveness re-check in Gate 3.
@@ -244,6 +246,8 @@ Run every tool against the same application, the same environment, the same auth
 | Data residency | Does scan traffic or evidence leave Nationwide? | Ahead |
 | Unattended operation | Scheduled scan with nobody watching | Behind until Gate 5 — every commercial tool has this, so its absence will be scored |
 | Total cost at fleet scale | Licence and run cost across the intended application estate | Ahead, but only credible once the engineering cost of the gates is included |
+
+A signable draft of this scorecard — weights, must-win criteria, end conditions — is in [`evaluation_scorecard.md`](evaluation_scorecard.md) (W6-7).
 
 Disclose every posture exclusion agreed in SP-1 to SP-7 alongside the results. A scorecard that omits them turns a deliberate safety choice into an apparent detection weakness.
 

@@ -28,7 +28,7 @@ import re
 from dataclasses import dataclass
 from urllib.parse import unquote
 
-from runner.scope_guard import host_of
+from runner.scope_guard import host_of, in_scope
 
 _EMBEDDED_URL = re.compile(r"https?://[^\s&\"'<>]+", re.IGNORECASE)
 
@@ -149,16 +149,16 @@ def validate_action(action: dict, scope: dict, deny_actions=None, safe_forms=Non
     if action.get("action") == "submit_form" and verb == "GET" and not submit_get_forms:
         return ActionDecision(False, "this application does not permit form submission")
 
-    # Absolute targets must be in-scope by host; relative paths inherit the (in-scope) base host.
-    allow = {h.strip().lower() for h in scope.get("fqdn_allow_list", [])}
+    # Absolute targets must be in scope; relative paths inherit the (in-scope) base origin.
+    allow = scope.get("fqdn_allow_list", [])
     if target.startswith("http://") or target.startswith("https://"):
-        if host_of(target) not in allow:
+        if not in_scope(target, allow):
             return ActionDecision(False, "target host not in allow-list")
 
     # Any absolute URL embedded in the target (query/fragment, possibly percent-encoded) must be
     # in-scope too — otherwise the app can redirect the browser off-scope.
     for embedded in _EMBEDDED_URL.findall(unquote(target)):
-        if host_of(embedded) not in allow:
+        if not in_scope(embedded, allow):
             return ActionDecision(False, f"embedded off-scope URL in target: {host_of(embedded)}")
 
     return ActionDecision(True, "allowed")

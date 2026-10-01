@@ -446,6 +446,7 @@ def cmd_report(args) -> int:
     # (W6-12) — without this line that gap is invisible.
     trace_file = paths.trace / "trace.json"
     cov_file = run_dir / "coverage.json"
+    summary = None
     if trace_file.exists() and cov_file.exists():
         from detections import reachability
         summary = reachability.summarize(
@@ -463,10 +464,11 @@ def cmd_report(args) -> int:
     # Where results are published, resolved the same way as the output root and recorded with
     # its provenance: a layered precedence that cannot explain itself looks, from a UI, exactly
     # like the tool ignoring what the operator asked for.
-    gh, cfg_fail_on = {}, None
+    gh, cfg_fail_on, cfg_evidence_url = {}, None, None
     try:
         app_cfg = appconfig.load_app_config(args.app)
         gh, cfg_fail_on = appconfig.github_publish(app_cfg), appconfig.gate_fail_on(app_cfg)
+        cfg_evidence_url = appconfig.evidence_url(app_cfg)
     except Exception:
         pass
     target = publish_target(args, gh, os.environ)
@@ -492,10 +494,22 @@ def cmd_report(args) -> int:
         print(f"gate: FAILED — {len(gate['blocking'])} new finding(s) at or above {fail_on}: "
               f"{shown}{more}")
     category = target["category"]["value"]
+    # W1-4: how a reader of an alert reaches its stored request/response. Unset, the alert names
+    # the file inside this scan's evidence instead of linking.
+    evidence_url, evidence_src = _first_set(getattr(args, "evidence_url", None),
+                                            os.environ.get("DAST_EVIDENCE_URL"),
+                                            cfg_evidence_url, None)
+    if evidence_url:
+        try:
+            sarif_export.check_evidence_url(evidence_url)
+        except ValueError as exc:
+            print(f"report: {exc}", file=sys.stderr)
+            return 2
 
     (run_dir / "settings.json").write_text(json.dumps({
         "output_dir": {"value": str(paths.root), "source": output_source(args)},
         "github": target,
+        "evidence_url": {"value": evidence_url, "source": evidence_src},
         "gate": {"fail_on": {"value": fail_on, "source": fail_on_src},
                  "passed": gate["passed"], "blocking": len(gate["blocking"])},
     }, indent=2) + "\n")
@@ -505,7 +519,8 @@ def cmd_report(args) -> int:
     sarif = run_dir / "results.sarif"
     rc = sarif_export.main([str(labeled), "--app-id", args.app,
                             "--driver-version", args.driver_version,
-                            "--category", category, "-o", str(sarif)])
+                            "--category", category, "-o", str(sarif)]
+                           + (["--evidence-url", evidence_url] if evidence_url else []))
     if rc:
         return rc
     print(f"SARIF: {display(sarif)}  (category {category})")
@@ -530,6 +545,21 @@ def cmd_report(args) -> int:
                                  "--ref", ref, "--commit", commit])
         if rc:
             return rc
+
+    # One page answering what anyone asks first (W1-6). In GitHub Actions it is also appended
+    # to the run page, where the evidence artifact lives too.
+    from detections import summary as scan_summary
+    page = scan_summary.render(
+        triaged, json.loads(cov_file.read_text()) if cov_file.exists() else {},
+        json.loads((run_dir / "settings.json").read_text()),
+        app_id=args.app, scan_id=run_dir.name, reachability=summary,
+        uploaded=bool(args.upload))
+    (run_dir / "summary.md").write_text(page)
+    print(f"summary: {display(run_dir / 'summary.md')}")
+    step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if step_summary:
+        with open(step_summary, "a") as fh:
+            fh.write(page + "\n")
     # SARIF is written and an explicit upload has run either way: a failing build still
     # publishes its evidence. The gate decides only the exit code.
     return 0 if gate["passed"] else 1
@@ -604,6 +634,16 @@ def cmd_triage(args) -> int:
         print(f"  unmatched: alert #{a['number']} [{a['rule_id']}] {a['path']} — no such finding "
               f"in the latest scan")
     return 0
+
+
+def cmd_stop(args) -> int:
+    """Stop ZAP's spider and active scan from another terminal (W4-3)."""
+    from runner import scan as scan_mod
+    stopped = scan_mod.stop_all(args.zap_api)
+    ok = all(stopped.values())
+    print(("stopped: " if ok else "partly stopped: ")
+          + ", ".join(f"{k} {'stopped' if v else 'FAILED to stop'}" for k, v in stopped.items()))
+    return 0 if ok else 1
 
 
 def cmd_explain(args) -> int:
@@ -686,6 +726,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "scanner is broken. Default is a health gate only")
     s.set_defaults(func=cmd_scan)
 
+    st = common(sub.add_parser("stop", help="stop ZAP's spider and active scan now"))
+    st.add_argument("--zap-api", default=_DEFAULT_ZAP)
+    st.set_defaults(func=cmd_stop)
+
     t = common(sub.add_parser("triage", help="propose suppressions from GitHub dismissals"))
     t.add_argument("--from-github", action="store_true",
                    help="Read dismissed alerts and write suppressions.proposed.yaml for review")
@@ -711,6 +755,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Automation category for the Security tab (default: dast/<app>). Two "
                         "applications must not share one, or the newer upload replaces the "
                         "older one's alerts")
+    r.add_argument("--evidence-url", default=None,
+                   help="Where each alert's stored request/response can be reached: a URL "
+                        "template with {scan_id} and {path}, or a page holding the evidence such "
+                        "as the CI run. Default: $DAST_EVIDENCE_URL, else publish.evidence_url")
     r.set_defaults(func=cmd_report)
 
     e = common(sub.add_parser("explain",

@@ -429,3 +429,66 @@ def test_the_run_id_is_the_scan(records):
 
 def test_a_trailing_slash_in_config_is_not_doubled(records):
     assert _github_category(to_sarif(records, category="dast/juice-shop/")) == "dast/juice-shop"
+
+
+# ---- W1-4: reach the stored request/response from the alert -------------------------------
+
+def _ev_rec(**kw):
+    return {"rule_id": "40018", "severity": "high", "title": "SQL Injection", "fingerprint": "f",
+            "endpoint": "http://app/a", "scan_id": "S1",
+            "exchange_path": "evidence/messages/abc.txt", **kw}
+
+
+def _msg(rec, url=None, markdown=False):
+    from detections.sarif_export import to_sarif
+    r = to_sarif([rec], evidence_url=url)["runs"][0]["results"][0]["message"]
+    return r["markdown" if markdown else "text"]
+
+
+def test_without_a_url_the_message_names_the_file():
+    m = _msg(_ev_rec())
+    assert "Full request/response: `evidence/messages/abc.txt` in this scan's evidence." in m
+
+
+def test_a_per_file_template_links_the_file():
+    m = _msg(_ev_rec(), "https://store.example/dast/{scan_id}/{path}", markdown=True)
+    assert "Full request/response: <https://store.example/dast/S1/evidence/messages/abc.txt>" in m
+
+
+def test_a_template_without_path_links_the_run_and_names_the_file():
+    m = _msg(_ev_rec(), "https://github.com/o/r/actions/runs/42", markdown=True)
+    assert "<https://github.com/o/r/actions/runs/42>" in m
+    assert "`evidence/messages/abc.txt`" in m and "artifact" in m
+
+
+def test_no_exchange_means_no_evidence_clause():
+    rec = _ev_rec(); rec.pop("exchange_path")
+    assert "Full request/response" not in _msg(rec, "https://x.example/{path}")
+
+
+def test_values_substituted_into_the_url_are_percent_encoded():
+    rec = _ev_rec(scan_id="S 1>x", exchange_path="evidence/messages/a b.txt")
+    m = _msg(rec, "https://x.example/{scan_id}/{path}", markdown=True)
+    assert "<https://x.example/S%201%3Ex/evidence/messages/a%20b.txt>" in m
+
+
+def test_only_the_two_placeholders_are_substituted():
+    m = _msg(_ev_rec(), "https://x.example/{path}?q={0}{__class__}")
+    assert "{0}{__class__}" in m
+
+
+def test_a_non_http_template_is_refused():
+    import pytest
+    from detections.sarif_export import to_sarif
+    for bad in ("javascript:alert(1)//{path}", "file:///etc/{path}", "https://x y/{path}"):
+        with pytest.raises(ValueError):
+            to_sarif([_ev_rec()], evidence_url=bad)
+
+
+def test_the_cli_takes_an_evidence_url(tmp_path):
+    import json
+    from detections import sarif_export
+    src = tmp_path / "r.json"; src.write_text(json.dumps([_ev_rec()]))
+    out = tmp_path / "o.sarif"
+    sarif_export.main([str(src), "--evidence-url", "https://x.example/{path}", "-o", str(out)])
+    assert "https://x.example/evidence/messages/abc.txt" in out.read_text()

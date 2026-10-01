@@ -35,6 +35,13 @@ jobs:
       # labelled output beside it.
       - run: mkdir -p out
 
+      # A fresh ZAP API key for this run only (W4-4), masked in the logs.
+      - name: generate a ZAP API key
+        run: |
+          key=$(openssl rand -hex 24)
+          echo "::add-mask::$key"
+          echo "ZAP_API_KEY=$key" >> "$GITHUB_ENV"
+
       - name: scan (compose, --expect-findings)
         run: docker compose up --build --abort-on-container-exit --exit-code-from runner
 
@@ -53,8 +60,16 @@ jobs:
         run: |
           python -m detections.lifecycle_diff out/records.json --app-id juice-shop \
             --state out/state.json --coverage out/coverage.json -o out/labeled.json
+          # Alerts link to this run, whose artifact holds the request/responses (W1-4). An
+          # artifact is a zip, so the link reaches the run and the alert names the file inside.
           python -m detections.sarif_export out/labeled.json --app-id juice-shop \
-            --driver-version "ZAP 2.17.0" --category dast/juice-shop -o out/results.sarif
+            --driver-version "ZAP 2.17.0" --category dast/juice-shop \
+            --evidence-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            -o out/results.sarif
+          # The one-page summary (W1-6), kept with the results and shown on this run's page.
+          python -m detections.summary out/labeled.json --coverage out/coverage.json \
+            --app-id juice-shop -o out/summary.md
+          cat out/summary.md >> "$GITHUB_STEP_SUMMARY"
           python - <<'PY'
           import json, collections
           r = json.load(open("out/labeled.json"))
@@ -73,6 +88,7 @@ jobs:
             out/coverage.json
             out/labeled.json
             out/results.sarif
+            out/summary.md
             out/evidence/
             out/compose.log
           if-no-files-found: warn

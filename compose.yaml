@@ -18,10 +18,13 @@ services:
 
   zap:
     image: zaproxy/zap-stable@sha256:781a2bdaea47324e7bab583e2263f21d257b0aee61ed51521a5be45f5f5081ef
-    # -silent (no phone-home) + api.addrs allow-list so the API accepts calls from the runner.
+    # -silent (no phone-home). The API requires a key (W4-4): it used to run with
+    # api.disablekey=true, open to anything that could reach it. Export ZAP_API_KEY first, e.g.
+    #   export ZAP_API_KEY=$(openssl rand -hex 24)
+    # compose refuses to start without it rather than fall back to an open API.
     command: >
       zap.sh -daemon -host 0.0.0.0 -port 8080 -silent
-      -config api.disablekey=true
+      -config api.key=${ZAP_API_KEY:?export ZAP_API_KEY — ZAP no longer runs with an open API}
       -config api.addrs.addr.name=.*
       -config api.addrs.addr.regex=true
     networks: [dast]
@@ -76,6 +79,8 @@ services:
     environment:
       # Chromium runs as root with a small /dev/shm in-container; enable the needed flags.
       RUNNER_CHROMIUM_NO_SANDBOX: "1"
+      # The same key ZAP was started with; every runner call to ZAP's API sends it.
+      ZAP_API_KEY: ${ZAP_API_KEY:?export ZAP_API_KEY}
     command:
       - "--scope=security/dast/juice-shop/scope.json"
       - "--flow=security/dast/juice-shop/flow.py"

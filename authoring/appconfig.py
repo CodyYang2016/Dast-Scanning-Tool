@@ -74,11 +74,16 @@ def scope_from_config(cfg: dict) -> dict:
     if not target:
         raise ValueError(f"cannot determine the target host from base_url {cfg['base_url']!r}")
     sc = cfg.get("scope", {})
+    # In a shared environment the target joins the allow list as its ORIGIN, never as a bare host
+    # (which preflight refuses there). In dev, behaviour is unchanged.
+    from runner.scope_guard import origin_of
+    shared = str(cfg["environment_class"]).strip().lower() in ("test", "staging")
+    own = origin_of(cfg["base_url"]) if shared else target
     return {
         "app_id": cfg["app_id"],
         "environment_class": cfg["environment_class"],
         "target_fqdn": target,
-        "fqdn_allow_list": sorted(set(sc.get("allow", [])) | {target}),
+        "fqdn_allow_list": sorted(set(sc.get("allow", [])) | {own}),
         "fqdn_deny_list": list(sc.get("deny", [])),
         "avoid_action_list": list(sc.get("avoid_actions", [])),
     }
@@ -313,6 +318,12 @@ def github_publish(cfg: dict) -> dict:
     return dict(cfg.get("publish", {}).get("github", {}))
 
 
+def evidence_url(cfg: dict) -> str | None:
+    """Where alerts link for the stored request/response (W1-4): a template with {scan_id} and
+    {path}, or a page holding the evidence. None means alerts name the file instead."""
+    return cfg.get("publish", {}).get("evidence_url")
+
+
 def gate_fail_on(cfg: dict) -> str | None:
     """The severity at or above which a NEW finding fails `dast report`, or None for the default.
     `none` disables the gate. See detections/gate.py."""
@@ -322,3 +333,9 @@ def gate_fail_on(cfg: dict) -> str | None:
 def suppressions_path(app_id: str) -> Path:
     """security/dast/<app>/suppressions.yaml — reviewed triage decisions (W1-5)."""
     return _APPS_DIR / app_id / "suppressions.yaml"
+
+
+def scan_throttle(cfg: dict) -> dict:
+    """How hard the scan may push a shared environment (W4-3): threads per host and a per-request
+    delay. Empty means ZAP's own defaults."""
+    return dict(cfg.get("scan", {}).get("throttle", {}))

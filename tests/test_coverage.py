@@ -293,3 +293,14 @@ def test_a_malformed_exclusion_does_not_silently_drop_everything(monkeypatch):
     monkeypatch.setattr(coverage, "enabled_rule_ids", lambda z: set())
     out = coverage.capture("http://zap", "http://app", excluded=["(["])
     assert out["routes"] == ["/a"]
+
+
+def test_the_full_probe_reports_where_the_redirects_ended(monkeypatch):
+    # Liveness needs the FINAL url: a session that died shows up as a bounce to the login page.
+    hops = [{"requestHeader": "GET http://dvwa/index.php HTTP/1.1\r\n",
+             "responseHeader": "HTTP/1.1 302 Found\r\n", "responseBody": ""},
+            {"requestHeader": "GET http://dvwa/login.php HTTP/1.1\r\n",
+             "responseHeader": "HTTP/1.1 200 OK\r\n", "responseBody": "<form>"}]
+    monkeypatch.setattr(coverage, "_api", lambda z, p, params=None, timeout=30.0: {"sendRequest": hops})
+    assert coverage.fetch_probe_full("http://zap", "http://dvwa/index.php", {"a": "b"}) == \
+        (200, "<form>", "http://dvwa/login.php")

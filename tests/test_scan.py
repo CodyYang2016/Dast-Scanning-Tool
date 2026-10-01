@@ -322,3 +322,83 @@ def test_the_guard_runs_before_zap_is_touched(monkeypatch):
     with pytest.raises(ScanScopeError):
         scan("http://zap", "http://juice:3000", ["juice"], exclusions=[r"(?i).*/.*"])
     assert calls == [], "a refused scan must not reach ZAP at all"
+
+
+def test_a_refused_key_is_not_retried_as_a_busy_daemon(monkeypatch):
+    # Three polls of a 403 used to read as "ZAP stopped responding — check for an OOM", which
+    # sends the operator looking in entirely the wrong place.
+    from runner import zapapi
+    calls = []
+    def refuse(z, p, params=None, timeout=30.0):
+        calls.append(p)
+        raise zapapi.ZapAuthError("ZAP refused the API call (403). Set ZAP_API_KEY ...")
+    monkeypatch.setattr(scan_mod, "_api", refuse)
+    with pytest.raises(zapapi.ZapAuthError):
+        scan_mod._poll("http://zap", "/JSON/ascan/view/status/", "0", 0.0, 5)
+    assert len(calls) == 1
+
+
+# ---- W4-3: slow it down, and make stopping stop ZAP -------------------------------------
+
+def _sent(monkeypatch):
+    calls = {}
+    def fake(z, p, params=None, timeout=30.0):
+        calls[p] = params
+        return {"policies": []}
+    monkeypatch.setattr(scan_mod, "_api", fake)
+    return calls
+
+
+def test_the_throttle_reaches_zap(monkeypatch):
+    calls = _sent(monkeypatch)
+    scan_mod.configure_policy("http://zap", throttle={"threads_per_host": 2, "delay_ms": 250})
+    assert calls["/JSON/ascan/action/setOptionThreadPerHost/"] == {"Integer": 2}
+    assert calls["/JSON/spider/action/setOptionThreadCount/"] == {"Integer": 2}
+    assert calls["/JSON/ascan/action/setOptionDelayInMs/"] == {"Integer": 250}
+
+
+def test_no_throttle_leaves_zaps_defaults_alone(monkeypatch):
+    calls = _sent(monkeypatch)
+    scan_mod.configure_policy("http://zap")
+    assert not any("ThreadPerHost" in p or "DelayInMs" in p or "ThreadCount" in p for p in calls)
+
+
+def test_the_recorded_policy_says_how_hard_the_scan_pushed():
+    assert scan_mod.resolved_policy({}, 10, 1, {"threads_per_host": 2})["throttle"] == \
+        {"threads_per_host": 2}
+    assert scan_mod.resolved_policy({}, 10, 1)["throttle"] == "zap defaults"
+
+
+def test_ctrl_c_stops_zap_before_the_runner_exits(monkeypatch):
+    # Before this, Ctrl-C killed the runner and ZAP kept attacking the application.
+    calls = []
+    def fake(z, p, params=None, timeout=30.0):
+        calls.append(p)
+        if p.endswith("/status/"):
+            raise KeyboardInterrupt
+        return {}
+    monkeypatch.setattr(scan_mod, "_api", fake)
+    with pytest.raises(KeyboardInterrupt):
+        scan_mod._poll("http://zap", "/JSON/ascan/view/status/", "0", 0.0, 5)
+    assert "/JSON/ascan/action/stopAllScans/" in calls
+    assert "/JSON/spider/action/stopAllScans/" in calls
+
+
+def test_stopping_tries_both_even_if_one_fails(monkeypatch):
+    calls = []
+    def fake(z, p, params=None, timeout=30.0):
+        calls.append(p)
+        if "ascan" in p:
+            raise RuntimeError("busy")
+        return {}
+    monkeypatch.setattr(scan_mod, "_api", fake)
+    stopped = scan_mod.stop_all("http://zap")
+    assert "/JSON/spider/action/stopAllScans/" in calls and stopped == {"ascan": False, "spider": True}
+
+
+def test_the_poll_loop_gives_the_liveness_monitor_a_turn(monkeypatch):
+    ticks = []
+    seq = iter(["10", "50", "100"])
+    monkeypatch.setattr(scan_mod, "_api", lambda z, p, params=None, timeout=30.0: {"status": next(seq)})
+    scan_mod._poll("http://zap", "/JSON/ascan/view/status/", "0", 0.0, 10, on_tick=lambda: ticks.append(1))
+    assert len(ticks) >= 2

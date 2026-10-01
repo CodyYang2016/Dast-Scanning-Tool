@@ -82,3 +82,9 @@ publish:
     ref: refs/heads/deployed/v20.2.0
     commit: 5658473cf8814459bf89000ce373b20ed0b4eb37
     category: dast/juice-shop
+
+scan:
+  # Juice Shop proves login from localStorage, which a probe cannot read. /rest/user/whoami answers
+  # with the user when the session's `token` cookie is valid and {"user":{}} when it is not —
+  # the signal the liveness check needs while ZAP attacks (W5-1).
+  liveness_path: /rest/user/whoami

@@ -14,6 +14,7 @@ import re
 import sys
 from collections.abc import Iterable
 from typing import TextIO
+from urllib.parse import quote
 
 SARIF_VERSION = "2.1.0"
 SARIF_SCHEMA = (
@@ -113,7 +114,42 @@ def _code(value: str, markdown: bool) -> str:
     return f"{fence} {value} {fence}" if longest else f"{fence}{value}{fence}"
 
 
-def _message(rec: dict, markdown: bool = False) -> str:
+_URL_OK = re.compile(r"^https?://[^\s<>\"`]+$")
+
+
+def check_evidence_url(template: str) -> str:
+    """An evidence URL template must be a plain http(s) URL: it is rendered as a link on every
+    alert, so a `javascript:` or `file:` scheme, or a character that ends an autolink, is refused
+    here rather than published."""
+    if not _URL_OK.match(template or ""):
+        raise ValueError(f"evidence URL must be an http(s) URL without spaces or <>\"`; "
+                         f"got {template!r}")
+    return template
+
+
+def _evidence(rec: dict, template: str | None, markdown: bool) -> str:
+    """Where the full request/response for this finding is (W1-4).
+
+    `{scan_id}` and `{path}` are substituted by plain replacement — never str.format, which would
+    hand the template attribute access — and percent-encoded. A template without `{path}` points
+    at somewhere that HOLDS the evidence, such as a CI run whose artifact is a zip: it is linked,
+    and the file inside is named.
+    """
+    path = rec.get("exchange_path")
+    if not path:
+        return ""
+    name = _code(path, markdown)
+    if not template:
+        return f" Full request/response: {name} in this scan's evidence."
+    url = (template.replace("{scan_id}", quote(str(rec.get("scan_id") or ""), safe=""))
+                   .replace("{path}", quote(path, safe="/")))
+    link = f"<{url}>" if markdown else url
+    if "{path}" in template:
+        return f" Full request/response: {link}"
+    return f" Full request/response: {name} in the evidence artifact at {link}"
+
+
+def _message(rec: dict, markdown: bool = False, evidence_url: str | None = None) -> str:
     """What a reviewer reads under the location on the alert page.
 
     GitHub renders a result's message and its rule's help — NOT `properties`. That is why the
@@ -142,15 +178,16 @@ def _message(rec: dict, markdown: bool = False) -> str:
         if rec.get("response_status") is not None:
             msg += f" → {rec['response_status']}"
         msg += "."
-    return msg
+    return msg + _evidence(rec, evidence_url, markdown)
 
 
-def _result_for(rec: dict, rule_index: int) -> dict:
+def _result_for(rec: dict, rule_index: int, evidence_url: str | None = None) -> dict:
     result = {
         "ruleId": rec["rule_id"],
         "ruleIndex": rule_index,
         "level": _LEVEL.get(rec["severity"], "note"),
-        "message": {"text": _message(rec), "markdown": _message(rec, markdown=True)},
+        "message": {"text": _message(rec, evidence_url=evidence_url),
+                    "markdown": _message(rec, markdown=True, evidence_url=evidence_url)},
         "locations": [
             {"physicalLocation": {"artifactLocation": {"uri": rec["endpoint"]}}}
         ],
@@ -186,13 +223,15 @@ def _result_for(rec: dict, rule_index: int) -> dict:
 
 
 def to_sarif(records: Iterable[dict], driver_version: str | None = None,
-             category: str | None = None) -> dict:
+             category: str | None = None, evidence_url: str | None = None) -> dict:
     """Build one SARIF 2.1.0 log from detection records (single pass over the input).
 
     A deduped `rules` array is assembled as results stream by, keeping ruleId <-> ruleIndex
     referential integrity. This holds the results in memory by necessity (SARIF is one
     document; GitHub uploads it whole) — the accepted D1 carve-out.
     """
+    if evidence_url:
+        check_evidence_url(evidence_url)
     rules: list[dict] = []
     rule_index: dict[str, int] = {}
     results: list[dict] = []
@@ -211,7 +250,7 @@ def to_sarif(records: Iterable[dict], driver_version: str | None = None,
         if rid not in rule_index:
             rule_index[rid] = len(rules)
             rules.append(_rule_for(rec))
-        results.append(_result_for(rec, rule_index[rid]))
+        results.append(_result_for(rec, rule_index[rid], evidence_url))
 
     driver = {"name": DRIVER_NAME, "informationUri": DRIVER_URI, "rules": rules}
     if driver_version:
@@ -240,8 +279,8 @@ def to_sarif(records: Iterable[dict], driver_version: str | None = None,
 
 
 def write_sarif(records: Iterable[dict], fh: TextIO, driver_version: str | None = None,
-                category: str | None = None) -> None:
-    json.dump(to_sarif(records, driver_version, category), fh, indent=2)
+                category: str | None = None, evidence_url: str | None = None) -> None:
+    json.dump(to_sarif(records, driver_version, category, evidence_url), fh, indent=2)
     fh.write("\n")
 
 
@@ -271,15 +310,19 @@ def main(argv: list[str] | None = None) -> int:
                    help="Automation category, e.g. dast/<app>. Separates this application's "
                         "analysis from another's in the GitHub Security tab; without one they "
                         "share a slot and the newer upload replaces the older one's alerts")
+    p.add_argument("--evidence-url", default=None,
+                   help="Where the stored request/responses can be reached: a URL template with "
+                        "{scan_id} and {path} for a per-file store, or a page holding them, such "
+                        "as a CI run whose artifact contains the evidence")
     p.add_argument("-o", "--out", default="-", help="Output path, or - for stdout (default)")
     args = p.parse_args(argv)
 
     records = _read_records(sys.stdin if args.records == "-" else args.records)
     if args.out == "-":
-        write_sarif(records, sys.stdout, args.driver_version, args.category)
+        write_sarif(records, sys.stdout, args.driver_version, args.category, args.evidence_url)
     else:
         with open(args.out, "w") as fh:
-            write_sarif(records, fh, args.driver_version, args.category)
+            write_sarif(records, fh, args.driver_version, args.category, args.evidence_url)
     return 0
 
 

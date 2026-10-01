@@ -55,7 +55,13 @@ def emit_scope(trace: dict, config: dict) -> dict:
     if target is None:
         raise ValueError("cannot determine target host from the trace")
     scope_cfg = config.get("scope", {})
-    allow = sorted(set(hosts) | set(scope_cfg.get("allow", [])) | {target})
+    if str(config["environment_class"]).strip().lower() in ("test", "staging"):
+        # Shared environment: the configured origins plus the target's own ORIGIN. Hosts merely
+        # observed while recording are not adopted — seeing a host does not put it in scope.
+        from runner.scope_guard import origin_of
+        allow = sorted(set(scope_cfg.get("allow", [])) | {origin_of(trace["base_url"])})
+    else:
+        allow = sorted(set(hosts) | set(scope_cfg.get("allow", [])) | {target})
     return {
         "app_id": trace["app_id"],
         "environment_class": config["environment_class"],
