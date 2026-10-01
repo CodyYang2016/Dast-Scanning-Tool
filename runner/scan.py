@@ -13,6 +13,7 @@ authenticated traffic, so the active scan attacks authenticated endpoints too.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import re
 import sys
@@ -151,6 +152,29 @@ def stop_all(zap_api: str) -> dict:
         except Exception:
             stopped[kind] = False
     return stopped
+
+
+def import_openapi(zap_api: str, source: str, target: str, zap_spec_dir: str | None = None) -> dict:
+    """Seed ZAP with every operation an OpenAPI/Swagger spec declares (W6-4), so the scan can
+    attack endpoints and parameters no walk reached.
+
+    A URL is fetched by ZAP itself. A file must be readable by ZAP — `importFile` takes a path on
+    ZAP's machine — so a spec kept under security/dast/ is imported only when
+    `$DAST_ZAP_SPEC_DIR` says where that directory is mounted inside ZAP (compose mounts it at
+    /zap/specs). Otherwise the spec still gives the coverage denominator, and the run says it
+    was not imported.
+    """
+    if source.startswith(("http://", "https://")):
+        _api(zap_api, "/JSON/openapi/action/importUrl/", {"url": source})
+        return {"imported": True}
+    rel = source.split("security/dast/", 1)[-1] if "security/dast/" in source else None
+    if not (zap_spec_dir and rel):
+        return {"imported": False,
+                "note": "spec file not imported into ZAP: set DAST_ZAP_SPEC_DIR to where "
+                        "security/dast is mounted inside ZAP (compose: /zap/specs)"}
+    _api(zap_api, "/JSON/openapi/action/importFile/",
+         {"file": f"{zap_spec_dir.rstrip('/')}/{rel}", "target": target})
+    return {"imported": True}
 
 
 def pause_all(zap_api: str) -> None:
@@ -338,6 +362,96 @@ def export_alerts(zap_api: str, target: str) -> dict:
     return _api(zap_api, "/JSON/alert/view/alerts/", {"baseurl": target})
 
 
+@contextlib.contextmanager
+def scan_context(zap_api: str, allow_hosts, exclusions):
+    """A per-scan ZAP context from the allow list and exclusions; removed afterwards (W4-1)."""
+    ctx_name = f"dast-{int(time.time() * 1000)}"
+    includes = context_regexes(allow_hosts)
+    ctx_id = str(_api(zap_api, "/JSON/context/action/newContext/",
+                      {"contextName": ctx_name}).get("contextId"))
+    try:
+        for rx in includes:
+            _api(zap_api, "/JSON/context/action/includeInContext/",
+                 {"contextName": ctx_name, "regex": rx})
+        for rx in exclusions or []:
+            _api(zap_api, "/JSON/context/action/excludeFromContext/",
+                 {"contextName": ctx_name, "regex": rx})
+        yield ctx_name, ctx_id, includes
+    finally:
+        try:
+            _api(zap_api, "/JSON/context/action/removeContext/", {"contextName": ctx_name})
+        except Exception:
+            pass          # the session is replaced on the next scan anyway
+
+
+DOM_XSS_RULE = "40026"
+
+
+def dom_xss_pass(zap_api: str, target: str, allow_hosts, exclusions, max_min: int = 5,
+                 routes=None, session: dict | None = None, bearer_cookie: str | None = None) -> dict:
+    """Run the DOM-XSS rule on its own, after the main scan (W6-3).
+
+    40026 drives a real browser per payload, one per scanner thread. Inside the main scan on
+    DVWA it exhausted memory and ZAP was OOM-killed (exit 137) six minutes in, losing the whole
+    scan. Here: only 40026, ONE thread (one browser at a time), its own time limit, in its own
+    context — and the caller has already exported the main scan's alerts, so a failure costs
+    this pass and nothing else. It is returned as a record rather than raised.
+
+    The rule only acts on HTML responses, so a recursive pass over the target touches pages,
+    not API calls. `routes` narrows it to named pages.
+    """
+    record = {"state": None, "requests": 0, "alerts": 0, "error": None}
+    alerts: list[dict] = []
+    threads, enabled = None, None
+    from runner import session_refresh
+    try:
+        if session:
+            # The rule's browsers do not carry the scan's login. Measured on DVWA: without
+            # this, its requests to the DOM-XSS page were redirected to login.php and it
+            # tested the login page. Every initiator: the browsers arrive as proxied traffic.
+            session_refresh.install(zap_api, session, bearer_cookie, initiators="")
+        threads = _api(zap_api, "/JSON/ascan/view/optionThreadPerHost/").get("ThreadPerHost")
+        # ZAP's rule set is daemon-global and coverage reads it after this pass: put it back.
+        enabled = [s["id"] for s in _api(zap_api, "/JSON/ascan/view/scanners/").get("scanners", [])
+                   if str(s.get("enabled")).lower() == "true"]
+        _api(zap_api, "/JSON/ascan/action/disableAllScanners/")
+        _api(zap_api, "/JSON/ascan/action/enableScanners/", {"ids": DOM_XSS_RULE})
+        _api(zap_api, "/JSON/ascan/action/setOptionThreadPerHost/", {"Integer": 1})
+        _api(zap_api, "/JSON/ascan/action/setOptionMaxScanDurationInMins/", {"Integer": max_min})
+        _api(zap_api, "/JSON/ascan/action/setOptionMaxRuleDurationInMins/", {"Integer": max_min})
+        with scan_context(zap_api, allow_hosts, exclusions) as (_name, ctx_id, _inc):
+            targets = ([(target.rstrip("/") + r, "false") for r in routes] if routes
+                       else [(target, "true")])
+            for url, recurse in targets:
+                sid = _api(zap_api, "/JSON/ascan/action/scan/",
+                           {"url": url, "recurse": recurse, "contextId": ctx_id})["scan"]
+                _poll(zap_api, "/JSON/ascan/view/status/", sid, 5.0, max(12, max_min * 13))
+                from runner.coverage import rule_outcomes
+                o = rule_outcomes(zap_api, sid).get(DOM_XSS_RULE, {})
+                record.update(state=o.get("state", record["state"]))
+                record["requests"] += o.get("requests", 0)
+                record["alerts"] += o.get("alerts", 0)
+        alerts = [a for a in export_alerts(zap_api, target).get("alerts", [])
+                  if str(a.get("pluginId")) == DOM_XSS_RULE]
+    except Exception as exc:
+        record["error"] = f"{type(exc).__name__}: {exc}"[:300]
+    finally:
+        if session:
+            session_refresh.remove(zap_api)
+        try:
+            if threads:
+                _api(zap_api, "/JSON/ascan/action/setOptionThreadPerHost/",
+                     {"Integer": int(threads)})
+            if enabled is not None:
+                _api(zap_api, "/JSON/ascan/action/disableAllScanners/")
+                if enabled:
+                    _api(zap_api, "/JSON/ascan/action/enableScanners/",
+                         {"ids": ",".join(enabled)})
+        except Exception:
+            pass                         # a dead ZAP is already recorded in `error`
+    return {"alerts": alerts, "record": record}
+
+
 def scan(zap_api: str, target: str, allow_hosts, do_spider: bool = True,
          max_scan_min: int = 4, policy: dict | None = None, exclusions=None,
          max_rule_min: int | None = None, throttle: dict | None = None, liveness=None) -> dict:
@@ -357,29 +471,13 @@ def scan(zap_api: str, target: str, allow_hosts, do_spider: bool = True,
     # A ZAP context bounds the spider and the active scan themselves (W4-1). Our two safety
     # layers only ever covered requests WE send; ZAP's own traffic was bounded by nothing but
     # the seed URL. Built from the same allow list, removed afterwards whatever happens.
-    import time as _time
-    ctx_name = f"dast-{int(_time.time() * 1000)}"
-    includes = context_regexes(allow_hosts)
-    ctx_id = str(_api(zap_api, "/JSON/context/action/newContext/",
-                      {"contextName": ctx_name}).get("contextId"))
-    try:
-        for rx in includes:
-            _api(zap_api, "/JSON/context/action/includeInContext/",
-                 {"contextName": ctx_name, "regex": rx})
-        for rx in exclusions or []:
-            _api(zap_api, "/JSON/context/action/excludeFromContext/",
-                 {"contextName": ctx_name, "regex": rx})
+    with scan_context(zap_api, allow_hosts, exclusions) as (ctx_name, ctx_id, includes):
         _api(zap_api, "/JSON/core/action/accessUrl/", {"url": target, "followRedirects": "true"})
         if do_spider:
             spider(zap_api, target, context_name=ctx_name)
         ascan_id = active_scan(zap_api, target, context_id=ctx_id,
                                on_tick=liveness.check if liveness else None)
         report = export_alerts(zap_api, target)
-    finally:
-        try:
-            _api(zap_api, "/JSON/context/action/removeContext/", {"contextName": ctx_name})
-        except Exception:
-            pass          # the session is replaced on the next scan anyway
     report["context"] = {"name": ctx_name, "include": includes, "exclude": list(exclusions or [])}
     # Carried so coverage can read back what each rule did (W6-2): "ran and found nothing"
     # and "never ran" are otherwise the same sentence.

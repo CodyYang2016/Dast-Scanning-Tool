@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -27,7 +28,9 @@ from runner.preflight import PreflightError, preflight
 from runner.replay import SessionDeadError, load_flow, replay, replay_seeded
 from runner import zapapi
 from runner import session_refresh
-from runner.scan import (ScanScopeError, ZapUnavailableError, add_anti_csrf_tokens, pause_all,
+from runner.reset import ResetError
+from runner.scan import (ScanScopeError, ZapUnavailableError, add_anti_csrf_tokens,
+                         dom_xss_pass, import_openapi, pause_all,
                          resume_all, load_policy, new_session,
                         exclusion_regexes as scan_exclusions,
                          resolved_policy, scan)
@@ -194,6 +197,25 @@ def evaluate_gate(authenticated: bool, scope_ok: bool, records: list[dict], cove
     }
 
 
+def _dom_cfg(app_cfg: dict) -> dict:
+    from authoring import appconfig
+    return appconfig.dom_xss(app_cfg)
+
+
+def declared_surface(source: str, zap_api: str, fetch_text=None) -> dict:
+    """The routes an OpenAPI/Swagger spec declares (W6-4), for the coverage denominator. A URL
+    is fetched through ZAP, which is what resolves the target's host."""
+    from detections import inventory
+    if source.startswith(("http://", "https://")):
+        text = (fetch_text or (lambda u: coverage_capture.fetch_probe_full(zap_api, u)[1]))(source)
+    else:
+        p = Path(source)
+        text = (p if p.is_absolute() else Path(__file__).resolve().parent.parent / p).read_text()
+    ops = inventory.from_openapi(inventory.parse_spec(text))
+    return {"source": "openapi", "spec": source, "operations": len(ops),
+            "routes": sorted({route for _m, route in ops})}
+
+
 def with_exclusions(scope: dict, app_cfg: dict | None) -> dict:
     """The scope with app.yaml's `scope.exclude` merged in, so a bundle generated before an
     exclusion was added still honours it in the browser (W4-5). app.yaml is the source of truth."""
@@ -275,6 +297,18 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
     # The scan's own session, collected from the browser so the state probes can see the app
     # as the scan saw it. Never written to an artifact — only used to fetch the probes.
     live_session: dict = {}
+    # W6-1: a disposable app's own data reset, BEFORE the fresh ZAP session so its traffic is
+    # not part of what gets attacked. A reset that does not verify stops the scan here.
+    reset_result = None
+    if app_cfg and appconfig.scan_reset(app_cfg):
+        from runner.reset import browser_driver, run_reset
+        env_names = appconfig.credential_env_names(app_cfg)
+        reset_result = run_reset(
+            appconfig.scan_reset(app_cfg), base_url,
+            drive=browser_driver(scope, zap_proxy, os.environ.get(env_names[0], ""),
+                                 os.environ.get(env_names[1], "")),
+            fetch=lambda url: coverage_capture.fetch_probe_full(
+                zap_api, url, None, allow=scope["fqdn_allow_list"]))
     if fresh:
         new_session(zap_api)                           # clean per-scan session
     if storage_state:
@@ -354,9 +388,20 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
             monitor = None
             session_result = SessionMonitor.unavailable(f"liveness probe failed to start: {exc}")
 
+    declared = None
     if app_cfg:
         from authoring import appconfig as _ac
         add_anti_csrf_tokens(zap_api, _ac.anti_csrf_tokens(app_cfg))   # W5-2
+        spec = _ac.openapi_spec(app_cfg)
+        if spec:
+            # W6-4: what SHOULD be tested — and, imported into ZAP, more for it to attack.
+            try:
+                declared = declared_surface(spec, zap_api)
+                declared.update(import_openapi(zap_api, spec, base_url,
+                                               os.environ.get("DAST_ZAP_SPEC_DIR")))
+            except Exception as exc:
+                declared = {"source": "openapi", "spec": spec, "error": f"{exc}"[:200]}
+                print(f"WARNING: OpenAPI spec not used ({exc})", file=sys.stderr)
     try:
         report = scan(zap_api, base_url, scope["fqdn_allow_list"],
                       do_spider=do_spider, max_scan_min=max_scan_min, policy=policy,
@@ -365,6 +410,21 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
         if monitor is not None:
             monitor.finish()             # always a check at the end; see SessionMonitor.finish
             session_result = monitor.result()
+        # W6-3: DOM-XSS on its own, AFTER the main alerts are in hand — if it exhausts ZAP,
+        # the pass is lost and recorded, not the scan.
+        dom = None
+        if app_cfg and _dom_cfg(app_cfg)["enabled"]:
+            cfg = _dom_cfg(app_cfg)
+            from authoring import appconfig as _ac2
+            dom = dom_xss_pass(zap_api, base_url, scope["fqdn_allow_list"], exclusions,
+                               max_min=cfg["max_min"], routes=cfg["routes"],
+                               session=monitor.cookies if monitor is not None else probe_jar,
+                               bearer_cookie=_ac2.bearer_from_cookie(app_cfg))
+            seen = {a.get("id") for a in report["alerts"]}
+            report["alerts"] += [a for a in dom["alerts"] if a.get("id") not in seen]
+            if dom["record"]["error"]:
+                print(f"WARNING: DOM-XSS pass failed ({dom['record']['error']}); the main "
+                      f"scan's results are kept", file=sys.stderr)
     finally:
         session_refresh.remove(zap_api)  # only present if a re-login installed it
     records = list(normalize(report["alerts"], scope["app_id"], scan_id))
@@ -394,6 +454,12 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
     coverage["zap_api_open"] = zap_open
     coverage["zap_context"] = report.get("context")
     coverage["session"] = session_result
+    if declared is not None:
+        coverage["declared"] = declared
+    if dom is not None:
+        coverage["dom_xss"] = dom["record"]
+    if reset_result is not None:
+        coverage["reset"] = reset_result
     return scope, result, guard, records, scan_id, coverage
 
 
@@ -455,7 +521,7 @@ def main(argv: list[str] | None = None) -> int:
             if state_cm is not None:
                 state_cm.__exit__(None, None, None)
     except (PreflightError, ScanScopeError, ScopeViolation, ZapUnavailableError,
-            zapapi.ZapAuthError, SessionStoreError) as exc:
+            zapapi.ZapAuthError, SessionStoreError, ResetError) as exc:
         print(f"RUNNER ABORT: {exc}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:

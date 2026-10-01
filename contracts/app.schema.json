@@ -513,6 +513,112 @@
           },
           "uniqueItems": true,
           "description": "Anti-CSRF form field names ZAP should refresh for each attack, beyond its built-in list (W5-2). Without this, attacks replay a used token, the app rejects them, and some apps log the session out."
+        },
+        "openapi": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The application's OpenAPI/Swagger spec (W6-4): an http(s) URL, or a path under the repository. Gives the coverage denominator (\"tested 34 of 41 declared routes\") and, imported into ZAP, seeds it with every declared endpoint and parameter. A file is imported only where ZAP can read it ($DAST_ZAP_SPEC_DIR; compose mounts security/dast at /zap/specs)."
+        },
+        "dom_xss": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Run the DOM-XSS rule (40026) in its own pass after the main scan (W6-3): one browser at a time, its own time limit, and the main results already saved, so running out of memory costs this pass only. Off by default: when off, DOM-based XSS is a disclosed gap (SP-3).",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "max_min": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 60,
+              "description": "Time limit for the pass. Default 5."
+            },
+            "routes": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^/"
+              },
+              "description": "Only these pages. Default: every page in scope."
+            }
+          }
+        },
+        "reset": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "url",
+            "steps"
+          ],
+          "description": "Put a disposable application's data back into a known state before each scan (W6-1), so write-enabled scans start from the same place. Same step vocabulary as auth.steps; runs before the scan's login, through ZAP and the scope guard. `verify` proves it took effect; a failed verify stops the scan.",
+          "properties": {
+            "url": {
+              "type": "string",
+              "pattern": "^/",
+              "description": "The page the reset starts on."
+            },
+            "steps": {
+              "type": "array",
+              "minItems": 1,
+              "description": "The login as an ordered list of browser actions \u2014 the general form. Values are never written here: `value` names which credential to type, and the credential itself comes from the environment (NFR-3).",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "action",
+                  "selector"
+                ],
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "fill",
+                      "click",
+                      "press",
+                      "wait_for"
+                    ]
+                  },
+                  "selector": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "value": {
+                    "type": "string",
+                    "enum": [
+                      "identifier",
+                      "secret",
+                      "email",
+                      "password"
+                    ],
+                    "description": "Which credential to type (fill only). email/password are accepted as aliases of identifier/secret."
+                  },
+                  "key": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Key to press (press only), e.g. Enter."
+                  }
+                }
+              }
+            },
+            "verify": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path",
+                "contains"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "pattern": "^/"
+                },
+                "contains": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
         }
       }
     },

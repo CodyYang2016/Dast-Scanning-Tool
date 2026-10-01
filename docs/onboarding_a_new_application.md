@@ -447,7 +447,43 @@ it names the reason.
 
 ## 5. Make the scan worth running
 
-A passing gate is not the same as a useful scan. Two knobs, both configuration:
+A passing gate is not the same as a useful scan. Each knob below is configuration; any you leave
+off is a gap to disclose when results are compared with another tool (the scorecard's SP list).
+
+**Give it the spec, if the app has one (W6-4).** `scan.openapi: https://my-app.internal/openapi.json`
+(or a path beside `app.yaml`). ZAP imports every declared endpoint and parameter, which means
+more to attack than any walk finds, and the report gains a denominator: *"Tested 34 of 41
+declared routes (83%) — source: OpenAPI spec"*, with the routes it missed. Without a spec, the
+denominator is the routes the authoring walk discovered, and the report says so. In compose,
+spec files under `security/dast/` are readable by ZAP; elsewhere, set `DAST_ZAP_SPEC_DIR` to
+where that directory is mounted inside ZAP, or the spec gives the denominator only.
+
+**Test DOM-based XSS (W6-3).** `scan.dom_xss: {enabled: true, max_min: 15}` runs ZAP's
+browser-driven DOM-XSS rule in its own pass after the main scan. It gets one browser at a time,
+its own time limit and the scan's session, and the main results are saved first, so if ZAP runs
+out of memory you lose this pass, not the scan. On DVWA it added ten high-severity findings, with
+ZAP peaking near 5 GiB, so give the ZAP container that much. `routes:` narrows it to named pages.
+
+**Test write paths, on a disposable environment (W6-1).** ZAP's spider already submits HTML
+forms. What it never sees are writes the app makes from its own JavaScript (`fetch`/XHR). With
+`data_policy: disposable` and `explore.write_mode: allow`, those writes are recorded (bodies
+redacted) and replayed by the scan so ZAP can attack them. The usual refusals still apply:
+DELETE only with `safe_forms`, never a path in `scope.exclude`, and never a credential change.
+Give the app a reset so every scan starts from the same data:
+
+```yaml
+scan:
+  reset:
+    url: /setup.php
+    steps:
+      - {action: click, selector: "input[name=create_db]"}
+    verify: {path: /login.php, contains: "Username"}     # the scan does not start without it
+```
+
+A write-enabled scan still never marks a finding `resolved`: its own writes change the data
+while it runs.
+
+Two more knobs:
 
 **Surface — ZAP can only attack parameters it has *seen*.** Visiting `/search` teaches it
 nothing about `?q=`. Put parameterised GETs in `record.authenticated_routes`:

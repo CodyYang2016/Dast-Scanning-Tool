@@ -144,3 +144,33 @@ def test_a_recovered_session_is_degraded_not_unhealthy():
     head = md.split("\n## ")[0]
     assert "**Degraded**" in head and "UNHEALTHY" not in head and "Passed" in head
     assert "re-established each time" in md
+
+
+def test_coverage_states_its_denominator_and_source():
+    inv = {"source": "openapi", "declared": 41, "exercised": 34, "percent": 83,
+           "missing": ["/api/a", "/api/b"], "excluded": 0}
+    md = render([], COV, SETTINGS, app_id="app", scan_id="S1", inventory=inv)
+    assert "**34 of 41 declared routes (83%)** — source: OpenAPI spec" in md
+    assert "`/api/a`" in md
+
+
+def test_a_walk_denominator_says_it_is_only_what_the_walk_found():
+    inv = {"source": "trace", "declared": 10, "exercised": 10, "percent": 100,
+           "missing": [], "excluded": 0}
+    md = render([], COV, SETTINGS, app_id="app", scan_id="S1", inventory=inv)
+    assert "routes the authoring walk discovered" in md
+
+
+def test_the_dom_xss_pass_is_reported_either_way():
+    ran = {**COV, "dom_xss": {"state": "Complete", "requests": 40, "alerts": 1, "error": None}}
+    assert "DOM-XSS pass: Complete, 40 requests, 1 alert" in render([], ran, SETTINGS, app_id="a", scan_id="S")
+    failed = {**COV, "dom_xss": {"state": None, "requests": 0, "alerts": 0,
+                                 "error": "ZapUnavailableError: ZAP stopped responding"}}
+    assert "DOM-XSS pass **failed**" in render([], failed, SETTINGS, app_id="a", scan_id="S")
+    off = render([], COV, SETTINGS, app_id="a", scan_id="S")
+    assert "DOM-XSS (40026) not run" in off
+
+
+def test_a_dom_pass_cut_short_says_so():
+    cov = {**COV, "dom_xss": {"state": "Skipped", "requests": 9, "alerts": 0, "error": None}}
+    assert "stopped at its time limit" in render([], cov, SETTINGS, app_id="a", scan_id="S")

@@ -477,3 +477,18 @@ def test_the_contract_accepts_an_evidence_url_and_refuses_other_schemes():
     cfg["publish"] = {"evidence_url": "file:///{path}"}
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(cfg, schema)
+
+
+# ---- W6-4: the report states a denominator -------------------------------------------------
+
+def test_report_uses_the_spec_denominator_when_the_scan_recorded_one(tmp_path, monkeypatch, capsys):
+    import json
+    monkeypatch.delenv("DAST_FAIL_ON", raising=False)
+    d = _scan_dir(tmp_path)
+    cov = json.loads((d / "coverage.json").read_text())
+    cov["declared"] = {"source": "openapi", "routes": sorted(set(cov.get("routes") or []) | {"/never"})}
+    (d / "coverage.json").write_text(json.dumps(cov))
+    _report(tmp_path, "--fail-on", "none")
+    out = capsys.readouterr().out
+    assert "declared routes" in out and "OpenAPI" in out
+    assert "/never" in (d / "summary.md").read_text()

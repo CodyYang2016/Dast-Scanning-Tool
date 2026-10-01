@@ -121,3 +121,15 @@ scan:
   # (W5-2). A session lost mid-scan is re-established by logging in again (scan.reauth, on by
   # default).
   anti_csrf_tokens: [user_token]
+  # Put DVWA's data back to its starting state before every scan (W6-1): its own "Create / Reset
+  # Database" button. Verified by the login page answering, which it does only once the database
+  # exists — a scan that cannot prove its starting state does not start.
+  reset:
+    url: /setup.php
+    steps:
+      - {action: click, selector: "input[name=create_db]"}
+    verify: {path: /login.php, contains: "Username"}
+  # DOM-based XSS, in its own pass after the main scan (W6-3). Measured on this container: over
+  # every page it hit the 15-minute limit but found the DOM-XSS lesson (and confirmed the
+  # reflected-XSS one executes) with ZAP at ~4.8 GiB and up throughout.
+  dom_xss: {enabled: true, max_min: 15}

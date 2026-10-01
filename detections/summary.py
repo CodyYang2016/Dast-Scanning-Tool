@@ -154,9 +154,24 @@ def _top(records: list[dict], key, n: int = 5) -> list[tuple[str, int]]:
     return Counter(key(r) for r in live).most_common(n)
 
 
-def _coverage(coverage: dict, reachability: dict | None) -> list[str]:
+_INVENTORY_SOURCE = {"openapi": "OpenAPI spec",
+                     "trace": "routes the authoring walk discovered — only what it found"}
+
+
+def _coverage(coverage: dict, reachability: dict | None, inventory: dict | None = None) -> list[str]:
     lines = [f"- Tested **{_plural(len(coverage.get('routes') or []), 'route')}** with "
              f"**{_plural(len(coverage.get('rules') or []), 'rule')}**."]
+    if inventory and inventory.get("declared"):
+        # W6-4: "tested 80 routes" is only activity until it is "of N".
+        src = _INVENTORY_SOURCE.get(inventory["source"], inventory["source"])
+        line = (f"- **{inventory['exercised']} of {inventory['declared']} declared routes "
+                f"({inventory['percent']}%)** — source: {src}.")
+        missing = inventory.get("missing") or []
+        if missing:
+            shown = ", ".join(_cell_code(m) for m in missing[:8])
+            more = f" and {len(missing) - 8} more" if len(missing) > 8 else ""
+            line += f" Not reached: {shown}{more}."
+        lines.append(line)
     truncated = coverage.get("truncated_rules") or []
     if truncated:
         lines.append(f"- Stopped early by the per-rule time limit: "
@@ -175,6 +190,28 @@ def _coverage(coverage: dict, reachability: dict | None) -> list[str]:
     excluded = coverage.get("excluded") or []
     if excluded:
         lines.append(f"- Excluded from the scan: {', '.join(_cell_code(e) for e in excluded)}.")
+    reset = coverage.get("reset")
+    writes = (coverage.get("policy") or {}).get("write_mode") == "allow"
+    if reset:
+        state = {True: "verified", None: "ran, not verified"}.get(reset.get("verified"), "failed")
+        lines.append(f"- Data reset before the scan: {state}.")
+    elif writes:
+        lines.append("- **Write-enabled without a data reset** — each scan starts where the last "
+                     "one left the data, so findings can come and go with it (`scan.reset`).")
+    dom = coverage.get("dom_xss")
+    if dom and dom.get("error"):
+        lines.append(f"- DOM-XSS pass **failed** — {_text(dom['error'])}. The main scan's "
+                     f"results are unaffected; DOM-based XSS is untested this run.")
+    elif dom:
+        # ZAP calls a rule stopped at its time limit "Skipped"; say what that means.
+        state = ("stopped at its time limit — pages it did not reach are untested"
+                 if dom.get("state") == "Skipped" else (dom.get("state") or "ran"))
+        lines.append(f"- DOM-XSS pass: {_text(state)}, "
+                     f"{_plural(dom.get('requests', 0), 'request')}, "
+                     f"{_plural(dom.get('alerts', 0), 'alert')}.")
+    else:
+        lines.append("- DOM-XSS (40026) not run — `scan.dom_xss` is off; DOM-based XSS is a "
+                     "disclosed gap (SP-3).")
     ex = coverage.get("exchanges") or {}
     if ex:
         line = f"- Request/response stored for {_plural(ex.get('attached', 0), 'finding')}"
@@ -231,7 +268,7 @@ def _published(settings: dict, uploaded: bool | None) -> list[str]:
 
 def render(records: list[dict], coverage: dict, settings: dict, *, app_id: str, scan_id: str,
            reachability: dict | None = None, uploaded: bool | None = None,
-           max_new: int = 20) -> str:
+           max_new: int = 20, inventory: dict | None = None) -> str:
     coverage = coverage or {}
     out = [f"# DAST scan — {_text(app_id)}", "", f"Scan `{scan_id}`", ""]
     out += "\n\n".join(_verdict(settings, coverage)).split("\n")   # one paragraph each
@@ -244,7 +281,7 @@ def render(records: list[dict], coverage: dict, settings: dict, *, app_id: str, 
         out += [f"| {_text(name)} | {n} |" for name, n in rules]
         out += ["", "| Route | Open |", "|---|---:|"]
         out += [f"| {_cell_code(name)} | {n} |" for name, n in routes]
-    out += ["", "## Coverage", ""] + _coverage(coverage, reachability)
+    out += ["", "## Coverage", ""] + _coverage(coverage, reachability, inventory)
     out += _suppressions(records)
     out += _published(settings, uploaded)
     return "\n".join(out) + "\n"

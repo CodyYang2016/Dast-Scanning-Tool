@@ -347,6 +347,24 @@ def suppressions_path(app_id: str) -> Path:
     return _APPS_DIR / app_id / "suppressions.yaml"
 
 
+def scan_reset(cfg: dict) -> dict | None:
+    """The application's own data reset, run before each scan (W6-1), or None."""
+    return cfg.get("scan", {}).get("reset")
+
+
+def dom_xss(cfg: dict) -> dict:
+    """The DOM-XSS pass (W6-3): off unless an app opts in, since it needs a browser per payload
+    and memory to match."""
+    d = cfg.get("scan", {}).get("dom_xss", {})
+    return {"enabled": bool(d.get("enabled", False)), "max_min": int(d.get("max_min", 5)),
+            "routes": list(d.get("routes", []))}
+
+
+def openapi_spec(cfg: dict) -> str | None:
+    """An OpenAPI/Swagger spec for the application (W6-4): a URL, or a path under the repo."""
+    return cfg.get("scan", {}).get("openapi")
+
+
 def scan_reauth(cfg: dict) -> dict:
     """Whether a session lost mid-scan is re-established by logging in again, and how many times
     (W5-2). On by default: the alternative is stopping the scan at the first loss."""

@@ -23,15 +23,18 @@ def _api(zap_api: str, path: str, params: dict | None = None, timeout: float = 3
     return zapapi.call(zap_api, path, params, timeout)
 
 
-def rules(jar: dict, bearer_cookie: str | None = None) -> list[dict]:
+def rules(jar: dict, bearer_cookie: str | None = None, initiators: str | None = None) -> list[dict]:
+    """`initiators` "" means every request through ZAP — used for the DOM-XSS pass, whose
+    browsers reach ZAP as proxied traffic rather than as the active scanner (W6-3)."""
+    init = INITIATORS if initiators is None else initiators
     out = [{"description": COOKIE_RULE, "enabled": "true", "matchType": "REQ_HEADER",
             "matchRegex": "false", "matchString": "Cookie",
             "replacement": "; ".join(f"{k}={v}" for k, v in sorted(jar.items())),
-            "initiators": INITIATORS}]
+            "initiators": init}]
     if bearer_cookie and jar.get(bearer_cookie):
         out.append({"description": BEARER_RULE, "enabled": "true", "matchType": "REQ_HEADER",
                     "matchRegex": "false", "matchString": "Authorization",
-                    "replacement": f"Bearer {jar[bearer_cookie]}", "initiators": INITIATORS})
+                    "replacement": f"Bearer {jar[bearer_cookie]}", "initiators": init})
     return out
 
 
@@ -43,8 +46,9 @@ def remove(zap_api: str) -> None:
             pass                             # absent is fine
 
 
-def install(zap_api: str, jar: dict, bearer_cookie: str | None = None) -> None:
+def install(zap_api: str, jar: dict, bearer_cookie: str | None = None,
+            initiators: str | None = None) -> None:
     """Set the rules to `jar`, replacing whatever was there. Also how they are updated."""
     remove(zap_api)
-    for rule in rules(jar, bearer_cookie):
+    for rule in rules(jar, bearer_cookie, initiators):
         _api(zap_api, "/JSON/replacer/action/addRule/", rule)

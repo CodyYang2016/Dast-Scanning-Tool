@@ -19,11 +19,11 @@ it**. The "current" column is today's default, which the signatories can change.
 
 | # | Posture | Current default | Benchmark posture (to agree) | What it hides if kept |
 |---|---|---|---|---|
-| SP-1 | Write paths during exploration | `write_mode: deny` — POST/PUT/PATCH/DELETE never exercised by the walk | ☐ deny · ☐ per-app `safe_forms` allow-list · ☐ allow | Injection, authorization and business logic behind forms |
+| SP-1 | Write paths during exploration | `write_mode: deny`. HTML forms are still submitted by ZAP's spider; script-driven writes are replayed only on `disposable` + `write_mode: allow` apps, with `scan.reset` (W6-1) | ☐ deny · ☐ per-app `safe_forms` allow-list · ☐ allow | Injection, authorization and business logic behind forms |
 | SP-1a | ZAP's active scan attacks every write it has seen, **whatever `write_mode` says** (found during W5-1 work) | Unbounded | ☐ accept · ☐ exclude write endpoints from the active scan · ☐ disposable environment | If excluded: the same classes as SP-1. If accepted: test data drifts, and Juice Shop already shows one flaky High from it |
 | SP-2 | Scan duration | Per-app `max_scan_min` / `max_rule_min`; rules that were cut short are recorded in `truncated_rules` | ☐ ___ min total / ___ min per rule | Findings that were not reached; the summary now names every rule that was cut short |
-| SP-3 | DOM-XSS rule 40026 | Disabled | ☐ disabled · ☐ enabled with a longer budget | Client-side XSS, the class that matters most for SPAs |
-| SP-4 | Attack surface source | Authenticated walk plus spider, with reachability measured; no spec import | ☐ as is · ☐ OpenAPI/GraphQL import | Endpoints and parameters the walk never sent; the summary lists the gaps it measured |
+| SP-3 | DOM-XSS rule 40026 | Off unless `scan.dom_xss` is enabled. Then it runs as its own bounded pass (W6-3): on DVWA, 15 min full-site, ~5 GiB, 1 new class found | ☐ disabled · ☐ enabled with a longer budget | Client-side XSS, the class that matters most for SPAs |
+| SP-4 | Attack surface source | Authenticated walk plus spider, reachability measured; `scan.openapi` imports a spec and gives a declared-route denominator (W6-4) | ☐ as is · ☐ OpenAPI/GraphQL import | Endpoints and parameters the walk never sent; the summary lists the gaps it measured |
 | SP-5 | Session under load | Loss is **detected and fails the scan** (W5-1); no re-authentication | ☐ detect-and-fail · ☐ add re-authentication first | A long write-heavy scan that loses its session is reported as unhealthy, not as a clean app |
 | SP-6 | Out-of-band (OAST) | Out | ☐ out (disclosed) · ☐ in (callback host plus network approval) | Blind SSRF, blind XSS, blind injection, deserialization |
 | SP-7 | Authorization (multi-identity) | Out | ☐ out (covered by: ________) · ☐ in | IDOR / BOLA / privilege escalation, OWASP Top 10 #1 |

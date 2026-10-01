@@ -122,13 +122,38 @@
             "enum": [
               "goto",
               "click",
-              "api_get"
+              "api_get",
+              "api_send"
             ]
           },
           "target": {
             "type": "string",
             "minLength": 1,
-            "description": "URL/route for goto/api_get, or a selector for click"
+            "description": "URL/route for goto/api_get/api_send, or a selector for click"
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "POST",
+              "PUT",
+              "PATCH",
+              "DELETE"
+            ],
+            "description": "api_send only: the write's HTTP method."
+          },
+          "body": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "api_send only: the recorded body, secrets already redacted (W6-1)."
+          },
+          "content_type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "api_send only: the body's Content-Type."
           }
         }
       }

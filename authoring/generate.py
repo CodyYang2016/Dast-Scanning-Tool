@@ -75,6 +75,44 @@ def emit_scope(trace: dict, config: dict) -> dict:
 
 # ---- journey plan: deterministic fallback + validation ----------------------------------
 
+def _allowed_writes(trace: dict, config: dict) -> list[dict]:
+    """Writes the app's JavaScript made during the walk, replayed so ZAP can attack them (W6-1).
+
+    ZAP's spider submits HTML forms itself; what it never sees are API writes made from script.
+    Each is replayed only if the action policy that governs exploration allows it under this
+    application's posture — the same decision, made the same way, so a write the walk could not
+    make is never made by the scan: writes need `data_policy: disposable` + `write_mode: allow`,
+    DELETE needs `safe_forms`, `scope.exclude` and the deny list win, and a credential change is
+    refused at any posture. A read-only app gets exactly the plan it got before.
+    """
+    if not appconfig.writes_allowed(config):
+        return []
+    from runner.action_policy import validate_action
+    scope = appconfig.scope_from_config(config)
+    out = []
+    for a in trace.get("api", []):
+        method = a.get("method", "GET").upper()
+        path = _relpath(a.get("url", ""), trace["base_url"])
+        if method == "GET" or not path or "body_omitted" in a:
+            continue
+        try:
+            fields = list(json.loads(a.get("body") or "{}").keys())
+        except (ValueError, AttributeError):
+            fields = [kv.split("=", 1)[0] for kv in (a.get("body") or "").split("&") if kv]
+        action = {"action": "visit_api",
+                  "target": {"path": path, "method": method, "field_bindings": fields}}
+        if not validate_action(action, scope, safe_forms=appconfig.safe_forms(config),
+                               allow_writes=True).allowed:
+            continue
+        step = {"action": "api_send", "target": path, "method": method}
+        if a.get("body") is not None:
+            step["body"] = a["body"]
+        if a.get("content_type"):
+            step["content_type"] = a["content_type"]
+        out.append(step)
+    return out
+
+
 def journey_from_trace(trace: dict, config: dict) -> dict:
     base = trace["base_url"]
     login = login_block(config)
@@ -88,11 +126,12 @@ def journey_from_trace(trace: dict, config: dict) -> dict:
             path = _relpath(a["url"], base)
             if path:
                 journey.append({"action": "api_get", "target": path})
+    journey.extend(_allowed_writes(trace, config))
     if not journey:
         journey = [{"action": "goto", "target": "/#/"}]
     seen, dedup = set(), []
     for s in journey:
-        key = (s["action"], s["target"])
+        key = (s["action"], s["target"], s.get("method"))
         if key not in seen:
             seen.add(key)
             dedup.append(s)
@@ -192,6 +231,13 @@ def _render_auth_proof(config: dict, w) -> bool:
     return False
 
 
+# The in-page request an api_send step makes: through the browser, so the scope guard and ZAP
+# both see it, with the page's cookies and an optional bearer token.
+_FETCH_JS = ("([url, method, body, ctype, bearer]) => fetch(url, {method, body, "
+             "credentials: 'include', headers: Object.assign(ctype ? {'Content-Type': ctype} : {}, "
+             "bearer ? {'Authorization': 'Bearer ' + bearer} : {})}).then(r => r.status)")
+
+
 def render_flow(plan: dict, config: dict) -> str:
     """Render a validated journey plan into flow.py source. Deterministic (FR-G4); no secrets
     (creds from env, NFR-3). String literals are json.dumps-quoted for safety.
@@ -242,6 +288,19 @@ def render_flow(plan: dict, config: dict) -> str:
             w(f'    page.goto({url}, wait_until="networkidle")')
         elif action == "click":
             w(f'    page.click({json.dumps(target)})')
+        elif action == "api_send":
+            # From the page, not page.request: the request passes the browser's scope guard
+            # as well as ZAP. The session rides on the page's cookies; an app that also wants
+            # a bearer token names the cookie that holds it (auth.bearer_from_cookie).
+            bearer = appconfig.bearer_from_cookie(config)
+            if bearer:
+                w(f'    _bearer = next((c["value"] for c in page.context.cookies() '
+                  f'if c["name"] == {json.dumps(bearer)}), None)')
+            else:
+                w('    _bearer = None')
+            w(f'    page.evaluate({json.dumps(_FETCH_JS)}, '
+              f'[{url}, {json.dumps(step.get("method", "POST"))}, {json.dumps(step.get("body"))}, '
+              f'{json.dumps(step.get("content_type"))}, _bearer])')
         elif action == "api_get":
             if has_token:
                 w(f'    page.request.get({url}, '

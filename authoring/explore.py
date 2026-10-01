@@ -26,7 +26,7 @@ from pathlib import Path
 import jsonschema
 
 from authoring import appconfig
-from authoring.record import build_trace, write_trace
+from authoring.record import build_trace, request_event, write_trace
 from authoring.seed import load_seed
 from runner.action_policy import validate_action
 from runner.preflight import check_scope, preflight
@@ -480,8 +480,8 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
         context = browser.new_context(ignore_https_errors=True, storage_state=storage_state)
         page = context.new_page()
         guard.attach(page)  # safety layer 2: page.route + redirect hops
-        page.on("request", lambda r: api_events.append({"type": "request", "method": r.method,
-                "url": r.url}) if any(m in r.url for m in api_patterns) else None)
+        page.on("request", lambda r: api_events.append(request_event(r))
+                if any(m in r.url for m in api_patterns) else None)
 
         liveness = prove_auth_live(page, base_url, seed_routes[0], proof=proof)
         if not liveness["alive"]:

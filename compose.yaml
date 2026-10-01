@@ -47,6 +47,10 @@ services:
       - api.addrs.addr.name=${ZAP_API_ALLOW:-^(?:172[.]28[.]0[.]10|zap|127[.]0[.]0[.]1|localhost)$}
       - -config
       - api.addrs.addr.regex=true
+    # So ZAP can import an app's OpenAPI spec kept beside its app.yaml (W6-4): `importFile`
+    # reads a path on ZAP's side. Read-only; the runner is told where via DAST_ZAP_SPEC_DIR.
+    volumes:
+      - ./security/dast:/zap/specs:ro
     networks: [dast]
 
   # ---- Additional onboarded targets -------------------------------------------------------
@@ -104,6 +108,7 @@ services:
       RUNNER_CHROMIUM_NO_SANDBOX: "1"
       # The same key ZAP was started with; every runner call to ZAP's API sends it.
       ZAP_API_KEY: ${ZAP_API_KEY:?export ZAP_API_KEY}
+      DAST_ZAP_SPEC_DIR: /zap/specs
     command:
       - "--scope=security/dast/juice-shop/scope.json"
       - "--flow=security/dast/juice-shop/flow.py"

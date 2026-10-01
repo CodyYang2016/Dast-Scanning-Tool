@@ -193,9 +193,10 @@ class ScopeGuard:
         scope), and every redirect hop through the context's request events.
 
         page.route never sees a redirect hop — measured: a 302 to another origin was followed
-        with the route handler called only for the original request. Blocking the hop would
-        mean fetching outside the browser, which takes the request out of ZAP's path, so a hop
-        is checked as it is issued and an off-scope one fails the scan (D4).
+        with the route handler called only for the original request. Blocking the hop means
+        answering the first request from inside the handler, and the browser did not follow a
+        redirect answered that way when tried, so a hop is checked as it is issued and an
+        off-scope one fails the scan (D4).
         """
         page.route("**/*", lambda route: self.route_handler(route))
         page.context.on("request", self.on_request)

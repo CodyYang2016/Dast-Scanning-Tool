@@ -159,6 +159,8 @@ The PoC's current scan configuration was tuned for a repeatable stage demo again
 > *Consequence of doing nothing:* injection, authorization and business-logic classes go untested, and the vendors' extra findings will read as better detection when the real difference is safety posture.
 >
 > *Recommendation:* exercise write paths in test environments, but by populating `safe_forms` per application rather than removing the policy — keep the guardrail that an LLM never decides a mutation is safe, since governed authoring is a differentiator, not overhead. Agree with the app team which write paths are in play, what data they touch, and how the environment is restored. Note that write-enabled scans are not idempotent: test data drifts between runs, so budget a data reset or the lifecycle diff gets noisy.
+>
+> *Update 2026-10-01 (W6-1):* ZAP's spider already submits HTML forms; the writes that were missing are those an app makes from its own JavaScript. On a `disposable` + `write_mode: allow` app they are now recorded and replayed into ZAP — Juice Shop's basket write was attacked 834 times in a minute — and `scan.reset` restores the data before each scan.
 
 > **SP-2. Scan duration bounds.**
 >
@@ -175,6 +177,8 @@ The PoC's current scan configuration was tuned for a repeatable stage demo again
 > *Consequence:* an entire client-side vulnerability class is untested, specifically the one that matters most for SPAs — awkward when the comparison tools do test it.
 >
 > *Recommendation:* re-enable with proper browser configuration and a longer budget, or disclose the exclusion on the scorecard.
+>
+> *Update 2026-10-01 (W6-3):* reproduced (OOM) and solved by isolation: `scan.dom_xss` runs the rule alone, one browser, its own limit, after the main results are saved. On DVWA it found the DOM-XSS lesson the other 112 rules never had, at ~15 min and ~5 GiB.
 
 > **SP-4. Attack surface: how does the scanner learn what to attack?**
 >
@@ -183,6 +187,8 @@ The PoC's current scan configuration was tuned for a repeatable stage demo again
 > *Consequence:* more scan time mostly re-attacks the same small surface. Surface is a harder constraint than duration.
 >
 > *Recommendation:* import an OpenAPI or GraphQL specification where one exists, and treat crawl breadth as a measured output of the pilot rather than an assumption.
+>
+> *Update 2026-10-01 (W6-4):* `scan.openapi` imports a spec into ZAP and gives coverage a denominator. On Juice Shop the embedded B2B spec put an API the walk never reached into the scan.
 
 > **SP-5. Session handling under a write-heavy scan.**
 >

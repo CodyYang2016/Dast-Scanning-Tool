@@ -461,6 +461,23 @@ def cmd_report(args) -> int:
                 line += f" — never sent: {detail}"
             print(line)
 
+    # A denominator for "tested N routes" (W6-4): the spec the scan imported, else the routes
+    # the authoring walk discovered — labelled, because a walk only lists what it found.
+    inv = None
+    if cov_file.exists():
+        from detections import inventory
+        cov_data = json.loads(cov_file.read_text())
+        declared = (cov_data.get("declared") or {}).get("routes")
+        if declared:
+            inv = inventory.summarize(declared, cov_data, "openapi")
+        elif trace_file.exists():
+            inv = inventory.summarize(inventory.from_trace(json.loads(trace_file.read_text())),
+                                      cov_data, "trace")
+        if inv and inv["declared"]:
+            label = "OpenAPI spec" if inv["source"] == "openapi" else "authoring walk"
+            print(f"coverage: {inv['exercised']} of {inv['declared']} declared routes "
+                  f"({inv['percent']}%) — source: {label}")
+
     # Where results are published, resolved the same way as the output root and recorded with
     # its provenance: a layered precedence that cannot explain itself looks, from a UI, exactly
     # like the tool ignoring what the operator asked for.
@@ -553,7 +570,7 @@ def cmd_report(args) -> int:
         triaged, json.loads(cov_file.read_text()) if cov_file.exists() else {},
         json.loads((run_dir / "settings.json").read_text()),
         app_id=args.app, scan_id=run_dir.name, reachability=summary,
-        uploaded=bool(args.upload))
+        uploaded=bool(args.upload), inventory=inv)
     (run_dir / "summary.md").write_text(page)
     print(f"summary: {display(run_dir / 'summary.md')}")
     step_summary = os.environ.get("GITHUB_STEP_SUMMARY")

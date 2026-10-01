@@ -198,8 +198,12 @@ redirect chains to out-of-scope hosts, host aliases, IPv6/IP-literal forms.
 - *Redirect chains:* closed for detection.
   - **Browser side.** Measured: Playwright's `page.route` sees only the first request of a
     redirect chain. A 302 to another origin was followed with the handler never called.
-    Blocking the hop would mean fetching it outside the browser, and `route.fetch` was measured
-    to bypass the proxy, which would hide the traffic from ZAP. So the guard checks every
+    Blocking the hop means fetching the first request inside the route handler
+    (`route.fetch(max_redirects=0)`) and answering with the redirect, so the browser issues the
+    next hop through the guard. Tried, the browser did not follow the redirect answered that
+    way. (The same test seemed to show `route.fetch` bypassing the proxy; that was its loopback
+    target, which proxies skip. A later check against ZAP saw requests from the page's request
+    API arrive.) So the guard checks every
     redirect hop from the context's `request` event (`ScopeGuard.attach`), and an off-scope hop
     fails the scan. The request has already gone by then; it is reported, not prevented.
   - **Server side.** The liveness and state probes follow redirects hop by hop and never fetch
