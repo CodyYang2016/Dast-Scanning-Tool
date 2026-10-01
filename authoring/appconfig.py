@@ -201,6 +201,16 @@ def test_data(cfg: dict) -> dict:
     return dict(cfg.get("explore", {}).get("test_data", {}))
 
 
+def inferred_fields(cfg: dict) -> dict:
+    """Fields the operator permits the planner to supply a value for, with the shape required.
+
+    Separate from test_data because the two answer different questions: test_data is a value the
+    operator chose, this is permission to choose one, bounded by a pattern and a length. A field
+    in neither is never filled.
+    """
+    return dict(cfg.get("explore", {}).get("inferred_fields", {}))
+
+
 def avoid_actions(cfg: dict) -> list[str]:
     return list(cfg.get("scope", {}).get("avoid_actions", []))
 
