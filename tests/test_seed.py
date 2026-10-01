@@ -11,8 +11,8 @@ import jsonschema
 import pytest
 
 from authoring.seed import (SeedPreflightError, leading_selectors, load_seed,
-                            preflight_login_page)
-from runner.replay import SessionDeadError, prove_auth_live
+                            preflight_login_page, proof_failure_detail)
+from runner.replay import AuthProofError, SessionDeadError, prove_auth_live
 
 BASE = "http://juice:3000"
 
@@ -232,3 +232,14 @@ def test_preflight_lets_a_non_timeout_page_fault_propagate():
 
     with pytest.raises(ValueError):
         preflight_login_page(BadSelectorPage(set()), LOGIN, 200, STEPS, timeout_ms=1)
+
+
+# ---- proof failure diagnostics -----------------------------------------------------------
+
+def test_proof_failure_detail_names_the_page_the_proof_failed_on():
+    # WebGoat/DVWA both re-render the login form on a rejected credential, so the landed-on URL
+    # is the only thing that separates "wrong password" from "wrong proof selector".
+    page = FakeLoginPage(set(), landed_url=LOGIN, title="Login Page")
+    detail = str(proof_failure_detail(page, AuthProofError("authentication not proven (selector)")))
+    assert "authentication not proven (selector)" in detail
+    assert LOGIN in detail and "Login Page" in detail
