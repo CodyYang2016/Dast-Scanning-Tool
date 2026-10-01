@@ -1,6 +1,6 @@
 # DAST PoC review: product, architecture, implementation, and demo
 
-An evidence-based funding review of NationwideDevin/ssd-dast-tool-poc at commit c3bac3b, covering requirements traceability, design-vs-code gaps, DAST maturity, UX, scan quality, and the demo story, with an addendum on the new discovery design proposal and the D9 architecture reversal.
+An evidence-based funding review of NationwideDevin/ssd-dast-tool-poc at commit c3bac3b, covering requirements traceability, design-vs-code gaps, DAST maturity, UX, scan quality, and the demo story, with addenda on the new discovery design proposal, the D9 architecture reversal, and the controlled DVWA comparison of the deterministic and LLM-assisted exploration paths.
 
 ## Verdict first
 
@@ -44,6 +44,51 @@ It answers several criticisms in this review directly: deterministic exploration
 - **The runbook still contradicts this** — line 96 instructs the operator to narrate the command when the GHAS and push preconditions are not met. Update it, and commit the evidence: both SARIF files and the GitHub alert states before and after.
 
 A pattern worth fixing: the project's two strongest pieces of evidence — the no-LLM comparison and the live false-"fixed" incident — exist only in run logs. Neither is in the repository at `c3bac3b`. The documentation currently undersells the work, because the evidence for its two biggest claims is not written down.
+
+## Addendum at `a3ff5d4` — the controlled DVWA A/B, and what the LLM actually buys
+
+The previous addendum said the evidence did not settle the LLM's value and asked for a controlled
+comparison. It has now been run: DVWA, both arms back-to-back on one set of containers with no
+database reset between them, identical step budget, both authenticated and both passing the gate.
+This is the measurement that supersedes the Juice Shop figures quoted above, and it is recorded
+here so the project's evidence stops living only in run logs.
+
+| Arm | Explore requests | Routes | Rules | Detections | Lifecycle |
+|---|---|---|---|---|---|
+| `--explore --no-llm` (deterministic) | 121 | 78 | 113 | 570 | `not_scanned=12` |
+| `--explore --require-llm` (all 22 steps model-driven) | 126 | **81** | 113 | **587** | no `not_scanned` |
+
+Four conclusions, in descending order of how much they should influence funding.
+
+- **`rules: 113` is identical in both arms, and in every earlier run.** The rule set is entirely
+  the scanner's. Discovery quality moves routes and detections and never moves rules, which is the
+  cleanest evidence in the repository that replacing ZAP with a commercial engine leaves the value
+  of the discovery layer intact: the two dimensions do not interact.
+- **The lifecycle difference matters more than the route count.** The deterministic arm left 12
+  known routes unexercised and *said so*; the assisted arm left none. A route the tool knows about
+  and did not scan is the thing a commercial product will not tell you about your own application,
+  and it is the number to take to the review — not the 587.
+- **The measured LLM increment is small but real: +3 routes (+4%) and +17 detections.** That is not
+  "AI finds more", and it should not be presented as such. It is consistent with the corrected
+  framing above: deterministic discovery, with a governed assist whose increment is measured.
+- **The assist's real contribution on this run was not coverage at all — it was not poisoning its
+  own plan.** In the first attempt at this A/B the deterministic arm crawled DVWA's documentation
+  link, emitted `goto /docs/DVWA_v1.3.pdf`, and Chromium refused the navigation
+  (`Page.goto: Download is starting`), so the bundle failed its own auth check and the scan exited
+  on a Playwright traceback. The model did not pick the document. Both halves of that are now fixed
+  in code — the action policy refuses a page navigation to a download for either planner, and an
+  unreplayable plan aborts with a named reason instead of a stack trace — so the failure mode is
+  closed rather than avoided by luck. It is worth recording because it is the class of failure that
+  gets *worse* on a real application: every PDF, every export endpoint, every
+  `Content-Disposition: attachment`.
+
+Two caveats a reviewer should hear before the table is used. It is still n=1 per arm on a
+link-rich, form-poor training application — the shape of app where deterministic crawling should
+do well and semantic understanding has little to offer — so a 4% route delta is at the edge of
+what one pair of runs can support. And the assisted arm costs an LLM call per exploration step,
+against which +4% routes is a poor trade on its own; the case for keeping the assist rests on the
+apps DVWA cannot represent (a policy-number search box, a multi-step quote flow), which is exactly
+the three-application experiment already proposed in §19.
 
 ## 1. The vision, as the repository actually states it
 
