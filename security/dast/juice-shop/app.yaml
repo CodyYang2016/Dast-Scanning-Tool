@@ -67,3 +67,18 @@ explore:
   safe_forms: []                  # read-only exploration until SP-1 is settled per app
   budgets:
     max_pages: 12
+
+# Where findings are filed: the APPLICATION's repository, at the build that was scanned — not this
+# tool's repo, whose branches describe the scanner (W1-8). GitHub only accepts a commit that exists
+# in the repo you upload to, so Juice Shop's results go to a fork of Juice Shop. The pinned image
+# (versions.lock) reports itself as v20.2.0, which is upstream commit 5658473; the fork's
+# `deployed/v20.2.0` branch points there. Pinning the commit here is right only because the image
+# is pinned — an app that is redeployed should pass --commit/$DAST_TARGET_COMMIT per run instead.
+# Publishing still needs an explicit `dast report juice-shop --upload`.
+publish:
+  github:
+    owner: CodyYang2016
+    repo: juice-shop
+    ref: refs/heads/deployed/v20.2.0
+    commit: 5658473cf8814459bf89000ce373b20ed0b4eb37
+    category: dast/juice-shop
