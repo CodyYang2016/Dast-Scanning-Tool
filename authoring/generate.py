@@ -85,6 +85,46 @@ def journey_from_trace(trace: dict, config: dict) -> dict:
     return {"app_id": trace["app_id"], "base_url": base, "login": login, "journey": dedup}
 
 
+def with_submit_steps(journey, trace: dict, base: str) -> list[dict]:
+    """An authored journey reconciled with the form submissions the trace actually holds. Pure.
+
+    Three deterministic repairs, so the plan's source cannot change what gets submitted:
+      * a planned submit of a selector the walk never submitted is dropped — the only evidence a
+        form is allow-listed and has approved data is that the policy gate let the walk post it;
+      * a planned submit is preceded by a goto of the page it was recorded on and carries the
+        field names the walk filled, because a selector means nothing on another page and the
+        fields are the ones the operator approved, not ones a plan names;
+      * a submit the walk performed and the plan omitted is appended, since dropping it would
+        scan less of the application than the walk reached.
+    """
+    submits = [ev for ev in trace.get("interactions", [])
+               if ev.get("type") == "submit" and ev.get("selector")]
+    pages = {ev["selector"]: _relpath(ev.get("url", ""), base) for ev in submits}
+    fields = {ev["selector"]: list(ev.get("fields", [])) for ev in submits}
+    steps: list[dict] = []
+    planned: set[str] = set()
+    for step in (journey or []):
+        if not isinstance(step, dict):
+            continue
+        if step.get("action") != "submit_form":
+            steps.append(step)
+            continue
+        selector = step.get("target")
+        page = pages.get(selector)
+        if not page:
+            continue
+        if not steps or steps[-1] != {"action": "goto", "target": page}:
+            steps.append({"action": "goto", "target": page})
+        steps.append({"action": "submit_form", "target": selector,
+                      "fields": list(fields[selector])})
+        planned.add(selector)
+    recorded = submit_steps(trace, base)
+    for i in range(0, len(recorded) - 1, 2):
+        if recorded[i + 1]["target"] not in planned:
+            steps.extend([recorded[i], recorded[i + 1]])
+    return steps
+
+
 def submit_steps(trace: dict, base: str) -> list[dict]:
     """The goto/submit_form pairs replaying the forms exploration submitted. Pure.
 
@@ -347,15 +387,23 @@ def plan_from_llm(trace: dict, model: str, api_key: str | None = None,
     user = (
         "Crawl trace (no secrets):\n" + json.dumps(trace, indent=2) +
         "\n\nProduce the journey plan. Only the `journey` matters: the authenticated routes "
-        "worth visiting (`goto`) and authenticated GET endpoints worth calling (`api_get`), "
-        "in a sensible order, drawn from the trace. The real login block is supplied from the "
-        "application's configuration and whatever you put there is discarded. "
+        "worth visiting (`goto`), the authenticated GET endpoints worth calling (`api_get`), "
+        "and the forms the crawl submitted (`submit_form`), in a sensible order, drawn from "
+        "the trace. A `submit` interaction in the trace is a form the operator allow-listed and "
+        "approved test data for: replay it as a `goto` of the page it was made on followed by a "
+        "`submit_form` whose `target` is that interaction's `selector` and whose `fields` are "
+        "its field names. Field names only -- the values come from the application's "
+        "configuration at render time, so a plan never carries data. Put the submits after the "
+        "read-only steps so a replay reads before it writes. The real login block is supplied "
+        "from the application's configuration and whatever you put there is discarded. "
         "Never include credentials."
     )
     text = llm_backend.complete(system, user, model, api_key=api_key, max_tokens=4096)
     plan = parse_plan_text(text)
     if config is not None:
         plan["login"] = login_block(config)   # operator config wins, before validation
+    plan["journey"] = with_submit_steps(plan.get("journey"), trace,
+                                        plan.get("base_url") or trace["base_url"])
     validate_plan(plan)  # raise if the model's JOURNEY is off-contract
     return plan
 
