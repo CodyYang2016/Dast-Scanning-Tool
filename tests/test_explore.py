@@ -819,3 +819,20 @@ def test_the_walk_follows_the_second_branch_instead_of_stopping_on_a_dead_end(mo
     # the deterministic arm reaches the gate and does not invent an answer for it
     assert [ev for ev in trace["interactions"]
             if ev.get("type") == "submit" and ev.get("inferred")] == []
+
+
+def test_a_link_on_several_pages_is_remembered_once():
+    """The frontier carries forward, so a link seen again is already in it, not appended twice."""
+    nav = {"links": ["/gate", "/profile"], "forms": []}
+    frontier = explore_mod.remaining_links([], dict(nav, url="http://app:8080/home"),
+                                           {"/home"}, GATE_SCOPE)
+    frontier = explore_mod.remaining_links(frontier, dict(nav, url="http://app:8080/profile"),
+                                           {"/home", "/profile"}, GATE_SCOPE)
+    assert frontier == ["/gate"]
+
+
+def test_a_queued_link_reached_another_way_leaves_the_frontier():
+    frontier = ["/gate", "/profile"]
+    obs = {"url": "http://app:8080/gate", "links": [], "forms": []}
+    assert explore_mod.remaining_links(frontier, obs, {"/home", "/gate"},
+                                       GATE_SCOPE) == ["/profile"]
