@@ -118,12 +118,12 @@ def load_seed(path: str) -> dict:
     Raises jsonschema.ValidationError if the config is off-contract, or ValueError if the file
     isn't parseable JSON.
     """
-    text = Path(path).read_text()
+    text = Path(path).read_text(encoding="utf-8")
     try:
         cfg = json.loads(text)
     except json.JSONDecodeError as exc:
         raise ValueError(f"seed config {path} is not valid JSON: {exc}") from exc
-    jsonschema.validate(cfg, json.loads(_SEED_SCHEMA.read_text()))
+    jsonschema.validate(cfg, json.loads(_SEED_SCHEMA.read_text(encoding="utf-8")))
     return cfg
 
 

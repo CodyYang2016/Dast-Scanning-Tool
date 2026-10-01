@@ -58,7 +58,7 @@ def parse_proposal(text: str) -> dict:
         proposal = json.loads(t[start:end + 1])
     except json.JSONDecodeError as exc:
         raise ValueError(f"invalid JSON in the model's reply: {exc}") from exc
-    jsonschema.validate(proposal, json.loads(_SCHEMA.read_text()))
+    jsonschema.validate(proposal, json.loads(_SCHEMA.read_text(encoding="utf-8")))
     return proposal
 
 
@@ -233,7 +233,7 @@ def propose_auth(summary: dict, model: str, api_key: str | None = None) -> dict:
     system = (
         "You read a web application's login page and say how to log in. Output ONLY a JSON "
         "object — no prose, no code fences — validating against this schema:\n"
-        + _SCHEMA.read_text() +
+        + _SCHEMA.read_text(encoding="utf-8") +
         "\nRules: `steps` uses the page's real selectors, preferring stable attributes "
         "(name, id) over position. `value` says WHICH credential to type — never a literal. "
         "For `proof_candidates`, propose two to four ordered best-first, and prefer things "
