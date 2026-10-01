@@ -19,7 +19,8 @@
         "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]},
         "path": {"type": "string", "description": "Route/URL for follow_link/goto/visit_api."},
         "selector": {"type": "string", "description": "CSS selector for submit_form/expand_nav."},
-        "field_bindings": {"type": "array", "items": {"type": "string"}, "description": "Form field names (no values)."}
+        "field_bindings": {"type": "array", "items": {"type": "string"}, "description": "Form field names (no values)."},
+        "values": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Values for fields the operator marked inferable (explore.inferred_fields), e.g. the answer to a challenge the page itself states. Refused unless every field named is inferable and every value matches that field's approved shape; all other fields are filled from the operator's approved test data."}
       }
     },
     "reason": {"type": "string", "description": "Why this action (e.g. 'unexplored authenticated branch off dashboard')."},

@@ -42,7 +42,8 @@ _ACTION_SCHEMA = _ROOT / "contracts" / "action.schema.json"
 # ---- validation: schema + scope/deny policy (pure) --------------------------------------
 
 def validate_proposal(action: dict, scope: dict, deny_actions=None, safe_forms=None,
-                      submit_get_forms: bool = True, allow_writes: bool = False):
+                      submit_get_forms: bool = True, allow_writes: bool = False,
+                      inferred=None):
     """Validate a proposed action against the action schema AND the action policy.
     Returns (ok: bool, reason: str). Fail-closed: any schema or policy failure -> not ok."""
     try:
@@ -54,6 +55,12 @@ def validate_proposal(action: dict, scope: dict, deny_actions=None, safe_forms=N
     target = action.get("target") or {}
     if not (target.get("path") or target.get("selector")):
         return False, "no navigable target (empty path/selector)"
+    if target.get("values") is not None:
+        if action.get("action") != "submit_form":
+            return False, "values are only meaningful on submit_form"
+        ok, reason = vet_values(target["values"], inferred)
+        if not ok:
+            return False, reason
     decision = validate_action(action, scope, deny_actions=deny_actions, safe_forms=safe_forms,
                                submit_get_forms=submit_get_forms, allow_writes=allow_writes)
     return decision.allowed, decision.reason
@@ -188,15 +195,63 @@ def deferred_submits(pending: list[tuple[str, str]], observation: dict, here: st
     return out
 
 
-def form_fill_plan(form: dict, test_data: dict) -> list[tuple[str, str]]:
-    """The (field, approved value) pairs to type into a form, in declaration order. Pure.
+def vet_values(values, inferred) -> tuple[bool, str]:
+    """Whether planner-supplied values are ones the operator permitted, and well-shaped. Pure.
 
-    Only fields the operator supplied data for in `explore.test_data`. A field with no approved
-    value is left empty rather than guessed at: the values that reach a write path are the
-    operator's decision, not the planner's, so a form nobody has supplied data for yields an
-    empty plan and is not submitted.
+    `explore.test_data` cannot cover a field whose acceptable value is not knowable in advance --
+    a challenge generated per page load, a reference the application computes -- and those forms
+    are exactly the ones a crawler cannot get past. So the operator may instead declare a field
+    inferable and say what shape its value must have; the planner supplies the content, and this
+    decides whether it is permitted. Content from the model, permission and shape from the
+    operator: a field nobody listed is refused, as is a value outside the declared shape, so the
+    worst a wrong inference costs is a rejected request.
     """
-    return [(name, test_data[name]) for name in form.get("fields", []) if name in test_data]
+    spec = dict(inferred or {})
+    if not isinstance(values, dict):
+        return False, "values must be an object of field -> value"
+    for name, value in values.items():
+        field = spec.get(name)
+        if field is None:
+            return False, f"field {name!r} is not operator-inferable"
+        if not isinstance(value, str):
+            return False, f"value for {name!r} is not a string"
+        if len(value) > int(field.get("max_length", 64)):
+            return False, f"value for {name!r} is longer than the operator allows"
+        pattern = field.get("pattern")
+        if pattern and not re.fullmatch(pattern, value):
+            return False, f"value for {name!r} is outside the operator's approved shape"
+    return True, "values permitted"
+
+
+def form_fill_plan(form: dict, test_data: dict, values=None,
+                   inferred=None) -> list[tuple[str, str]]:
+    """The (field, value) pairs to type into a form, in declaration order. Pure.
+
+    Operator-approved data from `explore.test_data` first, and it wins outright: a field the
+    operator supplied a value for is not open to inference. A field left to the planner is filled
+    from `values` only once vet_values has passed it. Anything else is left empty rather than
+    guessed at, so a form nobody has supplied or permitted data for yields an empty plan and is
+    not submitted.
+    """
+    supplied = dict(values or {})
+    if supplied and not vet_values(supplied, inferred)[0]:
+        supplied = {}
+    plan: list[tuple[str, str]] = []
+    for name in form.get("fields", []):
+        if name in test_data:
+            plan.append((name, test_data[name]))
+        elif name in supplied:
+            plan.append((name, supplied[name]))
+    return plan
+
+
+def inferred_fields_of(plan: list[tuple[str, str]], test_data: dict) -> list[str]:
+    """The fields in a fill plan whose value came from the planner, not the operator. Pure.
+
+    Recorded against the submit so the bundle can tell the two apart: an operator-approved value
+    is reproducible, an inferred one answers a challenge that will differ next time.
+    """
+    return [name for name, _value in plan if name not in test_data]
 
 
 # ---- deterministic fallback proposer (pure) ---------------------------------------------
@@ -209,7 +264,7 @@ def _in_scope_path(path: str, scope: dict) -> bool:
 
 
 def propose_fallback(observation: dict, visited, scope: dict, deny_actions=None,
-                     safe_forms=None, test_data=None) -> dict:
+                     safe_forms=None, test_data=None) -> dict:  # noqa: C901
     """Pick the next action deterministically: the first unvisited, in-scope, non-destructive link,
     then an unvisited observed API GET, then an allow-listed form we hold test data for; else stop.
     No LLM. Used as the D9 fallback and in tests.
@@ -236,6 +291,8 @@ def propose_fallback(observation: dict, visited, scope: dict, deny_actions=None,
         path, selector = form.get("path"), form.get("selector")
         if not path or not selector or path in visited:
             continue
+        # No inferred values here on purpose: a deterministic proposer has no way to read a
+        # challenge off the page, and inventing one would make the comparison dishonest.
         if not form_fill_plan(form, dict(test_data or {})):
             continue
         candidate = {"action": "submit_form",
@@ -264,10 +321,20 @@ def propose_llm(observation: dict, model: str, api_key: str | None = None) -> di
         "NOT in `visited`. Use expand_nav / submit_form (with a CSS `selector`) only when no "
         "unvisited link or API path remains.\n"
         "Each observed form carries `submittable`: true means the operator has allow-listed its "
-        "endpoint AND approved test data for its fields, so submitting it is permitted. Propose "
-        "it with BOTH its `path` and its `selector`, and never invent field values -- the "
-        "approved test data is filled in for you. A form whose `submittable` is false must not "
-        "be proposed.\n"
+        "endpoint and either approved test data for its fields or marked a field inferable, so "
+        "submitting it is permitted. Propose it with BOTH its `path` and its `selector`. A form "
+        "whose `submittable` is false must not be proposed.\n"
+        "A form's `inferable` lists the fields the operator wants YOU to supply a value for, "
+        "because no fixed value would work: a question generated per page load, a reference the "
+        "application computes. Read the form's `prompt` (its visible text) and its fields' "
+        "`label` and `placeholder`, work out what the application is asking for, and put your "
+        "answers in `target.values` as {field: value} -- only for fields named in `inferable`, "
+        "and each value must match that field's stated shape or the action is refused. Every "
+        "other field is filled from the operator's approved data for you: never supply a value "
+        "for one, and never guess at a field that is not inferable.\n"
+        "Getting an inferable field right is the most valuable thing you can do here: the "
+        "application refuses a wrong answer, and whatever lies behind that form stays "
+        "unreachable.\n"
         "Emit {\"action\":\"stop\"} only when nothing useful remains -- and a form with "
         "`submittable` true whose `path` is not yet in `visited` IS something useful, because "
         "the surface behind it is reachable no other way. Do not stop while one remains.\n"
@@ -306,7 +373,7 @@ def target_key(action: dict) -> str | None:
 
 
 def next_action(observation: dict, visited, scope: dict, *, deny_actions=None, safe_forms=None,
-                test_data=None, use_llm: bool = True, model: str | None = None,
+                test_data=None, inferred=None, use_llm: bool = True, model: str | None = None,
                 api_key: str | None = None, strict: llm_backend.StrictLLM | None = None,
                 rejected: set[str] | None = None):
     """Return (action, source). LLM-primary; on any LLM/validation failure, deterministic fallback.
@@ -325,7 +392,8 @@ def next_action(observation: dict, visited, scope: dict, *, deny_actions=None, s
         try:
             action = _normalize_action(propose_llm(observation, model, api_key),
                                        observation.get("url"))
-            ok, reason = validate_proposal(action, scope, deny_actions, safe_forms)
+            ok, reason = validate_proposal(action, scope, deny_actions, safe_forms,
+                                           inferred=inferred)
             if ok:
                 if strict is not None:
                     strict.success()
@@ -351,13 +419,15 @@ def next_action(observation: dict, visited, scope: dict, *, deny_actions=None, s
 # ---- browser loop -----------------------------------------------------------------------
 
 def _observe(page, base_url: str, api_events: list[dict], test_data: dict,
-             safe_forms=None) -> dict:
+             safe_forms=None, inferred=None) -> dict:
     """Snapshot the current page: url, in-page links, forms (+field names), and API calls seen so
     far. Best-effort; never raises out of the loop.
 
-    Each form says whether it is `submittable` -- allow-listed by the operator AND holding
-    approved data for at least one field. Without that the model is asked to respect an
-    allow-list it cannot see, and the compliant answer is to never submit anything.
+    Each form says whether it is `submittable` -- allow-listed by the operator AND either
+    holding approved data for a field or having one the operator left to inference. Without that
+    the model is asked to respect an allow-list it cannot see, and the compliant answer is to
+    never submit anything. `inferable` carries the shape each such field must satisfy, so the
+    model is told what will be accepted rather than finding out by being refused.
     """
     def _safe_eval(expr, default):
         try:
@@ -372,18 +442,31 @@ def _observe(page, base_url: str, api_events: list[dict], test_data: dict,
     # it posts to, so the policy needs the path. The positional `form >> nth=i` keeps forms
     # addressable on pages like WebGoat's lessons, where every form is id-less and a bare `form`
     # would always select the first one.
+    # `prompt` and the per-field labels are what make a validating form answerable: the field
+    # names alone say a value is wanted, not what would be accepted. They are page text, so they
+    # go through the same redaction as everything else before the model sees them.
     forms = _safe_eval(
         "() => Array.from(document.querySelectorAll('form')).map((f, i) => ({selector:"
         " f.getAttribute('id') ? '#' + f.getAttribute('id') : 'form >> nth=' + i,"
         " path: f.getAttribute('action') || '', method: (f.getAttribute('method') || 'GET')"
-        ".toUpperCase(), fields: Array.from(f.querySelectorAll('input,select,textarea'))"
-        ".map(i => i.getAttribute('name')).filter(Boolean)}))",
+        ".toUpperCase(), prompt: (f.innerText || '').trim().slice(0, 400),"
+        " fields: Array.from(f.querySelectorAll('input,select,textarea'))"
+        ".map(i => i.getAttribute('name')).filter(Boolean),"
+        " field_info: Array.from(f.querySelectorAll('input,select,textarea'))"
+        ".filter(i => i.getAttribute('name')).map(i => ({name: i.getAttribute('name'),"
+        " type: i.getAttribute('type') || i.tagName.toLowerCase(),"
+        " label: (i.labels && i.labels[0] ? i.labels[0].innerText : '').trim().slice(0, 120),"
+        " placeholder: i.getAttribute('placeholder') || ''}))}))",
         [])
     allowed = set(safe_forms or [])
+    spec = dict(inferred or {})
     for form in forms:
         form["path"] = normalize_href(form.get("path", ""), page.url) or ""
         form["fillable"] = bool(form_fill_plan(form, test_data))
-        form["submittable"] = form["fillable"] and form["path"] in allowed
+        form["inferable"] = {name: spec[name] for name in form.get("fields", [])
+                             if name in spec and name not in test_data}
+        form["submittable"] = ((form["fillable"] or bool(form["inferable"]))
+                               and form["path"] in allowed)
     seen: set[str] = set()
     clean: list[str] = []
     for l in links:
@@ -394,7 +477,8 @@ def _observe(page, base_url: str, api_events: list[dict], test_data: dict,
     return {"url": page.url, "links": clean, "forms": forms, "api": list(api_events)}
 
 
-def _submit(page, selector: str, plan: list[tuple[str, str]], events: list[dict]) -> None:
+def _submit(page, selector: str, plan: list[tuple[str, str]], events: list[dict],
+            inferred_names=None) -> None:
     """Fill a form with approved values and submit it through the page's own handlers.
 
     requestSubmit(), not submit(): an application that intercepts its forms in JavaScript (as
@@ -402,8 +486,12 @@ def _submit(page, selector: str, plan: list[tuple[str, str]], events: list[dict]
     be issued. Best-effort, like the rest of the loop -- a form that refuses to submit costs a
     step, not the run.
     """
+    # Field names and which of them the planner answered; never the values. `inferred` is what
+    # tells the bundle this submit answered a challenge, so a replay cannot pretend to reproduce
+    # it from a recorded value.
     events.append({"type": "submit", "url": page.url, "selector": selector,
-                   "fields": [name for name, _ in plan]})
+                   "fields": [name for name, _ in plan],
+                   "inferred": list(inferred_names or [])})
     try:
         for name, value in plan:
             page.fill(field_selector(selector, name), value, timeout=3000)
@@ -444,6 +532,7 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
     submit_get_forms = appconfig.submit_get_forms(config) if config else True
     allow_writes = appconfig.writes_allowed(config) if config else False
     test_data = appconfig.test_data(config) if config else {}
+    inferred = appconfig.inferred_fields(config) if config else {}
     safe_forms = effective_safe_forms(safe_forms, config)
     proof = appconfig.proof(config) if config else None
     guard = ScopeGuard(scope, mode="discovery")  # block-and-continue during discovery (KI4)
@@ -490,7 +579,7 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
         forbidden = deny_terms(scope, deny_actions)
         while steps < max_pages:
             observation = redact(_observe(page, base_url, api_events, test_data,
-                                          safe_forms))  # redacted before the LLM
+                                          safe_forms, inferred))  # redacted before the LLM
             observation["visited"] = sorted(visited)  # coverage so far, so the model doesn't repeat
             observation["forbidden"] = forbidden      # what policy will refuse, said up front
             observation["rejected"] = sorted(rejected)
@@ -498,7 +587,7 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
             pending = deferred_submits(pending, observation, here, submitted, offered)
             action, src = next_action(observation, visited, scope, deny_actions=deny_actions,
                                       safe_forms=safe_forms, test_data=test_data,
-                                      use_llm=use_llm, model=model,
+                                      inferred=inferred, use_llm=use_llm, model=model,
                                       api_key=api_key, strict=strict,
                                       rejected=rejected)
             if stats is not None:
@@ -515,7 +604,7 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
                 steps += 1
                 continue
             ok, _reason = validate_proposal(action, scope, deny_actions, safe_forms,
-                                            submit_get_forms, allow_writes)
+                                            submit_get_forms, allow_writes, inferred)
             if not ok:  # fail-closed: never execute an action that didn't pass validation
                 break
             todo = dispatch(action)
@@ -527,10 +616,11 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
             elif op == "submit":
                 form = next((f for f in observation.get("forms", [])
                              if f.get("selector") == arg), {})
-                plan = form_fill_plan(form, test_data)
+                values = (action.get("target") or {}).get("values")
+                plan = form_fill_plan(form, test_data, values, form.get("inferable"))
                 if not plan:
                     break  # no approved value for any field: fail closed rather than post blanks
-                _submit(page, arg, plan, events)
+                _submit(page, arg, plan, events, inferred_fields_of(plan, test_data))
                 visited.add(action["target"]["path"])
                 submitted.add(action["target"]["path"])
             else:  # click a selector (expand_nav); never a navigation
@@ -611,6 +701,10 @@ def main(argv: list[str] | None = None) -> int:
         # Forms observed vs. forms actually posted: the number that says whether the walk
         # exercised the write paths the operator approved, or only looked at them.
         "submits": sum(1 for ev in trace["interactions"] if ev.get("type") == "submit"),
+        # Of those, the ones whose value the planner reasoned out rather than the operator
+        # supplying it: the number that says whether a validating form was actually answered.
+        "inferred_submits": sum(1 for ev in trace["interactions"]
+                                if ev.get("type") == "submit" and ev.get("inferred")),
         "hosts": trace["hosts"],
         "requests_seen": len(guard.decisions), "blocked": len(guard.violations),
         # How much of the walk the model actually drove: all-fallback steps with the LLM enabled

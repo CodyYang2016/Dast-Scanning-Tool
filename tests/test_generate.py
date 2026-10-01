@@ -20,7 +20,9 @@ from authoring.generate import (
     journey_from_trace,
     parse_plan_text,
     render_flow,
+    submit_steps,
     validate_plan,
+    with_submit_steps,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -340,3 +342,29 @@ def test_the_llm_plan_prompt_asks_for_the_submits(monkeypatch):
     assert "Field names only" in seen["user"]
     # and the submit survives a plan that left it out
     assert plan["journey"][-1]["action"] == "submit_form"
+
+
+# ---- a submit that answered a challenge is not replayable -------------------------------
+
+INFERRED_TRACE = dict(
+    TRACE,
+    interactions=TRACE["interactions"] + [
+        {"type": "submit", "url": "http://juice:3000/#/search",
+         "selector": "form >> nth=0", "fields": ["q"], "inferred": []},
+        {"type": "submit", "url": "http://juice:3000/#/gate",
+         "selector": "form >> nth=1", "fields": ["answer", "note"], "inferred": ["answer"]},
+    ],
+)
+
+
+def test_a_submit_whose_value_was_inferred_is_left_out_of_the_bundle():
+    """Its answer was reasoned from what the page said then; posting it again is refused, so a
+    replay step would look like coverage and deliver none."""
+    steps = submit_steps(INFERRED_TRACE, "http://juice:3000")
+    assert [s["target"] for s in steps] == ["/#/search", "form >> nth=0"]
+
+
+def test_a_plan_cannot_reinstate_an_inferred_submit():
+    journey = [{"action": "submit_form", "target": "form >> nth=1"}]
+    steps = with_submit_steps(journey, INFERRED_TRACE, "http://juice:3000")
+    assert all(s["target"] != "form >> nth=1" for s in steps)
