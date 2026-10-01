@@ -357,9 +357,11 @@ def _submit(page, selector: str, plan: list[tuple[str, str]], events: list[dict]
         for name, value in plan:
             page.fill(field_selector(selector, name), value, timeout=3000)
         page.eval_on_selector(selector, "f => f.requestSubmit ? f.requestSubmit() : f.submit()")
-        page.wait_for_timeout(500)
-    except Exception:
-        pass
+        # Wait for the response the submit caused, not for a guessed interval: what we are
+        # measuring is whether the request reached the application through the proxy.
+        page.wait_for_load_state("networkidle", timeout=10000)
+    except Exception as exc:
+        print(f"explore: form submit on {selector} did not complete ({exc})", file=sys.stderr)
 
 
 def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[str], scope: dict, *,

@@ -256,3 +256,11 @@ def test_rendered_submit_leaves_out_a_field_with_no_approved_value():
     ])
     src = render_flow(journey_from_trace(trace, SUBMIT_CONFIG), SUBMIT_CONFIG)
     assert "unapproved" not in src and "dast-test" in src
+
+
+def test_rendered_submit_escapes_a_quote_in_a_test_value():
+    """Values are json.dumps'd, so a quote cannot close the literal and break the flow."""
+    config = dict(CONFIG, explore={"test_data": {"q": 'he said "hi"'}})
+    src = render_flow(journey_from_trace(SUBMIT_TRACE, config), config)
+    ast.parse(src)
+    assert '"he said \\"hi\\""' in src
