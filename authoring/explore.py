@@ -149,6 +149,18 @@ def field_selector(form_selector: str, field: str) -> str:
     return f'{form_selector} >> [name="{field}"]'
 
 
+def effective_safe_forms(safe_forms, config: dict | None) -> list[str]:
+    """The write allow-list a walk runs with: the caller's, else the app config's. Pure.
+
+    It comes from the same config as the test data for a reason: a caller that passes neither
+    would otherwise run with an empty allow-list, so every form the operator approved is refused
+    as an unlisted write — a read-only run that looks like a configured one.
+    """
+    if safe_forms is not None:
+        return list(safe_forms)
+    return appconfig.safe_forms(config) if config else []
+
+
 def form_fill_plan(form: dict, test_data: dict) -> list[tuple[str, str]]:
     """The (field, approved value) pairs to type into a form, in declaration order. Pure.
 
@@ -223,11 +235,15 @@ def propose_llm(observation: dict, model: str, api_key: str | None = None) -> di
         "\nNever propose destructive actions (logout, delete, purchase, admin mutations). Prefer "
         "follow_link / visit_api on paths that appear in the observation's `links` / `api` and are "
         "NOT in `visited`. Use expand_nav / submit_form (with a CSS `selector`) only when no "
-        "unvisited link or API path remains. Emit {\"action\":\"stop\"} when nothing useful "
-        "remains.\n"
-        "A form may be submitted only if its `fillable` is true and its `path` is on the "
-        "operator's allow-list; propose it with BOTH that `path` and its `selector`, and never "
-        "invent field values -- approved test data is filled in for you.\n"
+        "unvisited link or API path remains.\n"
+        "Each observed form carries `submittable`: true means the operator has allow-listed its "
+        "endpoint AND approved test data for its fields, so submitting it is permitted. Propose "
+        "it with BOTH its `path` and its `selector`, and never invent field values -- the "
+        "approved test data is filled in for you. A form whose `submittable` is false must not "
+        "be proposed.\n"
+        "Emit {\"action\":\"stop\"} only when nothing useful remains -- and a form with "
+        "`submittable` true whose `path` is not yet in `visited` IS something useful, because "
+        "the surface behind it is reachable no other way. Do not stop while one remains.\n"
         "The observation's `forbidden` lists path fragments the operator's policy refuses, and "
         "`rejected` lists targets already refused on this run: proposing either wastes the step, "
         "so never propose a path containing a `forbidden` fragment or appearing in `rejected`."
@@ -307,9 +323,15 @@ def next_action(observation: dict, visited, scope: dict, *, deny_actions=None, s
 
 # ---- browser loop -----------------------------------------------------------------------
 
-def _observe(page, base_url: str, api_events: list[dict], test_data: dict) -> dict:
+def _observe(page, base_url: str, api_events: list[dict], test_data: dict,
+             safe_forms=None) -> dict:
     """Snapshot the current page: url, in-page links, forms (+field names), and API calls seen so
-    far. Best-effort; never raises out of the loop."""
+    far. Best-effort; never raises out of the loop.
+
+    Each form says whether it is `submittable` -- allow-listed by the operator AND holding
+    approved data for at least one field. Without that the model is asked to respect an
+    allow-list it cannot see, and the compliant answer is to never submit anything.
+    """
     def _safe_eval(expr, default):
         try:
             return page.evaluate(expr)
@@ -330,9 +352,11 @@ def _observe(page, base_url: str, api_events: list[dict], test_data: dict) -> di
         ".toUpperCase(), fields: Array.from(f.querySelectorAll('input,select,textarea'))"
         ".map(i => i.getAttribute('name')).filter(Boolean)}))",
         [])
+    allowed = set(safe_forms or [])
     for form in forms:
         form["path"] = normalize_href(form.get("path", ""), page.url) or ""
         form["fillable"] = bool(form_fill_plan(form, test_data))
+        form["submittable"] = form["fillable"] and form["path"] in allowed
     seen: set[str] = set()
     clean: list[str] = []
     for l in links:
@@ -393,6 +417,7 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
     submit_get_forms = appconfig.submit_get_forms(config) if config else True
     allow_writes = appconfig.writes_allowed(config) if config else False
     test_data = appconfig.test_data(config) if config else {}
+    safe_forms = effective_safe_forms(safe_forms, config)
     proof = appconfig.proof(config) if config else None
     guard = ScopeGuard(scope, mode="discovery")  # block-and-continue during discovery (KI4)
     events: list[dict] = []
@@ -434,7 +459,8 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
         rejected: set[str] = set()
         forbidden = deny_terms(scope, deny_actions)
         while steps < max_pages:
-            observation = redact(_observe(page, base_url, api_events, test_data))  # before the LLM
+            observation = redact(_observe(page, base_url, api_events, test_data,
+                                          safe_forms))  # redacted before the LLM
             observation["visited"] = sorted(visited)  # coverage so far, so the model doesn't repeat
             observation["forbidden"] = forbidden      # what policy will refuse, said up front
             observation["rejected"] = sorted(rejected)
@@ -539,7 +565,11 @@ def main(argv: list[str] | None = None) -> int:
     write_trace(trace, args.out_dir)
     print(json.dumps({
         "app_id": app_id, "pages": len(trace["index"]), "api_calls": len(trace["api"]),
-        "forms": len(trace["forms"]), "hosts": trace["hosts"],
+        "forms": len(trace["forms"]),
+        # Forms observed vs. forms actually posted: the number that says whether the walk
+        # exercised the write paths the operator approved, or only looked at them.
+        "submits": sum(1 for ev in trace["interactions"] if ev.get("type") == "submit"),
+        "hosts": trace["hosts"],
         "requests_seen": len(guard.decisions), "blocked": len(guard.violations),
         # How much of the walk the model actually drove: all-fallback steps with the LLM enabled
         # mean the provider is misconfigured, not that the tool chose to be deterministic.

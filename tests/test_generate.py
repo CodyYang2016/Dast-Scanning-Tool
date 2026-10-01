@@ -264,3 +264,65 @@ def test_rendered_submit_escapes_a_quote_in_a_test_value():
     src = render_flow(journey_from_trace(SUBMIT_TRACE, config), config)
     ast.parse(src)
     assert '"he said \\"hi\\""' in src
+
+
+# ---- an LLM-authored plan may not quietly drop (or invent) a form submission -------------
+
+def test_an_llm_plan_keeps_the_submit_the_walk_performed():
+    """The walk's submit is evidence: a plan that omits it would scan less than was reached."""
+    from authoring.generate import with_submit_steps
+
+    journey = with_submit_steps([{"action": "goto", "target": "/#/about"}],
+                                SUBMIT_TRACE, "http://juice:3000")
+    assert journey == [
+        {"action": "goto", "target": "/#/about"},
+        {"action": "goto", "target": "/#/search"},
+        {"action": "submit_form", "target": "form >> nth=0", "fields": ["q"]},
+    ]
+
+
+def test_an_llm_planned_submit_is_not_duplicated_and_gets_its_page():
+    from authoring.generate import with_submit_steps
+
+    journey = with_submit_steps([{"action": "submit_form", "target": "form >> nth=0"}],
+                                SUBMIT_TRACE, "http://juice:3000")
+    assert journey == [
+        {"action": "goto", "target": "/#/search"},
+        {"action": "submit_form", "target": "form >> nth=0", "fields": ["q"]},
+    ]
+
+
+def test_an_llm_planned_submit_of_a_form_the_walk_never_posted_is_dropped():
+    """The only evidence a form is allow-listed with approved data is that the gate let it post."""
+    from authoring.generate import with_submit_steps
+
+    journey = with_submit_steps([{"action": "submit_form", "target": "#invented"}],
+                                dict(SUBMIT_TRACE, interactions=TRACE["interactions"]),
+                                "http://juice:3000")
+    assert journey == []
+
+
+def test_an_llm_planned_submit_carries_the_fields_the_walk_filled_not_the_plans():
+    from authoring.generate import with_submit_steps
+
+    journey = with_submit_steps(
+        [{"action": "submit_form", "target": "form >> nth=0", "fields": ["q", "invented"]}],
+        SUBMIT_TRACE, "http://juice:3000")
+    assert journey[-1]["fields"] == ["q"]
+
+
+def test_the_llm_plan_prompt_asks_for_the_submits(monkeypatch):
+    from authoring import generate as generate_mod
+
+    seen = {}
+
+    def fake_complete(system, user, model, **kwargs):
+        seen["user"] = user
+        return json.dumps({"app_id": "juice", "base_url": "http://juice:3000",
+                           "login": {"url": "/#/login"}, "journey": []})
+
+    monkeypatch.setattr(generate_mod.llm_backend, "complete", fake_complete)
+    plan = generate_mod.plan_from_llm(SUBMIT_TRACE, "m", "k", config=SUBMIT_CONFIG)
+    assert "submit_form" in seen["user"]
+    # and the submit survives a plan that left it out
+    assert plan["journey"][-1]["action"] == "submit_form"
