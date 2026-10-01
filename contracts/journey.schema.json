@@ -122,13 +122,19 @@
             "enum": [
               "goto",
               "click",
-              "api_get"
+              "api_get",
+              "submit_form"
             ]
           },
           "target": {
             "type": "string",
             "minLength": 1,
-            "description": "URL/route for goto/api_get, or a selector for click"
+            "description": "URL/route for goto/api_get, or a selector for click/submit_form"
+          },
+          "fields": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+            "description": "Field names a submit_form fills. Names only: the values come from the application's approved explore.test_data at render time, so a plan never carries data."
           }
         }
       }
