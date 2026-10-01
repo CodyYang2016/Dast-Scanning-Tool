@@ -235,6 +235,16 @@ repository with no category share one analysis, and the newer upload **replaces*
 one's alerts. The default of `dast/<app_id>` keeps them apart without any configuration; only
 override it if your organisation already has a naming convention.
 
+**Branch and commit mean the deployment, not the scanner.** GitHub attaches every alert to a
+branch and commit and shows them as *Affected branches*. For a DAST finding the only meaningful
+values are those of the **build running in the environment you scanned** — which the scanner cannot
+work out for itself. Today the upload defaults to `refs/heads/main` and to the commit the *DAST
+tool's* own checkout is on, so an alert can claim a vulnerability lives in code that has nothing to
+do with the application (this is what the Juice Shop demo alerts on the tool's own repository show).
+Until that default is removed (W1-8), pass the deployed build's commit and branch explicitly:
+`python -m detections.github_upload results.sarif --owner … --repo … --ref refs/heads/<deployed
+branch> --commit <deployed sha>`, uploading to the application's repository, not this one.
+
 **Moving an app that already has alerts.** Changing the category — including going from the old
 no-category uploads to `dast/<app_id>` — starts a new analysis. The old alerts are not migrated;
 they stop receiving updates and sit open alongside the new ones. To keep updating existing alerts
