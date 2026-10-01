@@ -311,6 +311,15 @@ def test_an_llm_planned_submit_carries_the_fields_the_walk_filled_not_the_plans(
     assert journey[-1]["fields"] == ["q"]
 
 
+def test_a_plan_with_no_journey_at_all_still_gets_the_walks_submits():
+    from authoring.generate import with_submit_steps
+
+    assert with_submit_steps(None, SUBMIT_TRACE, "http://juice:3000") == [
+        {"action": "goto", "target": "/#/search"},
+        {"action": "submit_form", "target": "form >> nth=0", "fields": ["q"]},
+    ]
+
+
 def test_the_llm_plan_prompt_asks_for_the_submits(monkeypatch):
     from authoring import generate as generate_mod
 
@@ -323,6 +332,11 @@ def test_the_llm_plan_prompt_asks_for_the_submits(monkeypatch):
 
     monkeypatch.setattr(generate_mod.llm_backend, "complete", fake_complete)
     plan = generate_mod.plan_from_llm(SUBMIT_TRACE, "m", "k", config=SUBMIT_CONFIG)
+    # Naming the action is not enough: a model that is not told how to build one emits a
+    # selector with no page, or fields it invented.
     assert "submit_form" in seen["user"]
+    assert "`goto` of the page it was made on" in seen["user"]
+    assert "whose `fields` are its field names" in seen["user"]
+    assert "Field names only" in seen["user"]
     # and the submit survives a plan that left it out
     assert plan["journey"][-1]["action"] == "submit_form"
