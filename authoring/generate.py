@@ -130,7 +130,7 @@ def login_block(config: dict) -> dict:
 
 def validate_plan(plan: dict) -> None:
     """Raise jsonschema.ValidationError if the plan is not a valid journey."""
-    jsonschema.validate(plan, json.loads(_JOURNEY_SCHEMA.read_text()))
+    jsonschema.validate(plan, json.loads(_JOURNEY_SCHEMA.read_text(encoding="utf-8")))
 
 
 def parse_plan_text(text: str) -> dict:
@@ -312,7 +312,7 @@ def emit_manifest(trace: dict) -> dict:
 def emit_lock() -> dict:
     lock: dict[str, str] = {}
     if _VERSIONS_LOCK.exists():
-        for line in _VERSIONS_LOCK.read_text().splitlines():
+        for line in _VERSIONS_LOCK.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if not line or line.startswith("#") or ":" not in line:
                 continue
@@ -338,7 +338,7 @@ def plan_from_llm(trace: dict, model: str, api_key: str | None = None,
     The model's job is the JOURNEY only; the login block is operator config and is substituted
     (before validation) from `config`, so the model cannot influence how we authenticate.
     """
-    schema = _JOURNEY_SCHEMA.read_text()
+    schema = _JOURNEY_SCHEMA.read_text(encoding="utf-8")
     system = (
         "You convert a web-app crawl trace into a STRICT JSON 'journey plan' for an "
         "authenticated DAST scan. Output ONLY the JSON object — no prose, no code fences. "
@@ -405,14 +405,17 @@ def generate(trace: dict, out_dir: str, config: dict, use_llm: bool = True,
 
     d = Path(out_dir)
     d.mkdir(parents=True, exist_ok=True)
-    (d / "journey.json").write_text(json.dumps(plan, indent=2) + "\n")
-    (d / "flow.py").write_text(flow_src)
-    (d / "scope.json").write_text(json.dumps(emit_scope(trace, config), indent=2) + "\n")
-    (d / "auth.json").write_text(json.dumps(emit_auth(config), indent=2) + "\n")
+    (d / "journey.json").write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
+    (d / "flow.py").write_text(flow_src, encoding="utf-8")
+    (d / "scope.json").write_text(json.dumps(emit_scope(trace, config), indent=2) + "\n",
+                                  encoding="utf-8")
+    (d / "auth.json").write_text(json.dumps(emit_auth(config), indent=2) + "\n", encoding="utf-8")
     # json.dumps is valid YAML, so no PyYAML dependency is needed for the .yaml file.
-    (d / "zap-policy.yaml").write_text(json.dumps(emit_zap_policy(config), indent=2) + "\n")
-    (d / "manifest.json").write_text(json.dumps(emit_manifest(trace), indent=2) + "\n")
-    (d / "lock").write_text(json.dumps(emit_lock(), indent=2) + "\n")
+    (d / "zap-policy.yaml").write_text(json.dumps(emit_zap_policy(config), indent=2) + "\n",
+                                       encoding="utf-8")
+    (d / "manifest.json").write_text(json.dumps(emit_manifest(trace), indent=2) + "\n",
+                                     encoding="utf-8")
+    (d / "lock").write_text(json.dumps(emit_lock(), indent=2) + "\n", encoding="utf-8")
     return {"plan_source": source, "journey_steps": len(plan["journey"]), "out_dir": str(d)}
 
 
@@ -429,7 +432,7 @@ def main(argv: list[str] | None = None) -> int:
                    help="Fail instead of falling back when the LLM path cannot be taken")
     args = p.parse_args(argv)
 
-    trace = json.loads(Path(args.trace).read_text())
+    trace = json.loads(Path(args.trace).read_text(encoding="utf-8"))
     config = appconfig.load_app_config(args.app or trace["app_id"])
     model = args.model or llm_backend.default_model()
     try:

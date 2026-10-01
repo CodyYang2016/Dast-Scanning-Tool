@@ -137,7 +137,7 @@ def write_sarif(records: Iterable[dict], fh: TextIO, driver_version: str | None 
 
 def _read_records(source: str | TextIO) -> list[dict]:
     """Read detection records from a JSON array or NDJSON file/stream."""
-    fh = source if hasattr(source, "read") else open(source)
+    fh = source if hasattr(source, "read") else open(source, encoding="utf-8")
     try:
         text = fh.read()
     finally:
@@ -165,7 +165,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.out == "-":
         write_sarif(records, sys.stdout, args.driver_version, args.category)
     else:
-        with open(args.out, "w") as fh:
+        with open(args.out, "w", encoding="utf-8") as fh:
             write_sarif(records, fh, args.driver_version, args.category)
     return 0
 
