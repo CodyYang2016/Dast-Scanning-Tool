@@ -82,5 +82,5 @@ def evidence_relpath(scan_id: str, filename: str = "active-scan.har") -> str:
 def redact_har_file(path: str) -> None:
     """Redact a HAR file in place (read, scrub, overwrite)."""
     p = Path(path)
-    har = json.loads(p.read_text())
-    p.write_text(json.dumps(redact_har(har), indent=2))
+    har = json.loads(p.read_text(encoding="utf-8"))
+    p.write_text(json.dumps(redact_har(har), indent=2), encoding="utf-8")

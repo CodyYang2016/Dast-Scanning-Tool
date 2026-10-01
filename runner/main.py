@@ -97,7 +97,7 @@ def resolve_max_rule_min(cli_value: int | None, policy: dict | None, default: in
 def bundle_app_config(scope_path: str) -> dict | None:
     try:
         from authoring import appconfig
-        scope = json.loads(Path(scope_path).read_text())
+        scope = json.loads(Path(scope_path).read_text(encoding="utf-8"))
         return appconfig.load_app_config(scope["app_id"])
     except Exception:
         return None
@@ -239,10 +239,10 @@ def main(argv: list[str] | None = None) -> int:
 
     gate = evaluate_gate(result.get("authenticated"), guard.ok, records)
     if args.records_out:
-        with open(args.records_out, "w") as fh:
+        with open(args.records_out, "w", encoding="utf-8") as fh:
             write_json_array(records, fh)
     if args.coverage_out:
-        with open(args.coverage_out, "w") as fh:
+        with open(args.coverage_out, "w", encoding="utf-8") as fh:
             json.dump(coverage, fh, indent=2)
 
     print(json.dumps({
