@@ -195,6 +195,22 @@ def deferred_submits(pending: list[tuple[str, str]], observation: dict, here: st
     return out
 
 
+def remaining_links(frontier, observation, visited, scope: dict) -> list[str]:
+    """The in-scope links seen anywhere on this walk that are still unvisited, in the order they
+    were first seen. Pure.
+
+    An observation only describes the page the walk is standing on, so without this the walk can
+    only ever follow a link it can currently see: on the semantic-gate lab it reads /home, steps
+    to /profile, finds nothing there and stops -- with /home's second link never followed. Links
+    are therefore remembered as a frontier and offered again from wherever the walk ends up.
+    """
+    out = [path for path in frontier if path not in visited]
+    for href in observation.get("links", []):
+        if href and href not in visited and href not in out and _in_scope_path(href, scope):
+            out.append(href)
+    return out
+
+
 def vet_values(values, inferred) -> tuple[bool, str]:
     """Whether planner-supplied values are ones the operator permitted, and well-shaped. Pure.
 
@@ -279,6 +295,13 @@ def propose_fallback(observation: dict, visited, scope: dict, deny_actions=None,
                          "reason": "unvisited in-scope link", "confidence": 1.0}
             if validate_proposal(candidate, scope, deny_actions, safe_forms)[0]:
                 return candidate
+    for href in observation.get("unvisited", []):
+        if href and href not in visited and _in_scope_path(href, scope):
+            candidate = {"action": "follow_link", "target": {"method": "GET", "path": href},
+                         "reason": "link seen earlier on this walk, still unvisited",
+                         "confidence": 1.0}
+            if validate_proposal(candidate, scope, deny_actions, safe_forms)[0]:
+                return candidate
     for api in observation.get("api", []):
         path = api.get("url", "")
         if (api.get("method", "GET").upper() == "GET" and path and path not in visited
@@ -335,6 +358,9 @@ def propose_llm(observation: dict, model: str, api_key: str | None = None) -> di
         "Getting an inferable field right is the most valuable thing you can do here: the "
         "application refuses a wrong answer, and whatever lies behind that form stays "
         "unreachable.\n"
+        "The observation's `unvisited` lists in-scope paths seen earlier on this walk that have "
+        "not been visited yet; they are as proposable as the current page's `links`, so prefer "
+        "one of them over stopping.\n"
         "Emit {\"action\":\"stop\"} only when nothing useful remains -- and a form with "
         "`submittable` true whose `path` is not yet in `visited` IS something useful, because "
         "the surface behind it is reachable no other way. Do not stop while one remains.\n"
@@ -574,6 +600,7 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
         steps = 0
         rejected: set[str] = set()
         pending: list[tuple[str, str]] = []   # (page, endpoint) of forms seen but not yet posted
+        frontier: list[str] = []              # in-scope links seen anywhere, still unvisited
         submitted: set[str] = set()
         offered: set[tuple[str, str]] = set()
         forbidden = deny_terms(scope, deny_actions)
@@ -585,6 +612,8 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
             observation["rejected"] = sorted(rejected)
             here = page_path(observation.get("url", ""), base_url)
             pending = deferred_submits(pending, observation, here, submitted, offered)
+            frontier = remaining_links(frontier, observation, visited, scope)
+            observation["unvisited"] = list(frontier)
             action, src = next_action(observation, visited, scope, deny_actions=deny_actions,
                                       safe_forms=safe_forms, test_data=test_data,
                                       inferred=inferred, use_llm=use_llm, model=model,
@@ -596,7 +625,11 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
                 # Nothing here, but a submittable form may be waiting on a page already left.
                 nxt = next((p for p in pending if p[1] not in submitted), None)
                 if nxt is None:
-                    break
+                    if not frontier:
+                        break
+                    _goto(frontier[0])
+                    steps += 1
+                    continue
                 pending.remove(nxt)
                 offered.add(nxt)
                 if nxt[0] != here:

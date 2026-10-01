@@ -745,3 +745,94 @@ def test_the_model_is_told_what_an_inferable_field_is_and_what_bounds_it(monkeyp
     assert "inferable" in seen["system"]
     assert "target.values" in seen["system"]
     assert "never guess at a field that is not inferable" in seen["system"]
+
+
+# ---- the frontier: a link is not forgotten when the walk moves on -------------------------
+
+def test_a_link_seen_earlier_stays_proposable():
+    obs = {"url": "http://app:8080/profile", "links": ["/home"], "forms": []}
+    frontier = explore_mod.remaining_links(["/gate"], obs, {"/home", "/profile"}, GATE_SCOPE)
+    assert frontier == ["/gate"]
+
+
+def test_the_frontier_drops_what_has_since_been_visited_and_keeps_order():
+    obs = {"url": "http://app:8080/home", "links": ["/profile", "/gate", "/home"], "forms": []}
+    frontier = explore_mod.remaining_links([], obs, {"/home"}, GATE_SCOPE)
+    assert frontier == ["/profile", "/gate"]
+    obs2 = {"url": "http://app:8080/profile", "links": [], "forms": []}
+    assert explore_mod.remaining_links(frontier, obs2, {"/home", "/profile"},
+                                       GATE_SCOPE) == ["/gate"]
+
+
+def test_the_fallback_follows_a_remembered_link_rather_than_stopping():
+    obs = {"url": "http://app:8080/profile", "links": [], "forms": [],
+           "unvisited": ["/gate"]}
+    action = explore_mod.propose_fallback(obs, {"/home", "/profile"}, GATE_SCOPE)
+    assert action["action"] == "follow_link"
+    assert action["target"]["path"] == "/gate"
+
+
+def test_the_llm_is_told_the_frontier_is_proposable(monkeypatch):
+    seen = {}
+
+    def fake_complete(system, user, model, **kwargs):
+        seen["system"] = system
+        return '{"action": "stop"}'
+
+    monkeypatch.setattr(explore_mod.llm_backend, "complete", fake_complete)
+    explore_mod.propose_llm({"url": "u", "links": [], "forms": [], "unvisited": ["/gate"]}, "m")
+    assert "`unvisited`" in seen["system"]
+
+
+class _BranchPage(_LoopPage):
+    """Two links off the landing page, and the second one is where the form is."""
+
+    PAGES = {
+        "/home": {"links": ["/profile", "/gate"], "forms": []},
+        "/profile": {"links": ["/home"], "forms": []},
+        "/gate": {"links": [], "forms": [{"selector": "form >> nth=0", "path": "/gate",
+                                          "method": "POST", "fields": ["token", "answer"]}]},
+    }
+
+
+def test_the_walk_follows_the_second_branch_instead_of_stopping_on_a_dead_end(monkeypatch):
+    """The semgate failure: /profile is a dead end, and /gate was never read at all."""
+    base = "http://app:8080"
+    page = _BranchPage(base)
+    monkeypatch.setitem(sys.modules, "playwright", types.ModuleType("playwright"))
+    sync_api = types.ModuleType("playwright.sync_api")
+    sync_api.sync_playwright = _fake_playwright(page)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", sync_api)
+    monkeypatch.setattr(explore_mod, "prove_auth_live",
+                        lambda *a, **k: {"alive": True, "reason": "ok"})
+
+    trace, _guard = explore_mod.explore(
+        "app", base, {}, ["/home"], {"app_id": "app", "fqdn_allow_list": ["app"]},
+        use_llm=False, max_pages=10,
+        config={"base_url": base, "auth": {"proof": {"selector": "#ok"}},
+                "explore": {"safe_forms": ["/gate"], "write_mode": "allow",
+                            "test_data": {"note": "dast-test"},
+                            "inferred_fields": {"answer": {"pattern": "^[0-9]{1,3}$"}}}})
+
+    assert "/gate" in [ev.get("url", "")[len(base):] for ev in trace["interactions"]
+                       if ev.get("type") == "goto"]
+    # the deterministic arm reaches the gate and does not invent an answer for it
+    assert [ev for ev in trace["interactions"]
+            if ev.get("type") == "submit" and ev.get("inferred")] == []
+
+
+def test_a_link_on_several_pages_is_remembered_once():
+    """The frontier carries forward, so a link seen again is already in it, not appended twice."""
+    nav = {"links": ["/gate", "/profile"], "forms": []}
+    frontier = explore_mod.remaining_links([], dict(nav, url="http://app:8080/home"),
+                                           {"/home"}, GATE_SCOPE)
+    frontier = explore_mod.remaining_links(frontier, dict(nav, url="http://app:8080/profile"),
+                                           {"/home", "/profile"}, GATE_SCOPE)
+    assert frontier == ["/gate"]
+
+
+def test_a_queued_link_reached_another_way_leaves_the_frontier():
+    frontier = ["/gate", "/profile"]
+    obs = {"url": "http://app:8080/gate", "links": [], "forms": []}
+    assert explore_mod.remaining_links(frontier, obs, {"/home", "/gate"},
+                                       GATE_SCOPE) == ["/profile"]
