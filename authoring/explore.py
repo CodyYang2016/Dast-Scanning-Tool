@@ -503,6 +503,25 @@ def _observe(page, base_url: str, api_events: list[dict], test_data: dict,
     return {"url": page.url, "links": clean, "forms": forms, "api": list(api_events)}
 
 
+def submit_outcome(responses: list[dict], path: str) -> dict:
+    """What the application answered to a submit of `path`: {"status": int, "accepted": bool}, or
+    {} if no response to it was observed. Pure.
+
+    A posted form is not an exercised workflow. Without the status, `submits` counts requests the
+    application may have refused, and a walk that answered a validating form wrongly is reported
+    exactly like one that answered it right -- the coverage claim would be unfalsifiable.
+    """
+    for seen in reversed(responses):
+        if seen.get("method", "").upper() == "GET":
+            continue
+        if urlsplit(seen.get("url", "")).path == path:
+            status = seen.get("status")
+            if not isinstance(status, int):
+                return {}
+            return {"status": status, "accepted": status < 400}
+    return {}
+
+
 def _submit(page, selector: str, plan: list[tuple[str, str]], events: list[dict],
             inferred_names=None) -> None:
     """Fill a form with approved values and submit it through the page's own handlers.
@@ -577,6 +596,9 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
         page.route("**/*", lambda route: guard.route_handler(route))  # safety layer 2
         page.on("request", lambda r: api_events.append({"type": "request", "method": r.method,
                 "url": r.url}) if any(m in r.url for m in api_patterns) else None)
+        responses: list[dict] = []
+        page.on("response", lambda r: responses.append(
+            {"method": r.request.method, "url": r.url, "status": r.status}))
 
         liveness = prove_auth_live(page, base_url, seed_routes[0], proof=proof)
         if not liveness["alive"]:
@@ -654,6 +676,7 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
                 if not plan:
                     break  # no approved value for any field: fail closed rather than post blanks
                 _submit(page, arg, plan, events, inferred_fields_of(plan, test_data))
+                events[-1].update(submit_outcome(responses, action["target"]["path"]))
                 visited.add(action["target"]["path"])
                 submitted.add(action["target"]["path"])
             else:  # click a selector (expand_nav); never a navigation
@@ -738,6 +761,13 @@ def main(argv: list[str] | None = None) -> int:
         # supplying it: the number that says whether a validating form was actually answered.
         "inferred_submits": sum(1 for ev in trace["interactions"]
                                 if ev.get("type") == "submit" and ev.get("inferred")),
+        # Of the submits, the ones the application answered without refusing: a posted form the
+        # app rejected is not coverage, and an inferred value that was wrong looks identical
+        # under `submits` alone.
+        "accepted_submits": sum(1 for ev in trace["interactions"]
+                                if ev.get("type") == "submit" and ev.get("accepted")),
+        "refused_submits": sum(1 for ev in trace["interactions"]
+                               if ev.get("type") == "submit" and ev.get("accepted") is False),
         "hosts": trace["hosts"],
         "requests_seen": len(guard.decisions), "blocked": len(guard.violations),
         # How much of the walk the model actually drove: all-fallback steps with the LLM enabled
