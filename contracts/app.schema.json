@@ -493,12 +493,17 @@
             "ref": {
               "type": "string",
               "minLength": 1,
-              "description": "Git ref the results belong to. Default: refs/heads/main"
+              "description": "Ref of the DEPLOYED build that was scanned, e.g. refs/heads/main. No default: GitHub shows it on every alert as the affected branch. Usually supplied per run by --ref or $DAST_TARGET_REF rather than committed here."
             },
             "category": {
               "type": "string",
               "minLength": 1,
               "description": "Automation category separating this application's analysis from another's. GitHub keys an analysis by (tool, category, ref), so two applications sharing one must not share a category or the newer upload replaces the older one's alerts. Default: dast/<app_id>"
+            },
+            "commit": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F]{40}$",
+              "description": "Full SHA of the DEPLOYED build that was scanned. No default \u2014 the scanner's own checkout is not the target (W1-8). Usually supplied per run by --commit or $DAST_TARGET_COMMIT from the deploy pipeline, since it changes every deploy; set it here only for a pinned target."
             }
           }
         }

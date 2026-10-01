@@ -127,6 +127,28 @@ def _first_set(cli, env, config, default):
     return default, "default"
 
 
+def publish_target(args, gh: dict, env) -> dict:
+    """Where results would be published, and AS WHAT, each field with the rung that decided it.
+
+    The ref and commit describe the DEPLOYMENT that was scanned — GitHub shows them on every
+    alert as "Affected branches". They used to default to refs/heads/main and to the DAST tool's
+    own HEAD, which put a Juice Shop SQL injection on a commit of the scanner's repository
+    (W1-8). Neither has a default now: unset stays unset, and the upload refuses to proceed.
+    """
+    def pick(cli, env_name, cfg_key, default=None):
+        value, source = _first_set(cli, env.get(env_name) if env_name else None,
+                                   gh.get(cfg_key), default)
+        return {"value": value, "source": source if value else "unset"}
+
+    return {
+        "owner": pick(args.owner, "DAST_GH_OWNER", "owner"),
+        "repo": pick(args.repo, "DAST_GH_REPO", "repo"),
+        "ref": pick(args.ref, "DAST_TARGET_REF", "ref"),
+        "commit": pick(getattr(args, "commit", None), "DAST_TARGET_COMMIT", "commit"),
+        "category": pick(args.category, None, "category", default_category(args.app)),
+    }
+
+
 def default_category(app_id: str) -> str:
     """One analysis per application.
 
@@ -427,19 +449,12 @@ def cmd_report(args) -> int:
         gh = appconfig.github_publish(appconfig.load_app_config(args.app))
     except Exception:
         pass
-    owner, owner_src = _first_set(args.owner, os.environ.get("DAST_GH_OWNER"),
-                                  gh.get("owner"), None)
-    repo, repo_src = _first_set(args.repo, os.environ.get("DAST_GH_REPO"), gh.get("repo"), None)
-    ref, ref_src = _first_set(args.ref, None, gh.get("ref"), "refs/heads/main")
-    category, cat_src = _first_set(args.category, None, gh.get("category"),
-                                   default_category(args.app))
+    target = publish_target(args, gh, os.environ)
+    category = target["category"]["value"]
 
     (run_dir / "settings.json").write_text(json.dumps({
         "output_dir": {"value": str(paths.root), "source": output_source(args)},
-        "github": {"owner": {"value": owner, "source": owner_src},
-                   "repo": {"value": repo, "source": repo_src},
-                   "ref": {"value": ref, "source": ref_src},
-                   "category": {"value": category, "source": cat_src}},
+        "github": target,
     }, indent=2) + "\n")
 
     # Coverage-aware publishing: the export drops `resolved` and carries `not_scanned`
@@ -456,11 +471,20 @@ def cmd_report(args) -> int:
     # THAT they go, because a Security tab is a one-way door.
     if args.upload:
         from detections import github_upload
+        owner, repo = target["owner"]["value"], target["repo"]["value"]
+        commit, ref = target["commit"]["value"], target["ref"]["value"]
         if not (owner and repo):
             print("--upload needs a destination: --owner/--repo, $DAST_GH_OWNER/$DAST_GH_REPO, "
                   "or publish.github in app.yaml", file=sys.stderr)
             return 2
-        return github_upload.main([str(sarif), "--owner", owner, "--repo", repo, "--ref", ref])
+        if not (commit and ref):
+            print("--upload needs the DEPLOYED build that was scanned, so GitHub attributes the "
+                  "findings to it and not to this tool: --commit <sha> --ref refs/heads/<branch>, "
+                  "$DAST_TARGET_COMMIT/$DAST_TARGET_REF (normally set by the deploy pipeline), or "
+                  "publish.github.commit/ref in app.yaml", file=sys.stderr)
+            return 2
+        return github_upload.main([str(sarif), "--owner", owner, "--repo", repo,
+                                   "--ref", ref, "--commit", commit])
     return 0
 
 
@@ -545,7 +569,11 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--upload", action="store_true", help="publish to GitHub code scanning")
     r.add_argument("--owner", default=None)
     r.add_argument("--repo", default=None)
-    r.add_argument("--ref", default=None)
+    r.add_argument("--ref", default=None,
+                   help="Ref of the DEPLOYED build that was scanned, e.g. refs/heads/main")
+    r.add_argument("--commit", default=None,
+                   help="Full SHA of the DEPLOYED build that was scanned. Required to upload; "
+                        "there is no default, because this tool's own checkout is not the target")
     r.add_argument("--category", default=None,
                    help="Automation category for the Security tab (default: dast/<app>). Two "
                         "applications must not share one, or the newer upload replaces the "

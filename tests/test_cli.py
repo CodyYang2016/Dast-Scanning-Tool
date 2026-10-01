@@ -207,3 +207,54 @@ def test_the_recorded_output_source_names_the_rung_that_won(monkeypatch, tmp_pat
     assert dast.output_source(args) == "env"
     monkeypatch.delenv("DAST_OUT")
     assert dast.output_source(args) == "default"
+
+
+# ---- W1-8: publish against the scanned deployment, never the scanner's checkout ----------
+
+_SHA = "0123456789abcdef0123456789abcdef01234567"
+
+
+def _target(cli=None, env=None, cfg=None, app="dvwa"):
+    import argparse
+    a = argparse.Namespace(owner=None, repo=None, ref=None, commit=None, category=None, app=app)
+    for k, v in (cli or {}).items():
+        setattr(a, k, v)
+    return dast.publish_target(a, cfg or {}, env or {})
+
+
+def test_the_deployed_commit_comes_from_cli_then_pipeline_then_config():
+    assert _target(cli={"commit": _SHA}, env={"DAST_TARGET_COMMIT": "e" * 40},
+                   cfg={"commit": "d" * 40})["commit"] == {"value": _SHA, "source": "cli"}
+    assert _target(env={"DAST_TARGET_COMMIT": "e" * 40},
+                   cfg={"commit": "d" * 40})["commit"] == {"value": "e" * 40, "source": "env"}
+    assert _target(cfg={"commit": "d" * 40})["commit"] == {"value": "d" * 40, "source": "config"}
+
+
+def test_with_nothing_supplied_there_is_no_commit_and_no_ref():
+    # Previously the ref silently defaulted to refs/heads/main and the commit to the DAST tool's
+    # own HEAD. Unset now stays unset, and says so.
+    t = _target()
+    assert t["commit"] == {"value": None, "source": "unset"}
+    assert t["ref"] == {"value": None, "source": "unset"}
+
+
+def test_the_ref_follows_the_same_ladder():
+    assert _target(env={"DAST_TARGET_REF": "refs/heads/release"})["ref"]["source"] == "env"
+
+
+def test_the_category_still_defaults_per_application():
+    assert _target(app="dvwa")["category"] == {"value": "dast/dvwa", "source": "default"}
+
+
+def test_a_config_commit_is_accepted_by_the_contract():
+    import yaml
+    cfg = yaml.safe_load(open(appconfig._APPS_DIR / "dvwa" / "app.yaml"))
+    cfg["publish"] = {"github": {"owner": "o", "repo": "r", "ref": "refs/heads/main",
+                                 "commit": _SHA}}
+    import jsonschema, json
+    jsonschema.validate(cfg, json.loads((dast.ROOT / "contracts" / "app.schema.json").read_text()))
+
+
+def test_report_accepts_a_commit_flag():
+    args = dast.build_parser().parse_args(["report", "dvwa", "--commit", _SHA])
+    assert args.commit == _SHA
