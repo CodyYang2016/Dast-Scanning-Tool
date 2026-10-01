@@ -20,7 +20,7 @@ from pathlib import Path
 import jsonschema
 
 from authoring import appconfig
-from runner.replay import wait_for_auth
+from runner.replay import AuthProofError, wait_for_auth
 
 _ROOT = Path(__file__).resolve().parent.parent
 _SEED_SCHEMA = _ROOT / "contracts" / "seed.schema.json"
@@ -96,6 +96,20 @@ def preflight_login_page(page, url: str, status: int | None, steps: list[dict], 
             f"  page title: {page.title()!r}\n"
             "  hint: if landed-on differs from requested the app redirected (setup/error page); "
             "otherwise auth.steps does not match this login page")
+
+
+def proof_failure_detail(page, exc: Exception) -> str:
+    """The proof failure, plus the page it failed on.
+
+    A wrong credential is not an error in most applications: the login page simply re-renders, so
+    the proof times out and the timeout alone cannot distinguish "these credentials are wrong"
+    from "auth.proof does not match a logged-in page". The URL landed on separates them.
+    """
+    return (f"{exc}\n"
+            f"  landed on: {page.url}\n"
+            f"  page title: {page.title()!r}\n"
+            "  hint: still on the login page means the credentials were rejected (the form\n"
+            "        re-renders rather than erroring); past it means auth.proof does not match")
 
 
 def load_seed(path: str) -> dict:
@@ -197,7 +211,10 @@ def capture_session(config: dict, storage_state: str | None = None, *,
                 elif action == "wait_for":
                     page.wait_for_selector(sel, timeout=15000)
         # Wait for auth to be established (human finishes login, or the assisted login lands).
-        wait_for_auth(page, base_url, proof, timeout_ms=timeout_ms)
+        try:
+            wait_for_auth(page, base_url, proof, timeout_ms=timeout_ms)
+        except AuthProofError as exc:
+            raise AuthProofError(proof_failure_detail(page, exc)) from exc
         context.storage_state(path=storage_state)
         browser.close()
     return storage_state
@@ -225,11 +242,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"SEED ABORT: {exc}", file=sys.stderr)
             return 2
     headless = not (args.headed or not args.assisted)  # manual seed is headed so the human can act
+    # A human needs minutes for SSO/MFA; a submitted login form either lands or does not.
+    timeout_ms = 30000 if args.assisted else 180000
     try:
         path = capture_session(config, args.storage_state, base_url=args.base_url,
-                               email=email, password=password,
+                               email=email, password=password, timeout_ms=timeout_ms,
                                zap_proxy=args.zap_proxy, headless=headless)
-    except SeedPreflightError as exc:
+    except (SeedPreflightError, AuthProofError) as exc:
         print(f"SEED ABORT: {exc}", file=sys.stderr)
         return 2
     print(f"seeded session saved -> {path}")
