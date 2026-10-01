@@ -58,7 +58,7 @@ def preflight(scope_path: str, schema_path: str = _DEFAULT_SCHEMA) -> dict:
     if not os.path.exists(scope_path):
         raise PreflightError(f"scope file not found: {scope_path}")
     try:
-        with open(scope_path) as fh:
+        with open(scope_path, encoding="utf-8") as fh:
             scope = json.load(fh)
     except (json.JSONDecodeError, OSError) as exc:
         raise PreflightError(f"could not read scope.json: {exc}") from exc
@@ -70,7 +70,7 @@ def preflight(scope_path: str, schema_path: str = _DEFAULT_SCHEMA) -> dict:
 
     # ... then full structural validation against the contract schema.
     try:
-        with open(schema_path) as fh:
+        with open(schema_path, encoding="utf-8") as fh:
             schema = json.load(fh)
     except OSError as exc:
         raise PreflightError(f"could not read scope schema: {exc}") from exc

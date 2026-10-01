@@ -58,7 +58,7 @@ def load_policy(path: str) -> dict | None:
     p = Path(path)
     if not p.is_file():
         return None
-    loaded = yaml.safe_load(p.read_text())
+    loaded = yaml.safe_load(p.read_text(encoding="utf-8"))
     return loaded if isinstance(loaded, dict) else None
 
 
@@ -200,7 +200,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.out == "-":
         print(payload)
     else:
-        with open(args.out, "w") as fh:
+        with open(args.out, "w", encoding="utf-8") as fh:
             fh.write(payload + "\n")
     print(f"scanned {args.target}: {len(report.get('alerts', []))} alerts", file=sys.stderr)
     return 0
