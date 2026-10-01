@@ -301,7 +301,13 @@ scope guard live (S4/NFR-4) → bounded active scan (S1/S2) → normalize (N1)
 ```
 
 ### The gate (pure, unit-tested in `tests/test_main.py`)
-`evaluate_gate(...)` returns `passed = authenticated AND scope_ok AND has_high_or_medium`.
+`evaluate_gate(...)` is a **health gate** by default: `passed = authenticated AND scope_ok AND
+routes_tested > 0`. A scan that tested nothing never passes — the W6-13 lesson, where an
+over-broad exclusion turned a Juice Shop scan into a scan of nothing and the old gate still
+passed. With `--expect-findings` it also requires `has_high_or_medium`, for self-tests against
+deliberately vulnerable apps. It used to require findings unconditionally, which made a *clean*
+application fail every pipeline (W3-2). Whether findings fail a build is decided by `dast
+report`'s policy gate, after the lifecycle diff, on **new** findings only (`detections/gate.py`).
 Exit 0 only if the gate passes; non-zero on any abort (preflight/scope/scan) or a failed gate.
 
 ### Fresh session per run
@@ -376,7 +382,8 @@ found and fixed (distroless healthcheck, Chromium root/sandbox, Playwright pin) 
 ### The single command (NFR-5)
 ```bash
 docker compose up --build --abort-on-container-exit --exit-code-from runner
-# builds the runner, starts juice + zap, runs the scan, and exits with the Phase 1 gate code
+# builds the runner, starts juice + zap, runs the scan, and exits with the gate code
+# (compose passes --expect-findings: a self-test against a deliberately vulnerable app)
 ```
 
 ### Readiness

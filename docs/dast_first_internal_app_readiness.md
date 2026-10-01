@@ -126,7 +126,7 @@ Confirmed against the committed ZAP fixture (38 alerts): the content already exi
 | Task | Detail | Owner | Sessions |
 | --- | --- | --- | --- |
 | One scheduled workflow | scan → `lifecycle_diff` → `sarif_export` → upload → retain evidence. No `.github/workflows/` exists today and upload is a manual `gh` call | Tool | 1 |
-| Split the demo assertion from the policy gate | `evaluate_gate()` passes only when a high/medium finding exists, so a clean app fails — this must not be consumed as a CI gate | Tool | 0.5 |
+| Split the demo assertion from the policy gate | ✅ done (W3-2) — `scan` is a health gate by default (authenticated, in scope, ≥1 route tested), `--expect-findings` keeps the self-test, and `dast report` fails only on **new** findings at or above `gate.fail_on` | Tool | 0.5 |
 | Structured logging with a scan id (NFR-4) | Only `runner/scope_guard.py` logs today; you will be asked to evidence what the scanner did to that environment | Tool | 1 |
 | Durable state | `out/state.json` holds every record of the last scan and is the de facto database | Tool | 1 |
 | Confirm GitHub Advanced Security on the target repo | SARIF upload will not surface alerts without it | App | — |

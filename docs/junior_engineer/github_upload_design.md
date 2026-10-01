@@ -50,7 +50,8 @@ Uploaded the fixture-derived SARIF to `CodyYang2016/Dast-Scanning-Tool`:
 - **`--commit` and `--ref` describe the scanned deployment, and have no default (W1-8).** GitHub
   shows them on every alert as the affected branch. They used to default to `refs/heads/main` and
   to `git rev-parse HEAD` *in this tool's checkout* — so alert #1329, a Juice Shop SQL injection,
-  was recorded against a commit of the scanner. Pointed at an application's real repository that
+  was recorded against a commit of the scanner (that test data has since been deleted; Juice
+  Shop's findings now go to a fork of Juice Shop at its deployed build). Pointed at an application's real repository that
   default would have been rejected outright, since the scanner's SHA does not exist there. Now the
   commit and ref come from `--commit`/`--ref`, `$DAST_TARGET_COMMIT`/`$DAST_TARGET_REF`, or
   `publish.github` in `app.yaml`, and the upload refuses without them. Uploading demo results to

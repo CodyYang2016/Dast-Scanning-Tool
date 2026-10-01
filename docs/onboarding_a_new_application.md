@@ -184,8 +184,69 @@ What good looks like:
 
 - **author** — `recorded: N interactions … hosts=['my-app']` (the host must be the one ZAP
   resolves), then `"passed": true` for both the allow-list and the live auth replay.
-- **scan** — a gate with `authenticated: true`, `scope_ok: true`, `blocked: 0`.
-- **report** — `lifecycle: new=…` on the first run, `open=…` on the next.
+- **scan** — a gate with `authenticated: true`, `scope_ok: true`, `routes_tested` above zero,
+  `blocked: 0`.
+- **report** — `lifecycle: new=…` on the first run, `open=…` on the next, then a `gate:` line.
+
+### Two gates, and which one fails your build
+
+**`scan` checks the scan was healthy**: it authenticated, stayed in scope, and tested at least
+one route. A scan that tested nothing never passes — an over-broad exclusion once turned a Juice
+Shop scan into exactly that, and an older gate passed it. Findings do not affect this gate, so a
+clean application passes. (`--expect-findings` adds "and found a high or medium", for self-tests
+against deliberately vulnerable apps where finding nothing means the scanner is broken.)
+
+**`report` decides whether findings fail the build**, because only after the lifecycle diff is it
+known which findings are **new**. It exits `1` when a new finding is at or above the threshold:
+
+```yaml
+gate:
+  fail_on: high        # critical | high | medium | low | none   (default: high)
+```
+
+`--fail-on` or `$DAST_FAIL_ON` override it per run. A finding that already existed does not fail
+the build again: it has been seen and is somebody's decision, and failing every build on it
+forever is how gates get switched off. SARIF is written and an explicit `--upload` still runs
+when the gate fails, so the evidence is published either way. Exit `2` means a tool error.
+
+### Marking a finding as a false positive, accepted risk, or not yours
+
+Record the decision in `security/dast/<app>/suppressions.yaml`, keyed by the finding's
+fingerprint (in `labeled.json`, or on the alert):
+
+```yaml
+suppressions:
+  - fingerprint: 5910c6477d624b6e553d51983b2fb5beab3f6eb1357d58b06875ce0934b78487
+    reason: accepted_risk          # false_positive | accepted_risk | wont_fix | test_data
+    justification: "Example only — say why, so a reviewer can check it without asking."
+    owner: appsec-team
+    expires: "2026-12-31"          # required for accepted_risk and wont_fix
+```
+
+`dast report` then labels it `suppressed`: it no longer counts toward the gate or the totals, but
+it is **still published** — dropping it from the upload is how GitHub would decide it was fixed —
+and carries the justification as SARIF's suppression marker. When `expires` passes, the finding
+counts again and `report` says so. The lifecycle history underneath is unchanged.
+
+**GitHub ignores that marker.** Verified by uploading a suppressed finding: its alert (#1501, since
+deleted with the rest of that test data) stayed open. A suppression here governs *this tool's* gate and counts; to hide an alert in the Security
+tab, dismiss it there — and `dast triage --from-github` below brings that decision back into
+`suppressions.yaml`, so the two agree.
+
+Dismissed something in GitHub's UI instead? `dast triage <app> --from-github` reads the dismissed
+alerts and writes `suppressions.proposed.yaml` beside the real file, for you to review and merge.
+It never applies anything itself. GitHub does not expose fingerprints, so each alert is matched by
+recomputing ours from its rule, location and the parameter its message names; an older alert that
+names no parameter is matched only when that is unambiguous, and listed otherwise.
+
+### Running it in CI
+
+Every push runs `ruff` and the test suite (`.github/workflows/tests.yml`). A weekly workflow,
+`dast-selftest.yml`, scans Juice Shop through compose with `--expect-findings` — a canary that goes
+red if the scanner ever stops finding vulnerabilities in an app that has them — and keeps the
+results as a downloadable artifact. It publishes nothing unless run by hand with `upload` ticked.
+For your own application, the natural home for `dast scan` and `dast report` is the app's deploy
+pipeline, which knows the deployed commit to pass as `DAST_TARGET_COMMIT`.
 
 Artifacts land under `out/<app>/` by default: `authoring/` (trace and bundle) and
 `scans/<scan_id>/` (records, coverage, labels, SARIF, redacted evidence).
@@ -235,6 +296,10 @@ repository with no category share one analysis, and the newer upload **replaces*
 one's alerts. The default of `dast/<app_id>` keeps them apart without any configuration; only
 override it if your organisation already has a naming convention.
 
+GitHub splits the uploaded id at its **last** `/` into category and run id, so the tool sends
+`dast/<app_id>/<scan_id>` and GitHub files it under `dast/<app_id>`. (Sending `dast/<app_id>` alone
+was read as category `dast` for every app — found on a real upload, and why the scan id is there.)
+
 **Branch and commit mean the deployment, not the scanner.** GitHub attaches every alert to a
 branch and commit and shows them as *Affected branches*. For a DAST finding the only meaningful
 values are those of the **build running in the environment you scanned**, which the scanner cannot
@@ -249,8 +314,14 @@ In a pipeline, set `DAST_TARGET_COMMIT` and `DAST_TARGET_REF` in the deploy step
 target pinned to one build, `publish.github.commit`/`ref` in `app.yaml` also work. The commit must
 be a full 40-character SHA and the ref a full `refs/heads/…`. Each run's `settings.json` records
 which of the three supplied them. (Earlier versions defaulted to `refs/heads/main` and to the DAST
-tool's *own* checkout, which is why the Juice Shop demo alerts on this repository claim to live in
-the scanner's `main` — W1-8.) Upload to the **application's** repository, not this one.
+tool's *own* checkout, so early Juice Shop alerts claimed to live in the scanner's `main` — W1-8;
+they have since been deleted.) Upload to the **application's** repository, not this one.
+
+Juice Shop's own config is the worked example. GitHub only accepts a commit that exists in the
+repository you upload to, so its findings go to a fork of Juice Shop, on a `deployed/v20.2.0`
+branch at the commit its pinned image was built from — see `publish` in
+`security/dast/juice-shop/app.yaml`, and an alert as it lands:
+https://github.com/CodyYang2016/juice-shop/security/code-scanning/1195
 
 **Moving an app that already has alerts.** Changing the category — including going from the old
 no-category uploads to `dast/<app_id>` — starts a new analysis. The old alerts are not migrated;
@@ -269,6 +340,7 @@ SQL Injection                                                  High
 /rest/user/login
 SQL Injection in parameter `email` — ZAP sent `'` and the server answered
 `HTTP/1.1 500 Internal Server Error`. Confidence: Low.
+Reproduce: `POST /rest/user/login` → 500.
 
 ▾ Rule help
   SQL injection may be possible.
@@ -280,7 +352,15 @@ The **confidence** is worth reading first: a Low-confidence finding based on a b
 to confirm by hand, not a confirmed injection. The evidence and payload are redacted (tokens,
 bearer values, secret-named fields, emails) and capped at 500 characters before they are stored
 or published; the redactor cannot recognise an opaque session id with no telling key name, so do
-not treat excerpts as guaranteed clean. Not yet included: the full request/response pair (W1-3).
+not treat excerpts as guaranteed clean.
+
+**Reproduce** is the request a developer replays. For every high and medium finding the scan also
+stores the full exchange ZAP sent and received, redacted — credential headers (`Cookie`,
+`Authorization`, `Set-Cookie`, API-key headers) keep their name and lose their value, and secret
+form and JSON fields are scrubbed — with the response cut to the part around the evidence. It sits
+at `exchange_path` in the scan's evidence directory (`messages/<fingerprint>.txt`). It is captured
+during the scan because ZAP discards it when the next scan starts. It is not yet linked from the
+GitHub alert itself (W1-4); in CI it ships in the run's artifact.
 
 ---
 

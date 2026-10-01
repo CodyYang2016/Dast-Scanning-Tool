@@ -733,8 +733,13 @@ time $PY -m runner.main \
   --scope out/phase2-demo/gen/scope.json \
   --base-url http://juice:3000 --zap-api http://localhost:8080 --zap-proxy http://localhost:8080 \
   --records-out out/phase2-demo/live-records.json \
-  --coverage-out out/phase2-demo/live-coverage.json; echo "exit=$?"
+  --coverage-out out/phase2-demo/live-coverage.json --expect-findings; echo "exit=$?"
 ```
+`--expect-findings` makes the gate a **self-test**: Juice Shop is deliberately vulnerable, so it
+must find something or the scanner is broken. Without the flag the gate checks health only —
+authenticated, in scope, and at least one route tested — so that a *clean* app passes in a real
+pipeline (W3-2). Whether findings fail a build is `dast report`'s policy gate, which can see
+which findings are new.
 **SAY** (as it starts) "Nothing in `runner/`, `scope_guard.py`, or the normalizer changed. Same
 preflight, same guard, same bounded scan — just a generated `flow.py` and `scope.json` instead
 of hand-authored ones. Preflight runs first, offline: it would abort here if the scope were
@@ -773,7 +778,8 @@ $PY -m runner.main --flow out/phase2-demo/gen/flow.py \
 **Back in Terminal A, SEE** the gate:
 ```json
 { "scan_id": "2026…Z", "app_id": "juice-shop", "requests_seen": <n>, "blocked": 0,
-  "gate": { "authenticated": true, "scope_ok": true, "has_high_or_medium": true,
+  "gate": { "mode": "expect-findings", "authenticated": true, "scope_ok": true,
+            "routes_tested": <hundreds>, "has_high_or_medium": true,
             "detections": <hundreds+>, "passed": true } }
 exit=0
 ```
@@ -784,8 +790,10 @@ detections: 1490`, **2m54s**. Explore trace with the `--no-llm` proposer: `detec
 **SAY** "Same runner, same budget — the explored bundle surfaced 20–30% more detections than
 the human walk, because it exercised more of the authenticated app. That's KI4 closing."
 
-**SAY** "Authenticated, in scope, high/medium found, gate passed, exit 0 — the exact Phase 1
-gate, driven by a generated bundle. That's the Week-2 checkpoint."
+**SAY** "Authenticated, in scope, hundreds of routes tested, high/medium found — the self-test
+gate passed, exit 0, driven by a generated bundle. In a real pipeline the same scan runs without
+`--expect-findings`, so a clean app passes; what fails a build is a *new* high, decided at the
+report stage."
 
 ---
 
@@ -965,7 +973,7 @@ $PY -m authoring.generate --app juice-shop --trace out/phase2-demo/explore/trace
 $PY -m authoring.validate --plan out/phase2-demo/gen/journey.json --scope out/phase2-demo/gen/scope.json --flow out/phase2-demo/gen/flow.py --base-url http://juice:3000 --zap-proxy http://localhost:8080 --report out/phase2-demo/validation-report.json; echo exit=$?
 
 # ---- Part G ----
-time $PY -m runner.main --flow out/phase2-demo/gen/flow.py --scope out/phase2-demo/gen/scope.json --base-url http://juice:3000 --zap-api http://localhost:8080 --zap-proxy http://localhost:8080 --records-out out/phase2-demo/live-records.json --coverage-out out/phase2-demo/live-coverage.json; echo exit=$?
+time $PY -m runner.main --flow out/phase2-demo/gen/flow.py --scope out/phase2-demo/gen/scope.json --base-url http://juice:3000 --zap-api http://localhost:8080 --zap-proxy http://localhost:8080 --records-out out/phase2-demo/live-records.json --coverage-out out/phase2-demo/live-coverage.json --expect-findings; echo exit=$?
 
 # ---- Part H (coverage-aware: diff first, export the labeled set) ----
 $PY -m detections.lifecycle_diff out/phase2-demo/live-records.json --app-id juice-shop --state out/state.json --coverage out/phase2-demo/live-coverage.json -o out/phase2-demo/live-labeled.json

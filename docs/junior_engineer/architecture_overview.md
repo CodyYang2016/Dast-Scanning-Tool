@@ -28,7 +28,7 @@ username login) and **WebGoat** (Spring Boot, registered account). WebGoat took 
 Scanner: **OWASP ZAP** 2.17.0. Browser automation: **Playwright + Chromium**. LLM: **Claude**
 (Anthropic API), at authoring time only.
 
-**Status:** built, tested (518 tests) and verified end-to-end on real data. The headline result:
+**Status:** built, tested (674 tests, run on every push) and verified end-to-end on real data. The headline result:
 against DVWA, autonomous discovery with **zero hand-picked routes** finds **7 high-severity
 findings including all 5** a human's hand-written route list produced, and two consecutive scans
 return the same set. Getting there meant fixing five defects that a green test suite could not
@@ -56,6 +56,7 @@ dast author  <app>   # record (or seed+explore) -> generate -> validate
 dast scan    <app>   # preflight -> replay -> ZAP -> normalize + coverage
 dast report  <app>   # lifecycle diff -> SARIF -> (--upload) GitHub
 dast explain <app>   # why did findings disappear between the last two scans?
+dast triage  <app>   # propose suppressions from GitHub dismissals, for review
 ```
 
 ```mermaid
@@ -143,11 +144,12 @@ flowchart LR
 | `replay.py` | S1, R2 | Launch Chromium proxied through ZAP; run the flow (`replay`) or a seeded session (`replay_seeded` + `prove_auth_live`) so ZAP observes authenticated traffic |
 | `scope_guard.py` | S4, NFR-4 | **Safety layer 2** — `page.route` interceptor; block/log/fail out-of-allow-list requests. Phase-split: `enforce` (fail closed) for scans, `discovery` (block-and-continue) for exploration |
 | `action_policy.py` | — | Exploration safety: default-deny state-changing verbs + `avoid_action_list`; decides if an LLM-proposed action may execute (never trusts the LLM's label) |
-| `redact.py` | — | Scrub JWT/bearer/secret-keys/email from DOM/XHR observations **before** they reach the LLM |
+| `redact.py` | W5-5 | Scrub secrets before anything leaves the boundary: JWTs, bearer tokens, secret-named JSON and form fields, emails, and the values of credential headers (`Cookie`, `Authorization`, `Set-Cookie`, API-key headers). Used on everything the LLM sees, every evidence excerpt and every stored request/response. **Linear in its input** — the text comes from the target, so its length is not ours to choose |
 | `scan.py` | S1, S2 | Spider + bounded active scan → raw ZAP JSON. Also applies **scan exclusions** (W6-11): the `avoid_actions` the config already declares, plus the login page, are excluded from spider and active scan alike — without this the scanner attacks the application's own controls and destroys the state its findings depend on |
 | `coverage.py` | — (R2) | What the scan actually exercised: routes, **per-route parameters** (W6-10), enabled rules, **per-rule outcomes** from ZAP's scan progress (W6-2), and an **app-state fingerprint** — digests of a few probe URLs fetched through the scan's own session (W6-8) so two scans can be compared for "was the app even in the same condition?" |
 | `evidence.py` | E1 | Capture HAR + screenshot, **redact secrets**, reference from records/SARIF |
-| `main.py` | all | Chain preflight → fresh ZAP session → replay (or seeded) → scan → normalize (+ coverage); exit code = the Phase 1 gate |
+| `main.py` | all | Chain preflight → fresh ZAP session → replay (or seeded) → scan → normalize → fetch exchanges (+ coverage); exit code = the **health gate** (authenticated, in scope, ≥1 route tested), or with `--expect-findings` also ≥1 high/medium, for self-tests (W3-2) |
+| `exchange.py` | W1-3 | For each high/medium finding, fetch the exact request ZAP sent and the response that proved it — inside the same run, since the next scan's fresh session discards them — redact both, cut the response to a window around the evidence, and store it per fingerprint. Gives the finding a `request_line` and `response_status` to replay |
 
 ### 3c. Detections pipeline (`detections/`) — process the results
 
@@ -160,6 +162,8 @@ flowchart LR
 | `lifecycle_diff.py` | L1/L2 | Compare two scans' fingerprint sets → label new/open/resolved; **coverage-aware** (R2): a previous-only finding is `resolved` only if its route, **its own parameter**, and its rule were exercised this scan — else `not_scanned`. Persist state (+ coverage) |
 | `explain.py` | — (W6-9) | Why a finding disappeared, most specific cause first: `route_excluded` · `route_not_covered` · `parameter_not_exercised` · `rule_not_enabled` · `rule_truncated` · `app_state_changed` · `scan_changed_the_app` · `rule_found_nothing` · `fixed`. Only the last claims a fix, and it carries its evidence |
 | `reachability.py` | — (W6-12) | What the application **exposes** (GET form fields in the trace) against what the scan **sent** (`coverage.route_params`). The difference is a detection gap nothing measured before; `dast report` prints it |
+| `gate.py` | W3-2 | The report stage's **policy gate**: fail when a **new** finding is at or above `gate.fail_on` (default `high`). Only new findings can fail it — an existing one is already somebody's decision — and suppressed ones never do |
+| `triage.py` | W1-5 | Recorded decisions — false positive, accepted risk, won't fix, test data — from `security/dast/<app>/suppressions.yaml`, applied as a view over the lifecycle diff: status `suppressed`, still published, accepted risk must expire. Also matches GitHub dismissals back to findings by recomputing the fingerprint, since GitHub does not expose it |
 
 ### 3d. Contracts (`contracts/`) — the frozen interfaces
 
@@ -168,7 +172,7 @@ flowchart LR
 generator render it later. Then `scope.json`(+schema), `detection.schema.json` (status enum incl.
 `not_scanned`), the fingerprint formula (`README.md`), `trace.schema.json`, `journey.schema.json`,
 `seed.schema.json`, `action.schema.json` (the LLM exploration action contract),
-`auth_discovery.schema.json` (what the model may propose for a login), the vendored
+`auth_discovery.schema.json` (what the model may propose for a login), `suppressions.schema.json` (per-app triage decisions, with mandatory expiry for accepted risk), the vendored
 `sarif-2.1.0.schema.json`, and the real `sample_zap_output.json` fixture. Everything is written
 *to* these; they're the seams that let each part be built and tested independently.
 
@@ -467,17 +471,18 @@ contracts/       frozen interfaces: app · scope · detection · trace · journe
 authoring/       appconfig.py (app.yaml) · record · seed · explore (LLM) · discover (LLM) ·
                  generate (LLM) · validate
 runner/          preflight · replay · scope_guard · action_policy · redact · scan · coverage ·
-                 evidence · main · capture_zap_fixture.sh
+                 evidence · exchange · main · capture_zap_fixture.sh
 detections/      normalizer · fingerprint · sarif_export · github_upload · lifecycle_diff ·
-                 explain · reachability
+                 explain · reachability · gate · triage
 security/dast/   one directory per onboarded app, each holding app.yaml — dvwa · webgoat are
                  config-only; juice-shop also keeps a hand-authored flow.py/scope.json/seed.json
                  from before the config contract
 out/<app>/       artifacts (gitignored): authoring/ · scans/<scan_id>/ · state.json
-tests/           objective suites (518 tests) — one per module + acceptance suites
+tests/           objective suites (674 tests) — one per module + acceptance suites
 docs/            current: requirements · onboarding · remediation plan · readiness ·
                  deterministic_vs_llm_discovery · phase-2 demo material  (docs/archive/ = superseded)
 docs/junior_engineer/   this file + all design/decision docs  (archive/ = superseded plans)
+.github/workflows/   tests.yml (ruff + suite on every push) · dast-selftest.yml (weekly canary)
 Containerfile · compose.yaml · versions.lock · requirements*.txt · pyproject.toml
 ```
 

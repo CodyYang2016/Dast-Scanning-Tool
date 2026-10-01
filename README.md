@@ -124,7 +124,9 @@ docker compose up --build --abort-on-container-exit --exit-code-from runner
 ```
 
 Builds the runner, starts Juice Shop + ZAP + the runner on one network, runs a safe
-authenticated scan, and exits with the **Phase 1 gate** as its code (0 = pass). Detection
+authenticated scan, and exits with the gate as its code (0 = pass) — in compose, a
+**self-test** (`--expect-findings`): Juice Shop is deliberately vulnerable, so finding nothing
+fails it. Detection
 records land in `./out/records.json`. Images are pinned by digest (`versions.lock`).
 
 ### Option B — local dev loop
@@ -142,7 +144,8 @@ python -m runner.main \
   --scope security/dast/juice-shop/scope.json \
   --flow  security/dast/juice-shop/flow.py \
   --base-url http://juice:3000 --records-out out/records.json
-#   -> gate: {authenticated, scope_ok, has_high_or_medium, passed: true}  (exit 0)
+#   -> gate: {mode: expect-findings, authenticated, scope_ok, routes_tested, has_high_or_medium,
+#             passed: true}  (exit 0)
 
 # 3. Lifecycle across two scans, coverage-aware (fix a finding → "resolved"; unreached → "not_scanned")
 python -m detections.lifecycle_diff out/records.json --app-id juice-shop --state out/state.json \

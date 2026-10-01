@@ -441,8 +441,11 @@ inside the built image.
 python -m runner.main \
   --flow out/phase2-demo/gen/flow.py --scope out/phase2-demo/gen/scope.json \
   --base-url http://juice:3000 --zap-api http://localhost:8080 --zap-proxy http://localhost:8080 \
-  --records-out out/phase2-demo/live-records.json
+  --records-out out/phase2-demo/live-records.json --expect-findings
 ```
+
+`--expect-findings` keeps this a self-test against a deliberately vulnerable app. By default
+the scan gate is health-only, so a clean application passes in a pipeline (W3-2).
 
 > If you specifically want the containerized path (matching `demo_full_scan.sh` exactly), the
 > compose project name is `ssd-dast-poc` (see `name:` in `compose.yaml`), so the network is
@@ -451,8 +454,8 @@ python -m runner.main \
 > `/app/security/dast/juice-shop` read-only. The host-Python form above is simpler and is what
 > this script recommends for the live demo.
 
-**Expect:** the same gate shape as Phase 1 — `authenticated: true`, `scope_ok: true`,
-`has_high_or_medium: true`, `passed: true`, exit code 0, and `out/phase2-demo/live-records.json`
+**Expect:** `mode: expect-findings`, `authenticated: true`, `scope_ok: true`,
+`routes_tested` in the hundreds, `has_high_or_medium: true`, `passed: true`, exit code 0, and `out/phase2-demo/live-records.json`
 written.
 
 **Say:** "Nothing in `runner/`, `runner/scope_guard.py`, or the normalizer changed to make this
