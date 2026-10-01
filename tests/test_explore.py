@@ -510,3 +510,28 @@ def test_an_explicit_empty_allow_list_is_honoured_over_the_config():
     config = {"explore": {"safe_forms": ["/WebGoat/SqlInjection/attack2"]}}
     assert explore_mod.effective_safe_forms([], config) == []
     assert explore_mod.effective_safe_forms(None, None) == []
+
+
+def test_a_submittable_form_is_remembered_against_the_page_it_was_seen_on():
+    """Reading comes first and navigates away: without this the forms are never reachable."""
+    obs = {"url": "http://webgoat:8083/WebGoat/SqlInjection.lesson",
+           "forms": [{"path": "/WebGoat/SqlInjection/attack2", "submittable": True},
+                     {"path": "/WebGoat/SqlInjection/attack3", "submittable": True},
+                     {"path": "/WebGoat/other", "submittable": False}]}
+    here = explore_mod.page_path(obs["url"], "http://webgoat:8083")
+    assert here == "/WebGoat/SqlInjection.lesson"
+    pending = explore_mod.deferred_submits([], obs, here, set(), set())
+    assert pending == [(here, "/WebGoat/SqlInjection/attack2"),
+                       (here, "/WebGoat/SqlInjection/attack3")]
+
+
+def test_a_posted_or_already_revisited_form_is_not_queued_again():
+    obs = {"url": "http://webgoat:8083/WebGoat/SqlInjection.lesson",
+           "forms": [{"path": "/WebGoat/SqlInjection/attack2", "submittable": True},
+                     {"path": "/WebGoat/SqlInjection/attack3", "submittable": True}]}
+    here = "/WebGoat/SqlInjection.lesson"
+    pending = explore_mod.deferred_submits(
+        [], obs, here,
+        submitted={"/WebGoat/SqlInjection/attack2"},
+        offered={(here, "/WebGoat/SqlInjection/attack3")})
+    assert pending == []

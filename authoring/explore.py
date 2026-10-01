@@ -161,6 +161,33 @@ def effective_safe_forms(safe_forms, config: dict | None) -> list[str]:
     return appconfig.safe_forms(config) if config else []
 
 
+def page_path(url: str, base_url: str) -> str:
+    """The base-relative path of a page URL, for naming the page a form was seen on. Pure."""
+    if url.startswith(base_url):
+        return url[len(base_url):] or "/"
+    return url
+
+
+def deferred_submits(pending: list[tuple[str, str]], observation: dict, here: str,
+                     submitted, offered) -> list[tuple[str, str]]:
+    """`pending` plus the submittable forms this observation adds, as (page, endpoint). Pure.
+
+    A submit is proposed only once everything readable has been read, and reading navigates away
+    from the page the forms were on -- on WebGoat the walk ends up on a JSON endpoint, observes
+    no forms there and stops, having passed nine allow-listed ones on the way. So the pages a
+    submittable form was seen on are remembered and returned to. `offered` holds the ones already
+    returned to, so a form the policy or the planner declines is not an endless revisit.
+    """
+    out = list(pending)
+    for form in observation.get("forms", []):
+        if not form.get("submittable"):
+            continue
+        entry = (here, form.get("path", ""))
+        if entry[1] and entry[1] not in submitted and entry not in offered and entry not in out:
+            out.append(entry)
+    return out
+
+
 def form_fill_plan(form: dict, test_data: dict) -> list[tuple[str, str]]:
     """The (field, approved value) pairs to type into a form, in declaration order. Pure.
 
@@ -457,6 +484,9 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
 
         steps = 0
         rejected: set[str] = set()
+        pending: list[tuple[str, str]] = []   # (page, endpoint) of forms seen but not yet posted
+        submitted: set[str] = set()
+        offered: set[tuple[str, str]] = set()
         forbidden = deny_terms(scope, deny_actions)
         while steps < max_pages:
             observation = redact(_observe(page, base_url, api_events, test_data,
@@ -464,6 +494,8 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
             observation["visited"] = sorted(visited)  # coverage so far, so the model doesn't repeat
             observation["forbidden"] = forbidden      # what policy will refuse, said up front
             observation["rejected"] = sorted(rejected)
+            here = page_path(observation.get("url", ""), base_url)
+            pending = deferred_submits(pending, observation, here, submitted, offered)
             action, src = next_action(observation, visited, scope, deny_actions=deny_actions,
                                       safe_forms=safe_forms, test_data=test_data,
                                       use_llm=use_llm, model=model,
@@ -472,7 +504,16 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
             if stats is not None:
                 stats[src] = stats.get(src, 0) + 1
             if action.get("action") == "stop":
-                break
+                # Nothing here, but a submittable form may be waiting on a page already left.
+                nxt = next((p for p in pending if p[1] not in submitted), None)
+                if nxt is None:
+                    break
+                pending.remove(nxt)
+                offered.add(nxt)
+                if nxt[0] != here:
+                    _goto(nxt[0])
+                steps += 1
+                continue
             ok, _reason = validate_proposal(action, scope, deny_actions, safe_forms,
                                             submit_get_forms, allow_writes)
             if not ok:  # fail-closed: never execute an action that didn't pass validation
@@ -491,6 +532,7 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
                     break  # no approved value for any field: fail closed rather than post blanks
                 _submit(page, arg, plan, events)
                 visited.add(action["target"]["path"])
+                submitted.add(action["target"]["path"])
             else:  # click a selector (expand_nav); never a navigation
                 events.append({"type": "click", "selector": arg})
                 try:
