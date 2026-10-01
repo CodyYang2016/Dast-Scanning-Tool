@@ -836,3 +836,128 @@ def test_a_queued_link_reached_another_way_leaves_the_frontier():
     obs = {"url": "http://app:8080/gate", "links": [], "forms": []}
     assert explore_mod.remaining_links(frontier, obs, {"/home", "/gate"},
                                        GATE_SCOPE) == ["/profile"]
+
+
+# ---- was the submit actually accepted ---------------------------------------------------
+
+def test_the_status_of_the_response_a_submit_caused_is_reported():
+    responses = [{"method": "GET", "url": "http://app:8080/gate", "status": 200},
+                 {"method": "POST", "url": "http://app:8080/gate", "status": 200}]
+    assert explore_mod.submit_outcome(responses, "/gate") == {"status": 200, "accepted": True}
+
+
+def test_a_refused_submit_is_not_counted_as_accepted():
+    responses = [{"method": "POST", "url": "http://app:8080/gate", "status": 400}]
+    assert explore_mod.submit_outcome(responses, "/gate") == {"status": 400, "accepted": False}
+
+
+def test_the_latest_response_to_the_path_wins_and_reads_are_ignored():
+    responses = [{"method": "POST", "url": "http://app:8080/gate", "status": 400},
+                 {"method": "POST", "url": "http://app:8080/gate", "status": 200},
+                 {"method": "GET", "url": "http://app:8080/gate", "status": 500}]
+    assert explore_mod.submit_outcome(responses, "/gate")["accepted"] is True
+
+
+def test_an_unobserved_submit_claims_nothing():
+    """No response seen is reported as unknown, not as success."""
+    assert explore_mod.submit_outcome([], "/gate") == {}
+    assert explore_mod.submit_outcome(
+        [{"method": "POST", "url": "http://app:8080/other", "status": 200}], "/gate") == {}
+
+
+class _RefusingPage(_LoopPage):
+    """Accepts the post, then answers 400 -- the shape of a validating form told no."""
+
+    def __init__(self, base: str):
+        super().__init__(base)
+        self._handlers: dict[str, object] = {}
+
+    def on(self, event, handler):
+        self._handlers[event] = handler
+
+    def eval_on_selector(self, selector, script):
+        super().eval_on_selector(selector, script)
+        handler = self._handlers.get("response")
+        if handler:
+            handler(types.SimpleNamespace(
+                url=self._base + "/lesson/attack", status=400,
+                request=types.SimpleNamespace(method="POST")))
+
+
+def test_a_submit_the_app_refused_is_recorded_as_refused(monkeypatch):
+    base = "http://app:8080"
+    page = _RefusingPage(base)
+    monkeypatch.setitem(sys.modules, "playwright", types.ModuleType("playwright"))
+    sync_api = types.ModuleType("playwright.sync_api")
+    sync_api.sync_playwright = _fake_playwright(page)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", sync_api)
+    monkeypatch.setattr(explore_mod, "prove_auth_live",
+                        lambda *a, **k: {"alive": True, "reason": "ok"})
+
+    trace, _guard = explore_mod.explore(
+        "app", base, {}, ["/lesson"], {"app_id": "app", "fqdn_allow_list": ["app"]},
+        use_llm=False, max_pages=10,
+        config={"base_url": base, "auth": {"proof": {"selector": "#ok"}},
+                "explore": {"safe_forms": ["/lesson/attack"],
+                            "test_data": {"query": "SELECT 1"}}})
+
+    submit = next(ev for ev in trace["interactions"] if ev.get("type") == "submit")
+    assert submit["status"] == 400
+    assert submit["accepted"] is False
+
+
+def test_a_redirect_after_a_post_is_acceptance_and_a_forbidden_is_not():
+    """3xx took the submission; 4xx of any flavour means the walk did not get past the form."""
+    assert explore_mod.submit_outcome(
+        [{"method": "POST", "url": "http://app:8080/gate", "status": 303}],
+        "/gate") == {"status": 303, "accepted": True}
+    for status in (403, 422, 429):
+        assert explore_mod.submit_outcome(
+            [{"method": "POST", "url": "http://app:8080/gate", "status": status}],
+            "/gate") == {"status": status, "accepted": False}
+
+
+def test_a_query_string_does_not_hide_the_response():
+    """Forms are allow-listed by path, so the path is what the response is matched on."""
+    assert explore_mod.submit_outcome(
+        [{"method": "POST", "url": "http://app:8080/gate?step=2", "status": 200}],
+        "/gate")["accepted"] is True
+    assert explore_mod.submit_outcome(
+        [{"method": "POST", "url": "http://app:8080/gate", "status": 200}],
+        "/gate?step=2")["accepted"] is True
+
+
+def test_an_unreadable_status_is_reported_as_unknown_and_said_out_loud(capsys):
+    assert explore_mod.submit_outcome(
+        [{"method": "POST", "url": "http://app:8080/gate", "status": None}], "/gate") == {}
+    assert "non-integer status" in capsys.readouterr().err
+
+
+def test_a_response_that_cannot_be_read_does_not_break_the_walk(monkeypatch, capsys):
+    """The handler is an event callback: raising out of it would end the run, not a step."""
+    base = "http://app:8080"
+
+    class _Broken(_RefusingPage):
+        def eval_on_selector(self, selector, script):
+            _LoopPage.eval_on_selector(self, selector, script)
+            boom = types.SimpleNamespace()  # no .request/.url/.status
+            self._handlers["response"](boom)
+
+    page = _Broken(base)
+    monkeypatch.setitem(sys.modules, "playwright", types.ModuleType("playwright"))
+    sync_api = types.ModuleType("playwright.sync_api")
+    sync_api.sync_playwright = _fake_playwright(page)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", sync_api)
+    monkeypatch.setattr(explore_mod, "prove_auth_live",
+                        lambda *a, **k: {"alive": True, "reason": "ok"})
+
+    trace, _guard = explore_mod.explore(
+        "app", base, {}, ["/lesson"], {"app_id": "app", "fqdn_allow_list": ["app"]},
+        use_llm=False, max_pages=10,
+        config={"base_url": base, "auth": {"proof": {"selector": "#ok"}},
+                "explore": {"safe_forms": ["/lesson/attack"],
+                            "test_data": {"query": "SELECT 1"}}})
+
+    submit = next(ev for ev in trace["interactions"] if ev.get("type") == "submit")
+    assert "accepted" not in submit          # unknown, not assumed
+    assert "could not record a response" in capsys.readouterr().err
