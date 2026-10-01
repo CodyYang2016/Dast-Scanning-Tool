@@ -532,14 +532,38 @@ def submit_outcome(responses: list[dict], path: str) -> dict:
     return {}
 
 
+def response_outcome(response) -> dict:
+    """submit_outcome's answer, read straight off a Playwright response object; {} if unreadable."""
+    try:
+        status = response.status
+    except Exception as exc:
+        print(f"explore: could not read the status of a submit response ({exc})", file=sys.stderr)
+        return {}
+    if not isinstance(status, int):
+        print(f"explore: submit response carried a non-integer status ({status!r}); "
+              "reporting the outcome as unknown", file=sys.stderr)
+        return {}
+    return {"status": status, "accepted": 200 <= status < 400}
+
+
+_SUBMIT_JS = "f => f.requestSubmit ? f.requestSubmit() : f.submit()"
+
+
 def _submit(page, selector: str, plan: list[tuple[str, str]], events: list[dict],
-            inferred_names=None) -> None:
-    """Fill a form with approved values and submit it through the page's own handlers.
+            inferred_names=None, path: str | None = None) -> dict:
+    """Fill a form with approved values, submit it through the page's own handlers, and return
+    what the application answered ({"status":, "accepted":}; {} if nothing was observed).
 
     requestSubmit(), not submit(): an application that intercepts its forms in JavaScript (as
     WebGoat's lessons do) never sees a raw form.submit(), so the request under test would never
     be issued. Best-effort, like the rest of the loop -- a form that refuses to submit costs a
     step, not the run.
+
+    The response is waited for *around* the submit rather than after it. requestSubmit() navigates
+    asynchronously, so at the moment it returns the old document is still current and already
+    idle: wait_for_load_state() comes straight back, and the walk reads the pre-submit page and
+    judges the submit by it. That is how a gate that had been answered could still look like a
+    dead end.
     """
     # Field names and which of them the planner answered; never the values. `inferred` is what
     # tells the bundle this submit answered a challenge, so a replay cannot pretend to reproduce
@@ -547,15 +571,33 @@ def _submit(page, selector: str, plan: list[tuple[str, str]], events: list[dict]
     events.append({"type": "submit", "url": page.url, "selector": selector,
                    "fields": [name for name, _ in plan],
                    "inferred": list(inferred_names or [])})
+    want = urlsplit(path or "").path
+
+    def _caused_by_the_submit(response) -> bool:
+        try:
+            return (response.request.method.upper() != "GET"
+                    and urlsplit(response.url).path == want)
+        except Exception:
+            return False
+
+    outcome: dict = {}
     try:
         for name, value in plan:
             page.fill(field_selector(selector, name), value, timeout=3000)
-        page.eval_on_selector(selector, "f => f.requestSubmit ? f.requestSubmit() : f.submit()")
-        # Wait for the response the submit caused, not for a guessed interval: what we are
-        # measuring is whether the request reached the application through the proxy.
-        page.wait_for_load_state("networkidle", timeout=10000)
+        if want and hasattr(page, "expect_response"):
+            with page.expect_response(_caused_by_the_submit, timeout=10000) as info:
+                page.eval_on_selector(selector, _SUBMIT_JS)
+            outcome = response_outcome(info.value)
+        else:
+            page.eval_on_selector(selector, _SUBMIT_JS)
     except Exception as exc:
         print(f"explore: form submit on {selector} did not complete ({exc})", file=sys.stderr)
+    try:
+        # Let the response the submit caused finish rendering before the next observation.
+        page.wait_for_load_state("networkidle", timeout=10000)
+    except Exception:
+        pass
+    return outcome
 
 
 def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[str], scope: dict, *,
@@ -693,8 +735,10 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
                 plan = form_fill_plan(form, test_data, values, form.get("inferable"))
                 if not plan:
                     break  # no approved value for any field: fail closed rather than post blanks
-                _submit(page, arg, plan, events, inferred_fields_of(plan, test_data))
-                events[-1].update(submit_outcome(responses, action["target"]["path"]))
+                outcome = _submit(page, arg, plan, events, inferred_fields_of(plan, test_data),
+                                  path=action["target"]["path"])
+                events[-1].update(outcome or submit_outcome(responses,
+                                                            action["target"]["path"]))
                 visited.add(action["target"]["path"])
                 submitted.add(action["target"]["path"])
             else:  # click a selector (expand_nav); never a navigation
