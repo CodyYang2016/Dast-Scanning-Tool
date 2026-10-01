@@ -183,7 +183,7 @@ def _write_skeleton(args, path) -> int:
         app_id=args.app, base_url=args.base_url, host=host, mode=args.auth,
         environment_class=args.environment_class,
         app_env=args.app.replace("-", "_").upper(),
-    ))
+    ), encoding="utf-8")
     print(f"wrote {path.relative_to(ROOT)}")
     try:
         appconfig.load_app_config(args.app)
@@ -228,7 +228,8 @@ def _discover(args, path) -> int:
     path.write_text(discover.render_config(
         app_id=args.app, base_url=args.base_url, login_url=args.login_url,
         steps=found["steps"], proof=found["proof"],
-        authenticated_routes=found.get("authenticated_routes", []), model=found["model"]))
+        authenticated_routes=found.get("authenticated_routes", []), model=found["model"]),
+        encoding="utf-8")
     print(f"\nwrote {path.relative_to(ROOT)}")
     print(f"  login:  {len(found['steps'])} steps against {args.login_url}")
     print(f"  proof:  {json.dumps(found['proof'])}")
@@ -253,7 +254,8 @@ def explore_inputs(app_id: str, config: dict, seed_override: str | None) -> tupl
     if not scope_file.is_file():
         derived.mkdir(parents=True, exist_ok=True)
         scope_file = derived / "scope.json"
-        scope_file.write_text(json.dumps(appconfig.scope_from_config(config), indent=2) + "\n")
+        scope_file.write_text(json.dumps(appconfig.scope_from_config(config), indent=2) + "\n",
+                              encoding="utf-8")
 
     if seed_override:
         return Path(seed_override), scope_file
@@ -264,7 +266,7 @@ def explore_inputs(app_id: str, config: dict, seed_override: str | None) -> tupl
         seed["target"]["scope_file"] = str(scope_file)
         seed["exploration"] = {"max_pages": appconfig.max_pages(config)}
         seed_file = derived / "seed.json"
-        seed_file.write_text(json.dumps(seed, indent=2) + "\n")
+        seed_file.write_text(json.dumps(seed, indent=2) + "\n", encoding="utf-8")
     return seed_file, scope_file
 
 
@@ -304,7 +306,7 @@ def cmd_author(args) -> int:
     if rc:
         return rc
 
-    trace = json.loads((traced / "trace.json").read_text())
+    trace = json.loads((traced / "trace.json").read_text(encoding="utf-8"))
     try:
         summary = generate_mod.generate(trace, str(bundle), config, use_llm=not args.no_llm,
                                         require_llm=args.require_llm)
@@ -370,7 +372,7 @@ def cmd_report(args) -> int:
     if rc:
         return rc
     counts: dict[str, int] = {}
-    for rec in json.loads(labeled.read_text()):
+    for rec in json.loads(labeled.read_text(encoding="utf-8")):
         counts[rec["status"]] = counts.get(rec["status"], 0) + 1
     print("lifecycle: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
 
@@ -385,7 +387,7 @@ def cmd_report(args) -> int:
     (run_dir / "settings.json").write_text(json.dumps({
         "output_dir": str(OUT),
         "github": {"owner": owner, "repo": repo, "ref": ref, "category": category},
-    }, indent=2) + "\n")
+    }, indent=2) + "\n", encoding="utf-8")
 
     sarif = run_dir / "results.sarif"
     rc = sarif_export.main([str(labeled), "--app-id", args.app,
@@ -417,7 +419,7 @@ def cmd_explain(args) -> int:
     previous, current = runs[-2], runs[-1]
     def load_json(directory: Path, name: str, default):
         path = directory / name
-        return json.loads(path.read_text()) if path.exists() else default
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else default
 
     previous_records = load_json(previous, "records.json", [])
     current_records = load_json(current, "records.json", [])

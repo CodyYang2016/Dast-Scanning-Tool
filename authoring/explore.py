@@ -46,7 +46,7 @@ def validate_proposal(action: dict, scope: dict, deny_actions=None, safe_forms=N
     """Validate a proposed action against the action schema AND the action policy.
     Returns (ok: bool, reason: str). Fail-closed: any schema or policy failure -> not ok."""
     try:
-        jsonschema.validate(action, json.loads(_ACTION_SCHEMA.read_text()))
+        jsonschema.validate(action, json.loads(_ACTION_SCHEMA.read_text(encoding="utf-8")))
     except jsonschema.ValidationError as exc:
         return False, f"schema: {exc.message}"
     if action.get("action") == "stop":
@@ -214,7 +214,7 @@ def propose_fallback(observation: dict, visited, scope: dict, deny_actions=None,
 def propose_llm(observation: dict, model: str, api_key: str | None = None) -> dict:
     """Ask the configured LLM backend for ONE constrained action given the (already redacted)
     observation. Raises on any failure so callers fall back (D9). Mirrors generate.plan_from_llm."""
-    schema = _ACTION_SCHEMA.read_text()
+    schema = _ACTION_SCHEMA.read_text(encoding="utf-8")
     system = (
         "You drive an authenticated DAST exploration. Given a redacted observation of the current "
         "page (links, forms, observed API calls) you propose exactly ONE next action to widen "
