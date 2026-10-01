@@ -446,3 +446,67 @@ def test_fallback_reads_before_it_writes():
                               safe_forms=["/WebGoat/SqlInjection/attack2"],
                               test_data={"query": "SELECT 1"})
     assert action["action"] == "follow_link"
+
+
+# ---- the allow-list has to be visible to the proposer that is asked to respect it --------
+
+from authoring import explore as explore_mod
+
+
+class _FakePage:
+    """The slice of the Playwright page _observe uses: a url and evaluate()."""
+
+    def __init__(self, url: str, forms: list[dict]):
+        self.url = url
+        self._forms = forms
+
+    def evaluate(self, expr: str):
+        return list(self._forms) if "querySelectorAll('form')" in expr else []
+
+
+def test_an_observed_form_says_whether_it_may_be_submitted():
+    """A model told to obey an allow-list it cannot see complies by never submitting."""
+    page = _FakePage("http://webgoat:8083/WebGoat/SqlInjection.lesson", [
+        {"selector": "form >> nth=0", "path": "/WebGoat/SqlInjection/attack2",
+         "method": "POST", "fields": ["query"]},
+        {"selector": "form >> nth=1", "path": "/WebGoat/SqlInjection/attack3",
+         "method": "POST", "fields": ["query"]},
+    ])
+    obs = explore_mod._observe(page, "http://webgoat:8083", [], {"query": "SELECT 1"},
+                               safe_forms=["/WebGoat/SqlInjection/attack2"])
+    assert [f["submittable"] for f in obs["forms"]] == [True, False]
+
+
+def test_an_allow_listed_form_with_no_approved_data_is_not_submittable():
+    page = _FakePage("http://webgoat:8083/WebGoat/SqlInjection.lesson", [
+        {"selector": "form >> nth=0", "path": "/WebGoat/SqlInjection/attack2",
+         "method": "POST", "fields": ["query"]},
+    ])
+    obs = explore_mod._observe(page, "http://webgoat:8083", [], {},
+                               safe_forms=["/WebGoat/SqlInjection/attack2"])
+    assert obs["forms"][0]["submittable"] is False
+
+
+def test_propose_llm_tells_the_model_a_submittable_form_is_not_a_reason_to_stop(monkeypatch):
+    seen = {}
+
+    def fake_complete(system, user, model, **kwargs):
+        seen["system"] = system
+        return '{"action":"stop"}'
+
+    monkeypatch.setattr(explore_mod.llm_backend, "complete", fake_complete)
+    explore_mod.propose_llm({"url": "/", "forms": [], "forbidden": [], "rejected": []}, "m", "k")
+    assert "submittable" in seen["system"]
+    assert "Do not stop while one remains" in seen["system"]
+
+
+def test_a_walk_takes_the_allow_list_from_the_app_config():
+    """dast author passes no allow-list: taken from the config, or every approved form is refused."""
+    config = {"explore": {"safe_forms": ["/WebGoat/SqlInjection/attack2"]}}
+    assert explore_mod.effective_safe_forms(None, config) == ["/WebGoat/SqlInjection/attack2"]
+
+
+def test_an_explicit_empty_allow_list_is_honoured_over_the_config():
+    config = {"explore": {"safe_forms": ["/WebGoat/SqlInjection/attack2"]}}
+    assert explore_mod.effective_safe_forms([], config) == []
+    assert explore_mod.effective_safe_forms(None, None) == []
