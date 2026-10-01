@@ -13,7 +13,6 @@ log/assert on. Raise on failure.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 # A unique-ish test account. Registered fresh each run so we never depend on seed data.

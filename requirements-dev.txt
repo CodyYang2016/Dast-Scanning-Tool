@@ -1,3 +1,5 @@
 # Dev/test dependencies. Includes runtime deps.
 -r requirements.txt
 pytest>=8
+ruff==0.16.9
+pre-commit==4.6.2

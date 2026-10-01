@@ -9,7 +9,6 @@ should be a line of output.
 Oracles: hand-built scan pairs whose correct attribution is known by construction.
 """
 
-import pytest
 
 from detections import explain
 

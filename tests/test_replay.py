@@ -33,7 +33,6 @@ def test_load_flow_rejects_missing_run(tmp_path):
 # in one path and fails in the other — exactly the split this suite exists to prevent.
 # Oracle: fake pages whose answers are known by construction.
 
-import pytest
 
 from runner.replay import AuthProofError, wait_for_auth
 

@@ -6,7 +6,6 @@ hand-built plans + scopes with known allow/deny outcomes, and the committed scop
 """
 
 import json
-from pathlib import Path
 
 from authoring.validate import build_report, check_allowlist, main, plan_hosts
 

@@ -10,7 +10,6 @@ See docs/junior_engineer/lifecycle_diff_design.md for the frozen API and criteri
 import json
 from pathlib import Path
 
-import pytest
 from jsonschema import Draft202012Validator
 
 # Import target does not exist yet (test-first). Until it's implemented this whole module is

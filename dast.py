@@ -293,7 +293,7 @@ def _discover(args, path) -> int:
     print(f"\nwrote {display(path)}")
     print(f"  login:  {len(found['steps'])} steps against {args.login_url}")
     print(f"  proof:  {json.dumps(found['proof'])}")
-    print(f"          verified: holds when logged in, fails when logged out")
+    print("          verified: holds when logged in, fails when logged out")
     print(f"\nreview it, then: dast author {args.app}")
     return 0
 
