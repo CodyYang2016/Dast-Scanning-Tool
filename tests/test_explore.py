@@ -1041,3 +1041,90 @@ def test_a_gate_that_says_no_is_recorded_as_refused_and_opens_nothing(monkeypatc
     submit = next(ev for ev in trace["interactions"] if ev.get("type") == "submit")
     assert (submit["status"], submit["accepted"]) == (400, False)
     assert page._opened is False
+
+
+class _SilentGatePage(_GatePage):
+    """A gate that takes the submit and never answers it."""
+
+    def expect_response(self, predicate, timeout=None):
+        page = self
+
+        class _Manager:
+            def __enter__(self):
+                return types.SimpleNamespace()
+
+            def __exit__(self, *exc):
+                page.settled = False
+                raise TimeoutError(f"waiting for response failed: timeout {timeout}ms exceeded")
+
+        return _Manager()
+
+    def wait_for_load_state(self, *a, **k):
+        self.settled = True
+
+
+def test_a_submit_that_is_never_answered_is_unknown_and_still_settles(monkeypatch, capsys):
+    """A timeout costs the outcome, not the step: the walk must go on, and say why it can't tell."""
+    page = _SilentGatePage("http://app:8080")
+    trace = _run_gate(monkeypatch, page)
+    submit = next(ev for ev in trace["interactions"] if ev.get("type") == "submit")
+    assert "accepted" not in submit and "status" not in submit
+    assert "did not complete" in capsys.readouterr().err
+    assert page.settled is True        # the load-state wait is not skipped by the timeout
+    assert page.submitted == ["form >> nth=0"]
+
+
+class _ChattyGatePage(_GatePage):
+    """Background traffic in flight while the submit's own response is waited for."""
+
+    OTHERS = [("GET", "/gate/check"),        # a read of the same path
+              ("POST", "/telemetry"),        # a write somewhere else
+              (None, None)]                  # a response that cannot be read at all
+
+    def expect_response(self, predicate, timeout=None):
+        page = self
+        page.offered = []
+
+        class _Info:
+            @property
+            def value(self):
+                for method, path in page.OTHERS:
+                    if method is None:
+                        candidate = types.SimpleNamespace()   # no .request/.url
+                    else:
+                        candidate = types.SimpleNamespace(
+                            url=page._base + path, status=500,
+                            request=types.SimpleNamespace(method=method))
+                    page.offered.append(predicate(candidate))
+                mine = types.SimpleNamespace(
+                    url=page._base + "/gate/check", status=200,
+                    request=types.SimpleNamespace(method="POST"))
+                page.offered.append(predicate(mine))
+                return mine
+
+        class _Manager:
+            def __enter__(self): return _Info()
+
+            def __exit__(self, *exc): return False
+
+        return _Manager()
+
+
+def test_only_the_submit_s_own_response_is_accepted_as_its_outcome(monkeypatch, capsys):
+    page = _ChattyGatePage("http://app:8080")
+    trace = _run_gate(monkeypatch, page)
+    submit = next(ev for ev in trace["interactions"] if ev.get("type") == "submit")
+    assert submit["status"] == 200            # not the 500s in flight alongside it
+    assert page.offered == [False, False, False, True]
+    assert "unreadable response" in capsys.readouterr().err
+
+
+def test_a_form_with_no_action_path_falls_back_to_the_listener(monkeypatch):
+    """Nothing to match a response on, so the walk submits and reports no outcome rather than
+    waiting 10s for a response it cannot identify."""
+    page = _GatePage("http://app:8080")
+    events: list[dict] = []
+    assert explore_mod._submit(page, "form >> nth=0", [("answer", "7")], events, path=None) == {}
+    assert page.submitted == ["form >> nth=0"]      # the submit still happened
+    assert "status" not in events[-1]
+    assert page._opened is False                    # expect_response was never entered
