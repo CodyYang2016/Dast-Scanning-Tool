@@ -85,7 +85,7 @@ def iter_alerts(source: str | TextIO) -> Iterator[dict]:
     if hasattr(source, "read"):
         report = json.load(source)
     else:
-        with open(source) as fh:
+        with open(source, encoding="utf-8") as fh:
             report = json.load(fh)
     yield from report.get("alerts", [])
 
@@ -129,7 +129,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.out == "-":
         writer(records, sys.stdout)
     else:
-        with open(args.out, "w") as fh:
+        with open(args.out, "w", encoding="utf-8") as fh:
             writer(records, fh)
     return 0
 

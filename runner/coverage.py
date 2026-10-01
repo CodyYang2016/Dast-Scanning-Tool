@@ -55,7 +55,7 @@ def session_cookies(storage_state, base_url: str) -> dict[str, str]:
     if not storage_state:
         return {}
     try:
-        saved = json.loads(Path(storage_state).read_text())
+        saved = json.loads(Path(storage_state).read_text(encoding="utf-8"))
     except Exception:
         return {}
     host = host_of(base_url)
