@@ -510,15 +510,25 @@ def submit_outcome(responses: list[dict], path: str) -> dict:
     A posted form is not an exercised workflow. Without the status, `submits` counts requests the
     application may have refused, and a walk that answered a validating form wrongly is reported
     exactly like one that answered it right -- the coverage claim would be unfalsifiable.
+
+    `accepted` is 2xx/3xx and nothing else, which is a claim about coverage rather than about the
+    application's intent: a 303 to a confirmation page took the submission, a 403 or a 422 or a 429
+    did not, and for "did this walk get past the form" those three are the same answer however
+    different their causes. The status is reported alongside, so a reader can tell them apart.
+    Query strings are ignored because a form is allow-listed by its path, so that is the identity
+    the submit was validated against.
     """
+    want = urlsplit(path).path
     for seen in reversed(responses):
         if seen.get("method", "").upper() == "GET":
             continue
-        if urlsplit(seen.get("url", "")).path == path:
+        if urlsplit(seen.get("url", "")).path == want:
             status = seen.get("status")
             if not isinstance(status, int):
+                print(f"explore: submit to {path} recorded a non-integer status "
+                      f"({status!r}); reporting the outcome as unknown", file=sys.stderr)
                 return {}
-            return {"status": status, "accepted": status < 400}
+            return {"status": status, "accepted": 200 <= status < 400}
     return {}
 
 
@@ -597,8 +607,16 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
         page.on("request", lambda r: api_events.append({"type": "request", "method": r.method,
                 "url": r.url}) if any(m in r.url for m in api_patterns) else None)
         responses: list[dict] = []
-        page.on("response", lambda r: responses.append(
-            {"method": r.request.method, "url": r.url, "status": r.status}))
+
+        def _record_response(r) -> None:
+            # Best-effort, like the rest of the loop: a response whose fields cannot be read
+            # leaves the outcome unknown, and must not raise out of an event handler mid-walk.
+            try:
+                responses.append({"method": r.request.method, "url": r.url, "status": r.status})
+            except Exception as exc:
+                print(f"explore: could not record a response ({exc})", file=sys.stderr)
+
+        page.on("response", _record_response)
 
         liveness = prove_auth_live(page, base_url, seed_routes[0], proof=proof)
         if not liveness["alive"]:
