@@ -63,14 +63,17 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--plan", required=True, help="journey.json from generate")
     p.add_argument("--scope", required=True, help="scope.json from generate")
     p.add_argument("--flow", default=None, help="generated flow.py (needed unless --no-replay)")
-    p.add_argument("--base-url", default=None, help="Target as ZAP resolves it (required unless --no-replay)")
+    p.add_argument("--base-url", default=None,
+                   help="Target as ZAP resolves it; required unless --no-replay")
     p.add_argument("--zap-proxy", default="http://localhost:8080")
     p.add_argument("--no-replay", action="store_true", help="Skip the live auth replay (FR-V2/V3 only)")
     p.add_argument("--report", default="validation-report.json")
     args = p.parse_args(argv)
+    if not args.no_replay and not args.base_url:
+        p.error("--base-url is required for the live auth replay (or pass --no-replay)")
 
-    plan = json.loads(Path(args.plan).read_text(encoding="utf-8"))
-    scope = json.loads(Path(args.scope).read_text(encoding="utf-8"))
+    plan = json.loads(Path(args.plan).read_text())
+    scope = json.loads(Path(args.scope).read_text())
 
     checks: dict = {}
     violations = check_allowlist(plan, scope)
@@ -85,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
             checks["auth"] = _replay_auth(args.plan, args.flow, scope, args.base_url, args.zap_proxy)
 
     report = build_report(checks)
-    Path(args.report).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    Path(args.report).write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))
     return 0 if report["passed"] else 2  # FR-V3: non-zero exit on any failing check
 

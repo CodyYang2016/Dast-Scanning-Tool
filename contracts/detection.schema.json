@@ -43,11 +43,20 @@
     },
     "severity": {
       "type": "string",
-      "enum": ["critical", "high", "medium", "low", "info"],
+      "enum": [
+        "critical",
+        "high",
+        "medium",
+        "low",
+        "info"
+      ],
       "description": "Normalized severity. Mapped from ZAP risk. Ordered high->low so the SARIF exporter maps deterministically."
     },
     "cwe_id": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "description": "CWE identifier where available (FR-N1). NULL when the source omits it - do not drop the field."
     },
     "endpoint": {
@@ -56,17 +65,128 @@
       "description": "The affected URL/endpoint. From ZAP url."
     },
     "parameter": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "description": "Affected parameter. NULL when not parameter-scoped (e.g. header/transport findings). Empty-case is a fixed sentinel so fingerprints stay stable (FR-N2)."
     },
     "status": {
       "type": "string",
-      "enum": ["open", "new", "resolved", "not_scanned"],
-      "description": "Lifecycle state assigned by the diff against the previous scan's fingerprint set. 'resolved' is asserted only when the finding's (route x rule) pair was actually exercised this scan; 'not_scanned' marks a previously-open finding whose (route x rule) pair was not exercised this scan (coverage-driven disappearance, not a confirmed fix) — see R2 in docs/seeded_session_exploration_design.md."
+      "enum": [
+        "open",
+        "new",
+        "resolved",
+        "not_scanned",
+        "suppressed"
+      ],
+      "description": "Lifecycle state assigned by the diff against the previous scan's fingerprint set. 'resolved' is asserted only when the finding's (route x rule) pair was actually exercised this scan; 'not_scanned' marks a previously-open finding whose (route x rule) pair was not exercised this scan (coverage-driven disappearance, not a confirmed fix) \u2014 see R2 in docs/junior_engineer/seeded_session_exploration_design.md."
     },
     "evidence_path": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "description": "Relative path to the evidence artifact (HAR/screenshot) under the scan_id evidence dir. NULL if none captured."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "description": "What is wrong, from ZAP's alert description. Per RULE, not per finding; exported once as the SARIF rule's fullDescription. Optional (W1-1)."
+    },
+    "solution": {
+      "type": "string",
+      "minLength": 1,
+      "description": "How to fix it, from ZAP's solution. Per rule; exported as the SARIF rule's help. Optional (W1-1)."
+    },
+    "references": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Reading for the fix, from ZAP's newline-separated reference field, split one URL per item. Per rule. Optional (W1-1)."
+    },
+    "confidence": {
+      "type": "string",
+      "enum": [
+        "high",
+        "medium",
+        "low"
+      ],
+      "description": "How sure ZAP is of this finding, normalised like severity. Per finding. Shown in the alert message, because a Low-confidence finding is triaged very differently from a confirmed one. Optional (W1-1)."
+    },
+    "evidence_excerpt": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 520,
+      "description": "The string ZAP matched in the response. REDACTED at normalisation (tokens, bearer values, secret-named fields, emails) and capped. Not to be confused with evidence_path, which references captured files. Per finding. Optional (W1-1)."
+    },
+    "attack": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 520,
+      "description": "The payload ZAP sent. Redacted and capped like evidence_excerpt. Per finding. Optional (W1-1)."
+    },
+    "request_line": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2100,
+      "description": "How to replay the finding: method and path with query, host dropped, redacted \u2014 e.g. `POST /rest/user/login`. High/medium findings only. Optional (W1-3)."
+    },
+    "response_status": {
+      "type": "integer",
+      "minimum": 100,
+      "maximum": 599,
+      "description": "Status of the response that proved the finding. Optional (W1-3)."
+    },
+    "exchange_path": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Relative path to the stored, redacted request/response pair for this finding (evidence/<scan_id>/messages/<fingerprint>.txt). Optional (W1-3)."
+    },
+    "suppression": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason",
+        "justification",
+        "expired"
+      ],
+      "description": "The recorded triage decision that applies to this finding (W1-5), from security/dast/<app>/suppressions.yaml. When `expired` is false the status is `suppressed` and `was` keeps the lifecycle status it replaced; when true the suppression has lapsed and the finding counts again. Optional.",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": [
+            "false_positive",
+            "accepted_risk",
+            "wont_fix",
+            "test_data"
+          ]
+        },
+        "justification": {
+          "type": "string",
+          "minLength": 1
+        },
+        "owner": {
+          "type": "string"
+        },
+        "expires": {
+          "type": "string"
+        },
+        "expired": {
+          "type": "boolean"
+        },
+        "was": {
+          "type": "string",
+          "enum": [
+            "new",
+            "open",
+            "not_scanned"
+          ]
+        }
+      }
     }
   }
 }

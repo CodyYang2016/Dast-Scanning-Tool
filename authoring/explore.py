@@ -22,32 +22,33 @@ import os
 import re
 import sys
 from pathlib import Path
-from urllib.parse import urljoin, urlsplit
 
 import jsonschema
 
-from authoring import appconfig, llm_backend
-from authoring.record import build_trace, write_trace
+from authoring import appconfig
+from authoring.record import build_trace, request_event, write_trace
 from authoring.seed import load_seed
-from runner.action_policy import deny_terms, validate_action
-from runner.preflight import preflight
+from runner.action_policy import validate_action
+from runner.preflight import check_scope, preflight
 from runner.replay import SessionDeadError, prove_auth_live
 from runner.redact import redact
-from runner.scope_guard import ScopeGuard, host_of
+from runner.scope_guard import ScopeGuard, in_scope
 
 _ROOT = Path(__file__).resolve().parent.parent
 _ACTION_SCHEMA = _ROOT / "contracts" / "action.schema.json"
+_DEFAULT_MODEL = "claude-opus-4-8"
+_MAX_STALLED_STEPS = 3   # consecutive actions that achieve nothing before giving up
 
 
 # ---- validation: schema + scope/deny policy (pure) --------------------------------------
 
 def validate_proposal(action: dict, scope: dict, deny_actions=None, safe_forms=None,
                       submit_get_forms: bool = True, allow_writes: bool = False,
-                      inferred=None):
+                      page_url: str | None = None):
     """Validate a proposed action against the action schema AND the action policy.
     Returns (ok: bool, reason: str). Fail-closed: any schema or policy failure -> not ok."""
     try:
-        jsonschema.validate(action, json.loads(_ACTION_SCHEMA.read_text(encoding="utf-8")))
+        jsonschema.validate(action, json.loads(_ACTION_SCHEMA.read_text()))
     except jsonschema.ValidationError as exc:
         return False, f"schema: {exc.message}"
     if action.get("action") == "stop":
@@ -55,14 +56,9 @@ def validate_proposal(action: dict, scope: dict, deny_actions=None, safe_forms=N
     target = action.get("target") or {}
     if not (target.get("path") or target.get("selector")):
         return False, "no navigable target (empty path/selector)"
-    if target.get("values") is not None:
-        if action.get("action") != "submit_form":
-            return False, "values are only meaningful on submit_form"
-        ok, reason = vet_values(target["values"], inferred)
-        if not ok:
-            return False, reason
     decision = validate_action(action, scope, deny_actions=deny_actions, safe_forms=safe_forms,
-                               submit_get_forms=submit_get_forms, allow_writes=allow_writes)
+                               submit_get_forms=submit_get_forms, allow_writes=allow_writes,
+                               page_url=page_url)
     return decision.allowed, decision.reason
 
 
@@ -71,55 +67,44 @@ def validate_proposal(action: dict, scope: dict, deny_actions=None, safe_forms=N
 _NON_NAVIGABLE = ("javascript:", "mailto:", "tel:", "data:", "blob:")
 
 
-def _same_origin(a: str, b: str) -> bool:
-    pa, pb = urlsplit(a), urlsplit(b)
-    return (pa.scheme, pa.netloc) == (pb.scheme, pb.netloc)
-
-
-def _origin_relative(url: str) -> str:
-    """An absolute URL reduced to the path(+query/fragment) the trace/flow appends to base_url."""
-    parts = urlsplit(url)
-    path = parts.path or "/"
-    if parts.query:
-        path += "?" + parts.query
-    if parts.fragment:
-        path += "#" + parts.fragment
-    return path
-
-
 def normalize_href(href: str | None, page_url: str | None = None) -> str | None:
-    """Turn an href as the page emits it into a path the trace/flow can append to base_url.
+    """Turn an href as the page emits it into a path the trace and the flow can use.
 
-    Angular emits "#/contact" and "./redirect?to=..."; appended verbatim to base_url those become
-    "http://juice:3000#/contact" (works by accident) and "http://juice:3000./redirect?..." (an
-    invalid URL that crashes the generated flow). Returns None for non-navigable hrefs.
+    Two failure modes this exists for. An SPA emits "#/contact" and "./x", which appended
+    verbatim to base_url become "http://app#/contact" and "http://appx" — the second is an
+    invalid URL that crashed a generated flow. A server-rendered app emits
+    "../../vulnerabilities/brute/", and prefixing a slash gives "/../../vulnerabilities/brute/":
+    a browser normalizes it, but the trace does not, so the same page enters the index twice,
+    burns two steps of budget, and produces two different endpoint_patterns for one route —
+    which would split that route across a lifecycle diff.
 
-    page_url resolves a page-relative href against the page it was seen on, which is the only
-    correct reading of one: "./?page=include.php" on /vulnerabilities/fi/ addresses that module,
-    not the site root, and "/../../x" needs its dot segments collapsed. Without it a relative
-    href is assumed to be root-relative, which is the historical behaviour.
+    Resolving against `page_url` fixes the second. Off-host URLs stay absolute so the scope
+    guard can judge them. Returns None for non-navigable hrefs.
     """
     if not href:
         return None
     h = href.strip()
     if not h or h.lower().startswith(_NON_NAVIGABLE):
         return None
-    if h.startswith("#"):
-        return "/" + h  # SPA route: always read against the origin, never the current path
-    if h.startswith("http://") or h.startswith("https://"):
-        return h  # left absolute so the scope guard judges it by host
-    if page_url:
-        resolved = urljoin(page_url, h)
-        # A cross-origin resolution ("//evil/x") stays absolute for the same reason.
-        return _origin_relative(resolved) if _same_origin(resolved, page_url) else resolved
-    if h.startswith("/"):
+    if h.startswith(("http://", "https://")):
         return h
+    if h.startswith("#"):
+        return "/" + h
+    if page_url and not h.startswith("/"):
+        from urllib.parse import urljoin, urlsplit
+        resolved = urlsplit(urljoin(page_url, h))
+        base = urlsplit(page_url)
+        path = resolved.path + (f"?{resolved.query}" if resolved.query else "")
+        path += f"#{resolved.fragment}" if resolved.fragment else ""
+        if (resolved.scheme, resolved.netloc) != (base.scheme, base.netloc):
+            return resolved.geturl()          # off-host: keep it absolute for the scope guard
+        return path or "/"
     if h.startswith("./"):
         return "/" + h[2:]
-    return "/" + h
+    return h if h.startswith("/") else "/" + h
 
 
-def _normalize_action(action: dict, page_url: str | None = None) -> dict:
+def _normalize_action(action: dict) -> dict:
     """Apply normalize_href to an LLM-proposed path so it gets the same treatment as scraped
     links. A non-navigable path is blanked so schema validation (minLength) rejects it."""
     if not isinstance(action, dict):
@@ -127,9 +112,153 @@ def _normalize_action(action: dict, page_url: str | None = None) -> dict:
     target = action.get("target")
     if isinstance(target, dict) and isinstance(target.get("path"), str):
         target = dict(target)
-        target["path"] = normalize_href(target["path"], page_url) or ""
+        target["path"] = normalize_href(target["path"]) or ""
         action = dict(action, target=target)
     return action
+
+
+def form_key(page_url: str, selector: str) -> str:
+    """Identity of a form for "have we tried this already?".
+
+    Must include the page: a selector like `form >> nth=0` is the first form on WHATEVER page
+    you are standing on, so tracking selectors alone marked every page's first form as tried
+    the moment one was submitted.
+    """
+    return f"{(page_url or '').split('#')[0]}::{selector}"
+
+
+def untried_form(observation: dict, visited, scope: dict, deny_actions=None, safe_forms=None,
+                 submit_get_forms: bool = True, allow_writes: bool = False) -> dict | None:
+    """The first form on this page that has not been tried and that policy permits, or None.
+
+    Deliberately not a question for the model. Asking it to "finish the page before following
+    a link" produced three submissions in twenty-eight pages — it walked past the injectable
+    forms on sqli, brute and exec. Whether a page has an untried form is mechanical, so it is
+    decided in code; the model is left to the choice that actually needs semantics, which is
+    where to go next. Policy still adjudicates every proposal, so this cannot become a way
+    around the action rules.
+    """
+    here = observation.get("url", "")
+    for form in observation.get("forms", []):
+        sel = form.get("selector")
+        if not sel or form_key(here, sel) in visited:
+            continue
+        candidate = {"action": "submit_form",
+                     "target": {"method": form.get("method", "POST"), "selector": sel,
+                                "field_bindings": list(form.get("fields") or [])},
+                     "reason": "untried form on this page; reveals its parameters",
+                     "confidence": 1.0}
+        if validate_proposal(candidate, scope, deny_actions, safe_forms, submit_get_forms,
+                             allow_writes, page_url=here)[0]:
+            return candidate
+    return None
+
+
+def unsubmitted_forms(observation: dict, visited, allowed=None) -> dict[str, str]:
+    """The forms on THIS page we have not submitted, as {form_key: page_url} (W6-12).
+
+    `untried_form` only ever judges the page in front of it, so a form on a page the loop
+    then navigates away from was never returned to. Remembering them is what turns "we saw a
+    form there" into "we can go back and submit it".
+
+    `allowed` filters to forms policy would actually permit. Without it a form that can never
+    be submitted stays pending forever: measured, a POST form under write_mode=deny had the
+    loop return to its page 23 times and reach 6 pages instead of 28.
+    """
+    here = observation.get("url", "")
+    out: dict[str, str] = {}
+    for form in observation.get("forms", []):
+        sel = form.get("selector")
+        if not sel:
+            continue
+        if allowed is not None and not allowed(form):
+            continue
+        key = form_key(here, sel)
+        if key not in visited:
+            out[key] = here
+    return out
+
+
+def queued_action(dest: str, reason: str) -> dict:
+    """A deterministic navigation proposal, in the shape policy and dispatch both expect.
+
+    Built here rather than inline because the shape is contractual: `target` is an object, and
+    emitting the bare string refused every proposal and silently ended exploration after one
+    page.
+    """
+    return {"action": "follow_link", "target": {"method": "GET", "path": dest},
+            "reason": reason, "confidence": 1.0}
+
+
+def next_destination(queue, pending: dict, visited) -> str | None:
+    """Where to go when this page has nothing left to submit, or None to ask the model.
+
+    Queued entry points come first — they are the operator's stated starting points, and
+    walking them all up front was the bug: only the LAST seed route was ever observed, so
+    every form on the others was skipped. Measured on DVWA, whose seeds end with xss_r: that
+    page's form was submitted and /vulnerabilities/sqli/, carrying two high-severity findings
+    on ?id=, was visited bare.
+
+    After the queue, return to a page we left holding an unsubmitted form: a form we have seen
+    and not submitted is a parameter nothing has tested.
+    """
+    if queue:
+        return queue[0]
+    for key, url in pending.items():
+        if key not in visited:
+            return url
+    return None
+
+
+def merge_traces(traces: list[dict]) -> dict:
+    """Union several exploration runs into one trace.
+
+    A single run is a sample, not a measurement: with identical configuration one DVWA run
+    reached the injectable routes and the next spent its budget on documentation links. ZAP is
+    deterministic, so the variance is the model's choices — and the cheap answer is to explore
+    more than once and keep everything any pass found. Order is preserved so the result stays
+    reviewable; duplicates are dropped.
+    """
+    if len(traces) == 1:
+        return traces[0]
+    merged = {**traces[0], "index": [], "interactions": [], "forms": [], "api": [],
+              "hosts": sorted({h for t in traces for h in t.get("hosts", [])})}
+    seen_routes: set[str] = set()
+    seen_api: set[tuple] = set()
+    for t in traces:
+        for url in t.get("index", []):
+            if url not in seen_routes:
+                seen_routes.add(url)
+                merged["index"].append(url)
+        merged["interactions"].extend(t.get("interactions", []))
+        merged["forms"].extend(t.get("forms", []))
+        for call in t.get("api", []):
+            key = (call.get("method"), call.get("url"))
+            if key not in seen_api:
+                seen_api.add(key)
+                merged["api"].append(call)
+    return merged
+
+
+def fill_values(fields, data: dict) -> list[tuple[str, str]]:
+    """Which (field, value) pairs to type before submitting a form.
+
+    A form posted with empty strings mostly yields a validation error rather than coverage, so
+    approved test data is what makes submitting one worthwhile. Only fields the application's
+    config names are filled: the tool never invents data to send to someone's application.
+    """
+    return [(f, data[f]) for f in (fields or []) if f in data]
+
+
+def is_progress(url_before: str, url_after: str, before_links: int, after_links: int) -> bool:
+    """Did an executed action achieve anything?
+
+    Either it moved us somewhere new, or it revealed routes that were not visible before (an
+    expanded menu). Neither means the action was useless, and repeating a useless action is
+    how a loop burns its whole budget — observed live: the same unclickable form submitted
+    nineteen times.
+    """
+    return url_after != url_before or after_links > before_links
 
 
 def dispatch(action: dict) -> tuple[str, str] | None:
@@ -140,167 +269,48 @@ def dispatch(action: dict) -> tuple[str, str] | None:
     target = action.get("target") or {}
     if kind in ("follow_link", "visit_api"):
         return ("goto", target["path"]) if target.get("path") else None
-    if kind == "submit_form":
-        return ("submit", target["selector"]) if target.get("selector") else None
-    if kind == "expand_nav":
+    if kind in ("expand_nav", "submit_form"):
         return ("click", target["selector"]) if target.get("selector") else None
     return None
-
-
-def field_selector(form_selector: str, field: str) -> str:
-    """A named field inside a form, as a Playwright chained selector. Pure.
-
-    Chained (`>>`) rather than a CSS descendant because a positional form selector
-    (`form >> nth=2`) is not CSS and cannot be concatenated into one.
-    """
-    return f'{form_selector} >> [name="{field}"]'
-
-
-def effective_safe_forms(safe_forms, config: dict | None) -> list[str]:
-    """The write allow-list a walk runs with: the caller's, else the app config's. Pure.
-
-    It comes from the same config as the test data for a reason: a caller that passes neither
-    would otherwise run with an empty allow-list, so every form the operator approved is refused
-    as an unlisted write — a read-only run that looks like a configured one.
-    """
-    if safe_forms is not None:
-        return list(safe_forms)
-    return appconfig.safe_forms(config) if config else []
-
-
-def page_path(url: str, base_url: str) -> str:
-    """The base-relative path of a page URL, for naming the page a form was seen on. Pure."""
-    if url.startswith(base_url):
-        return url[len(base_url):] or "/"
-    return url
-
-
-def deferred_submits(pending: list[tuple[str, str]], observation: dict, here: str,
-                     submitted, offered) -> list[tuple[str, str]]:
-    """`pending` plus the submittable forms this observation adds, as (page, endpoint). Pure.
-
-    A submit is proposed only once everything readable has been read, and reading navigates away
-    from the page the forms were on -- on WebGoat the walk ends up on a JSON endpoint, observes
-    no forms there and stops, having passed nine allow-listed ones on the way. So the pages a
-    submittable form was seen on are remembered and returned to. `offered` holds the ones already
-    returned to, so a form the policy or the planner declines is not an endless revisit.
-    """
-    out = list(pending)
-    for form in observation.get("forms", []):
-        if not form.get("submittable"):
-            continue
-        entry = (here, form.get("path", ""))
-        if entry[1] and entry[1] not in submitted and entry not in offered and entry not in out:
-            out.append(entry)
-    return out
-
-
-def remaining_links(frontier, observation, visited, scope: dict) -> list[str]:
-    """The in-scope links seen anywhere on this walk that are still unvisited, in the order they
-    were first seen. Pure.
-
-    An observation only describes the page the walk is standing on, so without this the walk can
-    only ever follow a link it can currently see: on the semantic-gate lab it reads /home, steps
-    to /profile, finds nothing there and stops -- with /home's second link never followed. Links
-    are therefore remembered as a frontier and offered again from wherever the walk ends up.
-    """
-    out = [path for path in frontier if path not in visited]
-    for href in observation.get("links", []):
-        if href and href not in visited and href not in out and _in_scope_path(href, scope):
-            out.append(href)
-    return out
-
-
-def vet_values(values, inferred) -> tuple[bool, str]:
-    """Whether planner-supplied values are ones the operator permitted, and well-shaped. Pure.
-
-    `explore.test_data` cannot cover a field whose acceptable value is not knowable in advance --
-    a challenge generated per page load, a reference the application computes -- and those forms
-    are exactly the ones a crawler cannot get past. So the operator may instead declare a field
-    inferable and say what shape its value must have; the planner supplies the content, and this
-    decides whether it is permitted. Content from the model, permission and shape from the
-    operator: a field nobody listed is refused, as is a value outside the declared shape, so the
-    worst a wrong inference costs is a rejected request.
-    """
-    spec = dict(inferred or {})
-    if not isinstance(values, dict):
-        return False, "values must be an object of field -> value"
-    for name, value in values.items():
-        field = spec.get(name)
-        if field is None:
-            return False, f"field {name!r} is not operator-inferable"
-        if not isinstance(value, str):
-            return False, f"value for {name!r} is not a string"
-        if len(value) > int(field.get("max_length", 64)):
-            return False, f"value for {name!r} is longer than the operator allows"
-        pattern = field.get("pattern")
-        if pattern and not re.fullmatch(pattern, value):
-            return False, f"value for {name!r} is outside the operator's approved shape"
-    return True, "values permitted"
-
-
-def form_fill_plan(form: dict, test_data: dict, values=None,
-                   inferred=None) -> list[tuple[str, str]]:
-    """The (field, value) pairs to type into a form, in declaration order. Pure.
-
-    Operator-approved data from `explore.test_data` first, and it wins outright: a field the
-    operator supplied a value for is not open to inference. A field left to the planner is filled
-    from `values` only once vet_values has passed it. Anything else is left empty rather than
-    guessed at, so a form nobody has supplied or permitted data for yields an empty plan and is
-    not submitted.
-    """
-    supplied = dict(values or {})
-    if supplied and not vet_values(supplied, inferred)[0]:
-        supplied = {}
-    plan: list[tuple[str, str]] = []
-    for name in form.get("fields", []):
-        if name in test_data:
-            plan.append((name, test_data[name]))
-        elif name in supplied:
-            plan.append((name, supplied[name]))
-    return plan
-
-
-def inferred_fields_of(plan: list[tuple[str, str]], test_data: dict) -> list[str]:
-    """The fields in a fill plan whose value came from the planner, not the operator. Pure.
-
-    Recorded against the submit so the bundle can tell the two apart: an operator-approved value
-    is reproducible, an inferred one answers a challenge that will differ next time.
-    """
-    return [name for name, _value in plan if name not in test_data]
 
 
 # ---- deterministic fallback proposer (pure) ---------------------------------------------
 
 def _in_scope_path(path: str, scope: dict) -> bool:
     if path.startswith("http://") or path.startswith("https://"):
-        allow = {h.strip().lower() for h in scope.get("fqdn_allow_list", [])}
-        return host_of(path) in allow
+        return in_scope(path, scope.get("fqdn_allow_list", []))
     return path.startswith("/") or path.startswith("#") or path.startswith("./")
 
 
 def propose_fallback(observation: dict, visited, scope: dict, deny_actions=None,
-                     safe_forms=None, test_data=None) -> dict:  # noqa: C901
+                     safe_forms=None, submit_get_forms: bool = True,
+                     allow_writes: bool = False) -> dict:
     """Pick the next action deterministically: the first unvisited, in-scope, non-destructive link,
-    then an unvisited observed API GET, then an allow-listed form we hold test data for; else stop.
-    No LLM. Used as the D9 fallback and in tests.
-
-    Forms come last because a submit is the only step with a side effect: everything readable is
-    read first, so a write happens only when it is the sole way to widen coverage.
-    """
+    then an unvisited observed API GET, then an unsubmitted read-only form; else stop. No LLM.
+    Used as the D9 fallback and in tests."""
     visited = set(visited)
+
+    # The page in front of us first: an untried form here reveals parameters that no amount
+    # of link-following will, and leaving it behind is how /vulnerabilities/brute/ was
+    # visited twice and never submitted.
+    for form in observation.get("forms", []):
+        sel = form.get("selector")
+        if sel and sel not in visited:
+            candidate = {"action": "submit_form",
+                         "target": {"method": form.get("method", "POST"), "selector": sel,
+                                    "field_bindings": list(form.get("fields") or [])},
+                         "reason": "untried form on this page; reveals its parameters",
+                         "confidence": 1.0}
+            if validate_proposal(candidate, scope, deny_actions, safe_forms, submit_get_forms,
+                                 allow_writes, page_url=observation.get("url"))[0]:
+                return candidate
+
     for href in observation.get("links", []):
         if href and href not in visited and _in_scope_path(href, scope):
             candidate = {"action": "follow_link", "target": {"method": "GET", "path": href},
                          "reason": "unvisited in-scope link", "confidence": 1.0}
-            if validate_proposal(candidate, scope, deny_actions, safe_forms)[0]:
-                return candidate
-    for href in observation.get("unvisited", []):
-        if href and href not in visited and _in_scope_path(href, scope):
-            candidate = {"action": "follow_link", "target": {"method": "GET", "path": href},
-                         "reason": "link seen earlier on this walk, still unvisited",
-                         "confidence": 1.0}
-            if validate_proposal(candidate, scope, deny_actions, safe_forms)[0]:
+            if validate_proposal(candidate, scope, deny_actions, safe_forms,
+                                 submit_get_forms, allow_writes)[0]:
                 return candidate
     for api in observation.get("api", []):
         path = api.get("url", "")
@@ -308,68 +318,41 @@ def propose_fallback(observation: dict, visited, scope: dict, deny_actions=None,
                 and _in_scope_path(path, scope)):
             candidate = {"action": "visit_api", "target": {"method": "GET", "path": path},
                          "reason": "unvisited observed API GET", "confidence": 1.0}
-            if validate_proposal(candidate, scope, deny_actions, safe_forms)[0]:
+            if validate_proposal(candidate, scope, deny_actions, safe_forms,
+                                 submit_get_forms, allow_writes)[0]:
                 return candidate
-    for form in observation.get("forms", []):
-        path, selector = form.get("path"), form.get("selector")
-        if not path or not selector or path in visited:
-            continue
-        # No inferred values here on purpose: a deterministic proposer has no way to read a
-        # challenge off the page, and inventing one would make the comparison dishonest.
-        if not form_fill_plan(form, dict(test_data or {})):
-            continue
-        candidate = {"action": "submit_form",
-                     "target": {"method": form.get("method", "POST"), "path": path,
-                                "selector": selector,
-                                "field_bindings": [f for f in form.get("fields", [])]},
-                     "reason": "allow-listed form with approved test data", "confidence": 1.0}
-        if validate_proposal(candidate, scope, deny_actions, safe_forms)[0]:
-            return candidate
     return {"action": "stop", "reason": "no unvisited in-scope non-destructive targets"}
 
 
 # ---- LLM proposer (primary) -------------------------------------------------------------
 
-def propose_llm(observation: dict, model: str, api_key: str | None = None) -> dict:
-    """Ask the configured LLM backend for ONE constrained action given the (already redacted)
-    observation. Raises on any failure so callers fall back (D9). Mirrors generate.plan_from_llm."""
-    schema = _ACTION_SCHEMA.read_text(encoding="utf-8")
+def propose_llm(observation: dict, model: str, api_key: str) -> dict:
+    """Ask the LLM for ONE constrained action given the (already redacted) observation. Raises on
+    any failure so callers fall back (D9). Mirrors authoring/generate.plan_from_llm."""
+    import anthropic  # lazy
+
+    schema = _ACTION_SCHEMA.read_text()
     system = (
         "You drive an authenticated DAST exploration. Given a redacted observation of the current "
         "page (links, forms, observed API calls) you propose exactly ONE next action to widen "
         "coverage of the authenticated surface. Output ONLY a JSON object — no prose, no code "
         "fences — validating against this JSON Schema:\n" + schema +
-        "\nNever propose destructive actions (logout, delete, purchase, admin mutations). Prefer "
-        "follow_link / visit_api on paths that appear in the observation's `links` / `api` and are "
-        "NOT in `visited`. Use expand_nav / submit_form (with a CSS `selector`) only when no "
-        "unvisited link or API path remains.\n"
-        "Each observed form carries `submittable`: true means the operator has allow-listed its "
-        "endpoint and either approved test data for its fields or marked a field inferable, so "
-        "submitting it is permitted. Propose it with BOTH its `path` and its `selector`. A form "
-        "whose `submittable` is false must not be proposed.\n"
-        "A form's `inferable` lists the fields the operator wants YOU to supply a value for, "
-        "because no fixed value would work: a question generated per page load, a reference the "
-        "application computes. Read the form's `prompt` (its visible text) and its fields' "
-        "`label` and `placeholder`, work out what the application is asking for, and put your "
-        "answers in `target.values` as {field: value} -- only for fields named in `inferable`, "
-        "and each value must match that field's stated shape or the action is refused. Every "
-        "other field is filled from the operator's approved data for you: never supply a value "
-        "for one, and never guess at a field that is not inferable.\n"
-        "Getting an inferable field right is the most valuable thing you can do here: the "
-        "application refuses a wrong answer, and whatever lies behind that form stays "
-        "unreachable.\n"
-        "The observation's `unvisited` lists in-scope paths seen earlier on this walk that have "
-        "not been visited yet; they are as proposable as the current page's `links`, so prefer "
-        "one of them over stopping.\n"
-        "Emit {\"action\":\"stop\"} only when nothing useful remains -- and a form with "
-        "`submittable` true whose `path` is not yet in `visited` IS something useful, because "
-        "the surface behind it is reachable no other way. Do not stop while one remains.\n"
-        "The observation's `forbidden` lists path fragments the operator's policy refuses, and "
-        "`rejected` lists targets already refused on this run: proposing either wastes the step, "
-        "so never propose a path containing a `forbidden` fragment or appearing in `rejected`."
+        "\nNever propose destructive actions (logout, delete, purchase, admin mutations). "
+        "FINISH THE PAGE YOU ARE ON FIRST: if the observation lists a form whose `selector` is "
+        "not in `visited`, submit it (submit_form, target.selector exactly as given, "
+        "target.method exactly as given) before following any link. Submitting a form is what "
+        "reveals an endpoint's parameters, and an endpoint with no visible parameters cannot be "
+        "tested. Only when every form here has been tried, follow_link / visit_api to a path in "
+        "`links` / `api` that is not in `visited`. Use expand_nav when a menu hides routes. Emit "
+        "{\"action\":\"stop\"} when nothing useful remains."
     )
     user = "Redacted observation:\n" + json.dumps(observation, indent=2)
-    text = llm_backend.complete(system, user, model, api_key=api_key, max_tokens=1024)
+    client = anthropic.Anthropic(api_key=api_key)
+    msg = client.messages.create(
+        model=model, max_tokens=1024, system=system,
+        messages=[{"role": "user", "content": user}],
+    )
+    text = "".join(getattr(b, "text", "") for b in msg.content)
     return parse_action_text(text)
 
 
@@ -382,7 +365,7 @@ def parse_action_text(text: str) -> dict:
         t = fence.group(1).strip()
     start = t.find("{")
     if start == -1:
-        raise ValueError(f"no JSON object found in text: {llm_backend.snippet(t)}")
+        raise ValueError("no JSON object found in text")
     try:
         obj, _end = json.JSONDecoder().raw_decode(t[start:])
     except json.JSONDecodeError as exc:
@@ -392,69 +375,33 @@ def parse_action_text(text: str) -> dict:
     return obj
 
 
-def target_key(action: dict) -> str | None:
-    """The path or selector an action addresses — what identifies it as already-rejected."""
-    target = action.get("target") or {}
-    return target.get("path") or target.get("selector") or None
-
-
 def next_action(observation: dict, visited, scope: dict, *, deny_actions=None, safe_forms=None,
-                test_data=None, inferred=None, use_llm: bool = True, model: str | None = None,
-                api_key: str | None = None, strict: llm_backend.StrictLLM | None = None,
-                rejected: set[str] | None = None):
-    """Return (action, source). LLM-primary; on any LLM/validation failure, deterministic fallback.
-
-    A rejected target is recorded in `rejected` (when given) so the next observation can tell the
-    model not to propose it again.
-
-    strict is the --require-llm budget: an unavailable provider is fatal immediately (nothing about
-    the run can improve), while a failed call is reported to it and only becomes fatal once enough
-    of them accumulate to mean the provider is dead rather than flaky. A policy rejection is the
-    safety layer working, so it is not a failure at all and still falls back.
-    """
+                submit_get_forms: bool = True, allow_writes: bool = False, use_llm: bool = True,
+                model: str = _DEFAULT_MODEL, api_key: str | None = None):
+    """Return (action, source). LLM-primary; on any LLM/validation failure, deterministic fallback."""
     api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-    model = model or llm_backend.default_model()
-    if use_llm and llm_backend.available(api_key):
+    if use_llm and api_key:
         try:
-            action = _normalize_action(propose_llm(observation, model, api_key),
-                                       observation.get("url"))
+            action = _normalize_action(propose_llm(observation, model, api_key))
             ok, reason = validate_proposal(action, scope, deny_actions, safe_forms,
-                                           inferred=inferred)
+                                           submit_get_forms, allow_writes)
             if ok:
-                if strict is not None:
-                    strict.success()
                 return action, "llm"
             t = action.get("target") or {}
-            if rejected is not None and target_key(action):
-                rejected.add(target_key(action))
             print(f"explore: LLM action rejected ({reason}): {action.get('action')} "
                   f"{t.get('method', '')} {t.get('path') or t.get('selector') or ''}; using fallback",
                   file=sys.stderr)
         except Exception as exc:
             print(f"explore: LLM path failed ({exc}); using fallback", file=sys.stderr)
-            if strict is not None:
-                strict.failure(exc)
-    elif strict is not None:
-        raise llm_backend.LLMRequiredError(
-            f"provider {llm_backend.provider()} is not available "
-            "(is the CLI installed / the token or key set?)")
     return propose_fallback(observation, visited, scope, deny_actions, safe_forms,
-                            test_data), "fallback"
+                            submit_get_forms, allow_writes), "fallback"
 
 
 # ---- browser loop -----------------------------------------------------------------------
 
-def _observe(page, base_url: str, api_events: list[dict], test_data: dict,
-             safe_forms=None, inferred=None) -> dict:
+def _observe(page, base_url: str, api_events: list[dict]) -> dict:
     """Snapshot the current page: url, in-page links, forms (+field names), and API calls seen so
-    far. Best-effort; never raises out of the loop.
-
-    Each form says whether it is `submittable` -- allow-listed by the operator AND either
-    holding approved data for a field or having one the operator left to inference. Without that
-    the model is asked to respect an allow-list it cannot see, and the compliant answer is to
-    never submit anything. `inferable` carries the shape each such field must satisfy, so the
-    model is told what will be accepted rather than finding out by being refused.
-    """
+    far. Best-effort; never raises out of the loop."""
     def _safe_eval(expr, default):
         try:
             return page.evaluate(expr)
@@ -464,188 +411,60 @@ def _observe(page, base_url: str, api_events: list[dict], test_data: dict,
     links = _safe_eval(
         "() => Array.from(document.querySelectorAll('a[href]')).map(a => a.getAttribute('href'))",
         [])
-    # The form's own action/method, not just its fields: a submit is allow-listed by the endpoint
-    # it posts to, so the policy needs the path. The positional `form >> nth=i` keeps forms
-    # addressable on pages like WebGoat's lessons, where every form is id-less and a bare `form`
-    # would always select the first one.
-    # `prompt` and the per-field labels are what make a validating form answerable: the field
-    # names alone say a value is wanted, not what would be accepted. They are page text, so they
-    # go through the same redaction as everything else before the model sees them.
+    # A form is only actionable if we know what to click and how it submits. Report an
+    # addressable selector, its submit control, its method and its field names — reporting
+    # the bare tag made every form on a page look identical and unclickable.
     forms = _safe_eval(
-        "() => Array.from(document.querySelectorAll('form')).map((f, i) => ({selector:"
-        " f.getAttribute('id') ? '#' + f.getAttribute('id') : 'form >> nth=' + i,"
-        " path: f.getAttribute('action') || '', method: (f.getAttribute('method') || 'GET')"
-        ".toUpperCase(), prompt: (f.innerText || '').trim().slice(0, 400),"
-        " fields: Array.from(f.querySelectorAll('input,select,textarea'))"
-        ".map(i => i.getAttribute('name')).filter(Boolean),"
-        " field_info: Array.from(f.querySelectorAll('input,select,textarea'))"
-        ".filter(i => i.getAttribute('name')).map(i => ({name: i.getAttribute('name'),"
-        " type: i.getAttribute('type') || i.tagName.toLowerCase(),"
-        " label: (i.labels && i.labels[0] ? i.labels[0].innerText : '').trim().slice(0, 120),"
-        " placeholder: i.getAttribute('placeholder') || ''}))}))",
+        "() => Array.from(document.querySelectorAll('form')).map((f, i) => {"
+        # f.id is NOT the id attribute when the form has a control named "id": a form's named
+        # controls shadow its properties, so f.id returns that element. getAttribute is immune.
+        "  const fid = f.getAttribute('id');"
+        "  const base = fid ? '#' + CSS.escape(fid) : 'form >> nth=' + i;"
+        "  const btn = f.querySelector('[type=submit], button');"
+        # One selector per form, and it is the CLICKABLE one. Reporting both the container
+        # and its submit control invited the model to copy the container, which submits
+        # nothing — an ambiguity the prompt should not have to resolve.
+        "  return {selector: btn ? base + ' >> ' + (btn.getAttribute('type') === 'submit'"
+        "                  ? '[type=submit]' : 'button') : null,"
+        "          method: (f.getAttribute('method') || 'GET').toUpperCase(),"
+        "          fields: Array.from(f.querySelectorAll('input,select,textarea'))"
+        "                   .map(i2 => i2.getAttribute('name')).filter(Boolean)};"
+        "})",
         [])
-    allowed = set(safe_forms or [])
-    spec = dict(inferred or {})
-    for form in forms:
-        form["path"] = normalize_href(form.get("path", ""), page.url) or ""
-        form["fillable"] = bool(form_fill_plan(form, test_data))
-        form["inferable"] = {name: spec[name] for name in form.get("fields", [])
-                             if name in spec and name not in test_data}
-        form["submittable"] = ((form["fillable"] or bool(form["inferable"]))
-                               and form["path"] in allowed)
     seen: set[str] = set()
     clean: list[str] = []
+    here = page.url
     for l in links:
-        n = normalize_href(l, page.url)
+        n = normalize_href(l, here)
         if n and n not in seen:
             seen.add(n)
             clean.append(n)
     return {"url": page.url, "links": clean, "forms": forms, "api": list(api_events)}
 
 
-def submit_outcome(responses: list[dict], path: str) -> dict:
-    """What the application answered to a submit of `path`: {"status": int, "accepted": bool}, or
-    {} if no response to it was observed. Pure.
-
-    A posted form is not an exercised workflow. Without the status, `submits` counts requests the
-    application may have refused, and a walk that answered a validating form wrongly is reported
-    exactly like one that answered it right -- the coverage claim would be unfalsifiable.
-
-    `accepted` is 2xx/3xx and nothing else, which is a claim about coverage rather than about the
-    application's intent: a 303 to a confirmation page took the submission, a 403 or a 422 or a 429
-    did not, and for "did this walk get past the form" those three are the same answer however
-    different their causes. The status is reported alongside, so a reader can tell them apart.
-    Query strings are ignored because a form is allow-listed by its path, so that is the identity
-    the submit was validated against.
-    """
-    want = urlsplit(path).path
-    for seen in reversed(responses):
-        if seen.get("method", "").upper() == "GET":
-            continue
-        if urlsplit(seen.get("url", "")).path == want:
-            status = seen.get("status")
-            if not isinstance(status, int):
-                print(f"explore: submit to {path} recorded a non-integer status "
-                      f"({status!r}); reporting the outcome as unknown", file=sys.stderr)
-                return {}
-            return {"status": status, "accepted": 200 <= status < 400}
-    return {}
-
-
-def response_outcome(response) -> dict:
-    """submit_outcome's answer, read straight off a Playwright response object; {} if unreadable."""
-    try:
-        status = response.status
-    except Exception as exc:
-        print(f"explore: could not read the status of a submit response ({exc})", file=sys.stderr)
-        return {}
-    if not isinstance(status, int):
-        print(f"explore: submit response carried a non-integer status ({status!r}); "
-              "reporting the outcome as unknown", file=sys.stderr)
-        return {}
-    return {"status": status, "accepted": 200 <= status < 400}
-
-
-_SUBMIT_JS = "f => f.requestSubmit ? f.requestSubmit() : f.submit()"
-
-
-def _submit(page, selector: str, plan: list[tuple[str, str]], events: list[dict],
-            inferred_names=None, path: str | None = None) -> dict:
-    """Fill a form with approved values, submit it through the page's own handlers, and return
-    what the application answered ({"status":, "accepted":}; {} if nothing was observed).
-
-    requestSubmit(), not submit(): an application that intercepts its forms in JavaScript (as
-    WebGoat's lessons do) never sees a raw form.submit(), so the request under test would never
-    be issued. Best-effort, like the rest of the loop -- a form that refuses to submit costs a
-    step, not the run.
-
-    The response is waited for *around* the submit rather than after it. requestSubmit() navigates
-    asynchronously, so at the moment it returns the old document is still current and already
-    idle: wait_for_load_state() comes straight back, and the walk reads the pre-submit page and
-    judges the submit by it. That is how a gate that had been answered could still look like a
-    dead end.
-
-    expect_response only sees responses that arrive after it is entered, so what it reports is
-    caused by this submit. If the page issues more than one non-GET request to the form's own
-    path while it is open, the first to answer is the one reported.
-    """
-    # Field names and which of them the planner answered; never the values. `inferred` is what
-    # tells the bundle this submit answered a challenge, so a replay cannot pretend to reproduce
-    # it from a recorded value.
-    events.append({"type": "submit", "url": page.url, "selector": selector,
-                   "fields": [name for name, _ in plan],
-                   "inferred": list(inferred_names or [])})
-    want = urlsplit(path).path if path else ""  # no path to match on -> listener fallback
-    unreadable: list[str] = []
-
-    def _caused_by_the_submit(response) -> bool:
-        try:
-            return (response.request.method.upper() != "GET"
-                    and urlsplit(response.url).path == want)
-        except Exception as exc:
-            # A response we cannot read is not evidence about this submit, but staying quiet
-            # would make the wait look like the application never answered. Said once: the
-            # predicate runs for every response in flight.
-            if not unreadable:
-                unreadable.append(str(exc))
-                print(f"explore: skipped an unreadable response while waiting for {want} "
-                      f"({exc})", file=sys.stderr)
-            return False
-
-    outcome: dict = {}
-    try:
-        for name, value in plan:
-            page.fill(field_selector(selector, name), value, timeout=3000)
-        if want and hasattr(page, "expect_response"):
-            with page.expect_response(_caused_by_the_submit, timeout=10000) as info:
-                page.eval_on_selector(selector, _SUBMIT_JS)
-            outcome = response_outcome(info.value)
-        else:
-            page.eval_on_selector(selector, _SUBMIT_JS)
-    except Exception as exc:
-        print(f"explore: form submit on {selector} did not complete ({exc})", file=sys.stderr)
-    try:
-        # Let the response the submit caused finish rendering before the next observation.
-        page.wait_for_load_state("networkidle", timeout=10000)
-    except Exception as exc:
-        # Not fatal -- the next observation reads whatever did render -- but a page that never
-        # settles is worth knowing about when a walk comes back thinner than expected.
-        print(f"explore: page did not settle after the submit on {selector} ({exc})",
-              file=sys.stderr)
-    return outcome
-
-
 def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[str], scope: dict, *,
             config: dict | None = None,
             deny_actions=None, safe_forms=None, max_pages: int = 50, use_llm: bool = True,
-            model: str | None = None, api_key: str | None = None, zap_proxy: str | None = None,
-            headless: bool = True, slow_mo: int = 0, require_llm: bool = False,
-            stats: dict | None = None) -> tuple[dict, ScopeGuard]:
+            model: str = _DEFAULT_MODEL, api_key: str | None = None, zap_proxy: str | None = None,
+            headless: bool = True, slow_mo: int = 0,
+            already_seen: set | None = None) -> tuple[dict, ScopeGuard]:
     """Run the seeded, LLM-driven exploration loop and return (trace, guard). The trace matches
     record's output (build_trace), so generate/validate/runner consume it unchanged.
 
     slow_mo (ms) delays each Playwright action so a headed run is watchable in a live demo (same
-    knob as record); 0 (default) is full speed and does not affect the captured trace.
-
-    stats, when given, is filled with the per-step action source counts ({"llm": n,
-    "fallback": n}) so a caller can report how much of the walk the model actually drove."""
+    knob as record); 0 (default) is full speed and does not affect the captured trace."""
     from playwright.sync_api import sync_playwright
 
     if not seed_routes:
         raise ValueError("explore requires at least one seed route")
-    if require_llm and not use_llm:
-        raise llm_backend.LLMRequiredError("require_llm contradicts use_llm=False (--no-llm)")
-    strict = llm_backend.StrictLLM() if require_llm else None
     launch_args = ["--no-sandbox", "--disable-dev-shm-usage"] if os.environ.get(
         "RUNNER_CHROMIUM_NO_SANDBOX") else []
     # App-specific knowledge (how auth is proven, what counts as an API call) comes from the
     # app config; the loop itself names no application.
     api_patterns = appconfig.api_patterns(config) if config else ("/rest/", "/api/")
-    submit_get_forms = appconfig.submit_get_forms(config) if config else True
+    allow_get_forms = appconfig.submit_get_forms(config) if config else True
     allow_writes = appconfig.writes_allowed(config) if config else False
-    test_data = appconfig.test_data(config) if config else {}
-    inferred = appconfig.inferred_fields(config) if config else {}
-    safe_forms = effective_safe_forms(safe_forms, config)
+    form_data = appconfig.test_data(config) if config else {}
     proof = appconfig.proof(config) if config else None
     guard = ScopeGuard(scope, mode="discovery")  # block-and-continue during discovery (KI4)
     events: list[dict] = []
@@ -660,27 +479,19 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
         browser = pw.chromium.launch(**launch)
         context = browser.new_context(ignore_https_errors=True, storage_state=storage_state)
         page = context.new_page()
-        page.route("**/*", lambda route: guard.route_handler(route))  # safety layer 2
-        page.on("request", lambda r: api_events.append({"type": "request", "method": r.method,
-                "url": r.url}) if any(m in r.url for m in api_patterns) else None)
-        responses: list[dict] = []
-
-        def _record_response(r) -> None:
-            # Best-effort, like the rest of the loop: a response whose fields cannot be read
-            # leaves the outcome unknown, and must not raise out of an event handler mid-walk.
-            try:
-                responses.append({"method": r.request.method, "url": r.url, "status": r.status})
-            except Exception as exc:
-                print(f"explore: could not record a response ({exc})", file=sys.stderr)
-
-        page.on("response", _record_response)
+        guard.attach(page)  # safety layer 2: page.route + redirect hops
+        page.on("request", lambda r: api_events.append(request_event(r))
+                if any(m in r.url for m in api_patterns) else None)
 
         liveness = prove_auth_live(page, base_url, seed_routes[0], proof=proof)
         if not liveness["alive"]:
             context.close(); browser.close()
             raise SessionDeadError(liveness["reason"])
 
-        visited: set[str] = set()
+        # Carry what earlier passes covered, so a repeat explores somewhere new instead of
+        # re-deciding the same way: passes from one seed with one model are otherwise highly
+        # correlated, and their union is barely wider than a single run.
+        visited: set[str] = set(already_seen or ())
 
         def _goto(path: str):
             url = path if path.startswith("http") else base_url + path
@@ -691,80 +502,120 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
             except Exception:
                 pass
 
-        for route in seed_routes:
-            _goto(route)
+        # Seed routes are QUEUED, not walked up front: walking them meant only the last one was
+        # ever observed, so every form on the others went unsubmitted (W6-12).
+        queue = list(seed_routes)
+        _goto(queue.pop(0))
+        pending_forms: dict[str, str] = {}
 
-        steps = 0
-        rejected: set[str] = set()
-        pending: list[tuple[str, str]] = []   # (page, endpoint) of forms seen but not yet posted
-        frontier: list[str] = []              # in-scope links seen anywhere, still unvisited
-        submitted: set[str] = set()
-        offered: set[tuple[str, str]] = set()
-        forbidden = deny_terms(scope, deny_actions)
+        steps = stalled = 0
         while steps < max_pages:
-            observation = redact(_observe(page, base_url, api_events, test_data,
-                                          safe_forms, inferred))  # redacted before the LLM
+            observation = redact(_observe(page, base_url, api_events))  # redact BEFORE the LLM
             observation["visited"] = sorted(visited)  # coverage so far, so the model doesn't repeat
-            observation["forbidden"] = forbidden      # what policy will refuse, said up front
-            observation["rejected"] = sorted(rejected)
-            here = page_path(observation.get("url", ""), base_url)
-            pending = deferred_submits(pending, observation, here, submitted, offered)
-            frontier = remaining_links(frontier, observation, visited, scope)
-            observation["unvisited"] = list(frontier)
-            action, src = next_action(observation, visited, scope, deny_actions=deny_actions,
-                                      safe_forms=safe_forms, test_data=test_data,
-                                      inferred=inferred, use_llm=use_llm, model=model,
-                                      api_key=api_key, strict=strict,
-                                      rejected=rejected)
-            if stats is not None:
-                stats[src] = stats.get(src, 0) + 1
+            # Remember this page's unsubmitted forms before we can be navigated away from it,
+            # but only the ones policy would actually let us submit.
+            def _permitted(form, _here=observation.get("url", "")):
+                sel = form.get("selector")
+                if not sel:
+                    return False
+                candidate = {"action": "submit_form",
+                             "target": {"method": form.get("method", "POST"), "selector": sel,
+                                        "field_bindings": list(form.get("fields") or [])},
+                             "reason": "remembered for later", "confidence": 1.0}
+                return validate_proposal(candidate, scope, deny_actions, safe_forms,
+                                         allow_get_forms, allow_writes, page_url=_here)[0]
+
+            pending_forms.update(unsubmitted_forms(observation, visited, allowed=_permitted))
+            # Deterministic first: try this page's own inputs before asking where to go next.
+            action = untried_form(observation, visited, scope, deny_actions, safe_forms,
+                                  allow_get_forms, allow_writes)
+            if action is None:
+                dest = next_destination(queue, pending_forms, visited)
+                if dest is not None:
+                    if queue and dest == queue[0]:
+                        queue.pop(0)
+                    else:
+                        # Heading there now. Drop it so a form that still refuses to submit
+                        # cannot send us back indefinitely.
+                        for k, u in list(pending_forms.items()):
+                            if u == dest:
+                                pending_forms.pop(k)
+                    action = queued_action(
+                        dest, "queued entry point, or a page left holding an unsubmitted form")
+                else:
+                    action, _src = next_action(observation, visited, scope,
+                                               deny_actions=deny_actions, safe_forms=safe_forms,
+                                               submit_get_forms=allow_get_forms,
+                                               allow_writes=allow_writes, use_llm=use_llm,
+                                               model=model, api_key=api_key)
             if action.get("action") == "stop":
-                # Nothing here, but a submittable form may be waiting on a page already left.
-                nxt = next((p for p in pending if p[1] not in submitted), None)
-                if nxt is None:
-                    if not frontier:
-                        break
-                    _goto(frontier[0])
-                    steps += 1
-                    continue
-                pending.remove(nxt)
-                offered.add(nxt)
-                if nxt[0] != here:
-                    _goto(nxt[0])
-                steps += 1
-                continue
+                # Before ending the run, spend what is left of the budget on forms we saw and
+                # never submitted — each one is an untested parameter.
+                dest = next_destination([], pending_forms, visited)
+                if dest is None:
+                    break
+                for k, u in list(pending_forms.items()):
+                    if u == dest:
+                        pending_forms.pop(k)
+                action = queued_action(
+                    dest, "returning to an unsubmitted form before stopping")
             ok, _reason = validate_proposal(action, scope, deny_actions, safe_forms,
-                                            submit_get_forms, allow_writes, inferred)
+                                            allow_get_forms, allow_writes,
+                                            page_url=observation.get("url"))
             if not ok:  # fail-closed: never execute an action that didn't pass validation
                 break
             todo = dispatch(action)
             if todo is None:
                 break  # nothing executable (fail closed rather than guess)
             op, arg = todo
+            url_before, links_before = page.url, len(observation.get("links", []))
             if op == "goto":
                 _goto(arg)
-            elif op == "submit":
-                form = next((f for f in observation.get("forms", [])
-                             if f.get("selector") == arg), {})
-                values = (action.get("target") or {}).get("values")
-                plan = form_fill_plan(form, test_data, values, form.get("inferable"))
-                if not plan:
-                    break  # no approved value for any field: fail closed rather than post blanks
-                outcome = _submit(page, arg, plan, events, inferred_fields_of(plan, test_data),
-                                  path=action["target"]["path"])
-                events[-1].update(outcome or submit_outcome(responses,
-                                                            action["target"]["path"]))
-                visited.add(action["target"]["path"])
-                submitted.add(action["target"]["path"])
-            else:  # click a selector (expand_nav); never a navigation
+            else:  # click a selector (expand_nav / submit_form)
+                if action.get("action") == "submit_form":
+                    # Type approved test data into the fields this form declares, so the
+                    # submission exercises the endpoint instead of its validation errors.
+                    for form in observation.get("forms", []):
+                        if form.get("selector") == arg:
+                            for field, value in fill_values(form.get("fields"), form_data):
+                                try:
+                                    page.fill(f"[name={field}]", value, timeout=2000)
+                                    events.append({"type": "fill", "selector": f"[name={field}]",
+                                                   "field": field})
+                                except Exception:
+                                    pass
                 events.append({"type": "click", "selector": arg})
                 try:
                     page.click(arg, timeout=3000)
+                    page.wait_for_load_state("networkidle", timeout=5000)
                 except Exception:
                     pass
                 visited.add(arg)
+                visited.add(form_key(url_before, arg))   # per-page, see form_key
+                # A submitted form navigates, usually to the same path carrying the query
+                # parameters it just revealed. Record where we landed: an URL the trace never
+                # saw is an endpoint the scanner will never test.
+                landed = page.url
+                if landed != url_before:
+                    events.append({"type": "goto", "url": landed})
+                    visited.add(landed)
+
+            # Refuse to keep paying for actions that change nothing (observed: the same
+            # unclickable form submitted nineteen times, burning the whole budget).
+            after_links = len(_observe(page, base_url, api_events).get("links", []))
+            if not is_progress(url_before, page.url, links_before, after_links):
+                stalled += 1
+                if stalled >= _MAX_STALLED_STEPS:
+                    # Stalling here does not mean there is nothing left anywhere: a page we
+                    # left may still hold an unsubmitted form.
+                    if next_destination(queue, pending_forms, visited) is None:
+                        break
+                    stalled = 0
+            else:
+                stalled = 0
             for f in observation.get("forms", []):
                 events.append({"type": "form", "url": observation.get("url"),
+                               "method": f.get("method", "GET"),
                                "fields": f.get("fields", [])})
             steps += 1
 
@@ -772,84 +623,79 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
         browser.close()
 
     guard.finalize()  # discovery mode: block-and-continue, does not raise
-    if strict is not None:
-        strict.finish()  # a walk the model never drove is a broken provider, not a fallback run
     events.extend(api_events)  # fold observed API calls into the trace
     return build_trace(app_id, base_url, events), guard
 
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="LLM-driven authenticated exploration -> trace (Phase B).")
-    p.add_argument("--app", default=None, help="App id or path to security/dast/<app>/app.yaml")
-    p.add_argument("--seed", required=True, help="Seed config (storage_state + seed_routes)")
-    p.add_argument("--scope", required=True, help="App scope.json (preflight-validated first)")
+    p.add_argument("--app", default=None,
+                   help="App id or path to security/dast/<app>/app.yaml — supplies the scope, "
+                        "the seeded session and the entry points, so --seed/--scope are only "
+                        "needed for a hand-written legacy bundle")
+    p.add_argument("--seed", default=None, help="Override: seed config (storage_state + routes)")
+    p.add_argument("--scope", default=None, help="Override: a scope.json file")
     p.add_argument("--schema", default=str(_ROOT / "contracts" / "scope.schema.json"))
     p.add_argument("--base-url", default=None, help="Override the seed's target.base_url")
     p.add_argument("--zap-proxy", default=None, help="Proxy through ZAP so hosts match the runner (D7)")
     p.add_argument("--out-dir", required=True, help="Directory for trace.json + index.json")
     p.add_argument("--app-id", default=None, help="Defaults to scope.app_id")
-    p.add_argument("--model", default=None,
-                   help="LLM model id; defaults to the LLM_PROVIDER's default (Anthropic or Copilot)")
+    p.add_argument("--model", default=_DEFAULT_MODEL)
     p.add_argument("--no-llm", action="store_true", help="Force the deterministic fallback proposer")
-    p.add_argument("--require-llm", action="store_true",
-                   help="Fail instead of falling back when the LLM path cannot be taken")
     p.add_argument("--max-pages", type=int, default=50)
+    p.add_argument("--repeat", type=int, default=1, metavar="N",
+                   help="Explore N times and union the results. One run is a sample: the "
+                        "model's route choices vary, so a single pass can miss the routes "
+                        "that matter. Costs about a minute per extra pass.")
     p.add_argument("--headed", action="store_true")
     p.add_argument("--slow-mo", type=int, default=0, metavar="MS",
                    help="Delay each browser action by MS milliseconds (for headed demos/recordings)")
     args = p.parse_args(argv)
-    if args.require_llm and args.no_llm:  # caught here so it costs no session seed and no traffic
-        p.error("--require-llm contradicts --no-llm")
 
-    scope = preflight(args.scope, args.schema)  # safety layer 1 before any traffic
-    seed = load_seed(args.seed)
+    if not (args.app or (args.seed and args.scope)):
+        p.error("give --app, or both --seed and --scope for a hand-written bundle")
+    config = appconfig.load_app_config(args.app) if args.app else None
+
+    # Safety layer 1 runs either way: a scope derived from app.yaml goes through the same
+    # fail-closed check as one read from disk (D2/NFR-2).
+    if args.scope:
+        scope = preflight(args.scope, args.schema)
+    else:
+        from runner import env_registry
+        scope = appconfig.scope_from_config(config)
+        check_scope(scope, registry=env_registry.load())   # W4-6: verified, not trusted
+
+    seed = load_seed(args.seed) if args.seed else appconfig.seed_from_config(config)
     base_url = args.base_url or seed["target"]["base_url"]
     app_id = args.app_id or scope["app_id"]
-    model = args.model or llm_backend.default_model()
+    traces, guard = [], None
+    from runner.session_store import SessionStoreError, open_storage_state
+    ttl = appconfig.storage_state_ttl_hours(config) if config else 12
     try:
-        config = appconfig.load_app_config(args.app or app_id)
-    except Exception:
-        config = None   # exploration can still run on a raw seed+scope without an app.yaml
-    stats: dict[str, int] = {}
-    try:
-        trace, guard = explore(
-            app_id, base_url, seed["session"]["storage_state"], seed["seed_routes"], scope,
-            config=config,
-            deny_actions=seed.get("deny_actions"), max_pages=args.max_pages,
-            use_llm=not args.no_llm, model=model, zap_proxy=args.zap_proxy,
-            headless=not args.headed, slow_mo=args.slow_mo, require_llm=args.require_llm,
-            stats=stats,
-        )
+        with open_storage_state(seed["session"]["storage_state"], ttl) as state_path:  # W5-3
+            for _pass in range(max(1, args.repeat)):
+                trace, guard = explore(
+                    app_id, base_url, state_path, seed["seed_routes"], scope,
+                    config=config, deny_actions=seed.get("deny_actions"),
+                    max_pages=args.max_pages, use_llm=not args.no_llm, model=args.model,
+                    zap_proxy=args.zap_proxy, headless=not args.headed, slow_mo=args.slow_mo,
+                    already_seen={u for t in traces for u in t.get("index", [])},
+                )
+                traces.append(trace)
+            trace = merge_traces(traces)
     except SessionDeadError as exc:
         print(f"EXPLORE ABORT: seeded session dead ({exc}); re-seed and retry", file=sys.stderr)
         return 2
-    except llm_backend.LLMRequiredError as exc:
+    except SessionStoreError as exc:
         print(f"EXPLORE ABORT: {exc}", file=sys.stderr)
-        return 3
+        return 2
 
     write_trace(trace, args.out_dir)
     print(json.dumps({
-        "app_id": app_id, "pages": len(trace["index"]), "api_calls": len(trace["api"]),
-        "forms": len(trace["forms"]),
-        # Forms observed vs. forms actually posted: the number that says whether the walk
-        # exercised the write paths the operator approved, or only looked at them.
-        "submits": sum(1 for ev in trace["interactions"] if ev.get("type") == "submit"),
-        # Of those, the ones whose value the planner reasoned out rather than the operator
-        # supplying it: the number that says whether a validating form was actually answered.
-        "inferred_submits": sum(1 for ev in trace["interactions"]
-                                if ev.get("type") == "submit" and ev.get("inferred")),
-        # Of the submits, the ones the application answered without refusing: a posted form the
-        # app rejected is not coverage, and an inferred value that was wrong looks identical
-        # under `submits` alone.
-        "accepted_submits": sum(1 for ev in trace["interactions"]
-                                if ev.get("type") == "submit" and ev.get("accepted")),
-        "refused_submits": sum(1 for ev in trace["interactions"]
-                               if ev.get("type") == "submit" and ev.get("accepted") is False),
-        "hosts": trace["hosts"],
+        "app_id": app_id, "passes": len(traces),
+        "pages": len(trace["index"]), "api_calls": len(trace["api"]),
+        "forms": len(trace["forms"]), "hosts": trace["hosts"],
         "requests_seen": len(guard.decisions), "blocked": len(guard.violations),
-        # How much of the walk the model actually drove: all-fallback steps with the LLM enabled
-        # mean the provider is misconfigured, not that the tool chose to be deterministic.
-        "steps_by_source": stats,
         "out_dir": args.out_dir,
     }, indent=2))
     return 0

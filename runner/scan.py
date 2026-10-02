@@ -13,6 +13,7 @@ authenticated traffic, so the active scan attacks authenticated endpoints too.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import re
 import sys
@@ -24,26 +25,29 @@ from pathlib import Path
 import yaml
 
 from runner.preflight import preflight
-from runner.scope_guard import host_of
+from runner import zapapi
+from runner.scope_guard import host_of, in_scope
 
 _DEFAULT_SCHEMA = "contracts/scope.schema.json"
-_SLOW_SCANNERS = "40026"  # DOM-XSS (browser-based) — wedges the API; disabled for bounded runs
+_SLOW_SCANNERS = "40026"  # DOM-XSS (browser-based) — wedges the API; the historical default
+
+
+class ZapUnavailableError(Exception):
+    """Raised when the ZAP daemon stops answering mid-scan.
+
+    Distinct from a scan that merely takes a long time: a run should not end in a raw socket
+    traceback when the daemon has died (observed: the container OOM-killed by a browser-driven
+    rule), because the operator cannot tell those apart from the stack alone.
+    """
 
 
 class ScanScopeError(Exception):
     """Raised when the scan target is not covered by the scope allow-list (safety)."""
 
 
-class ZapUnavailableError(Exception):
-    """Raised when ZAP stops answering during a scan."""
-
-
 def _api(zap_api: str, path: str, params: dict | None = None, timeout: float = 30.0) -> dict:
-    url = zap_api.rstrip("/") + path
-    if params:
-        url += "?" + urllib.parse.urlencode(params)
-    with urllib.request.urlopen(url, timeout=timeout) as resp:
-        return json.loads(resp.read().decode())
+    # Always through the keyed client (W4-4).
+    return zapapi.call(zap_api, path, params, timeout)
 
 
 def new_session(zap_api: str, name: str = "") -> None:
@@ -55,14 +59,25 @@ def new_session(zap_api: str, name: str = "") -> None:
 
 
 def load_policy(path: str) -> dict | None:
+    """Read a generated `zap-policy.yaml`, or None when the bundle has none.
+
+    `generate` writes JSON, which is valid YAML, so either form loads.
+    """
     p = Path(path)
     if not p.is_file():
         return None
-    loaded = yaml.safe_load(p.read_text(encoding="utf-8"))
+    loaded = yaml.safe_load(p.read_text())
     return loaded if isinstance(loaded, dict) else None
 
 
-def resolved_policy(policy: dict | None, max_scan_min: int, max_rule_min: int) -> dict:
+def resolved_policy(policy: dict | None, max_scan_min: int, max_rule_min: int,
+                    throttle: dict | None = None) -> dict:
+    """What this scan was actually configured to do, for the coverage artifact (R2).
+
+    Recording it is what lets two scans of the same application be compared honestly: a
+    finding that vanished because a rule was switched off is not a fix, and without this the
+    difference is invisible.
+    """
     policy = policy or {}
     return {
         "write_mode": policy.get("write_mode", "deny"),
@@ -71,60 +86,296 @@ def resolved_policy(policy: dict | None, max_scan_min: int, max_rule_min: int) -
         "disabled_scanners": list(policy.get("disabled_scanners", [_SLOW_SCANNERS])),
         "max_scan_min": max_scan_min,
         "max_rule_min": max_rule_min,
+        "throttle": dict(throttle) if throttle else "zap defaults",
     }
 
 
 def configure_policy(zap_api: str, max_scan_min: int = 4, max_rule_min: int | None = None,
-                     policy: dict | None = None) -> None:
-    """Bound + lighten the active scan using the bundle policy when present."""
+                     policy: dict | None = None, throttle: dict | None = None) -> None:
+    """Bound the active scan, and apply the bundle's `zap-policy.yaml` when there is one.
+
+    Without a policy this behaves as it always did (time budgets + the historically disabled
+    DOM-XSS scanner), so compose and hand-run scans are unaffected.
+
+    With one, attack strength and alert threshold — the two knobs that actually govern DAST
+    depth and noise — are applied to every scanner category, and the rule set is reset with
+    `enableAllScanners` before the policy's exclusions are applied. That reset matters: ZAP's
+    scanner state is daemon-global and outlives a session, so without it a rule switched off
+    by an earlier run stays off and this scan silently covers less than its policy claims.
+    """
+    # The per-rule budget comes from the bundle's policy unless a caller overrides it. It used
+    # to be a parameter defaulting to 1 that nothing ever passed, so `generate` wrote
+    # max_rule_min into zap-policy.yaml, the scan ignored it, and coverage.json reported the
+    # value that had not been used — config and artifact agreeing while both contradicted it.
     if max_rule_min is None:
         max_rule_min = int((policy or {}).get("max_rule_min") or 1)
+    # How hard the scan pushes (W4-3). A shared environment has other users; ZAP's defaults are
+    # tuned for throughput, not courtesy. Unset leaves ZAP's defaults exactly as they were.
+    throttle = throttle or {}
+    if throttle.get("threads_per_host"):
+        _api(zap_api, "/JSON/ascan/action/setOptionThreadPerHost/",
+             {"Integer": int(throttle["threads_per_host"])})
+        _api(zap_api, "/JSON/spider/action/setOptionThreadCount/",
+             {"Integer": int(throttle["threads_per_host"])})
+    if throttle.get("delay_ms") is not None:
+        _api(zap_api, "/JSON/ascan/action/setOptionDelayInMs/", {"Integer": int(throttle["delay_ms"])})
     _api(zap_api, "/JSON/ascan/action/setOptionMaxScanDurationInMins/", {"Integer": max_scan_min})
     _api(zap_api, "/JSON/ascan/action/setOptionMaxRuleDurationInMins/", {"Integer": max_rule_min})
+
     if policy:
-        categories = [item["id"] for item in
-                      _api(zap_api, "/JSON/ascan/view/policies/").get("policies", [])]
+        categories = [p["id"] for p in _api(zap_api, "/JSON/ascan/view/policies/").get("policies", [])]
         strength = str(policy.get("attack_strength", "medium")).upper()
         threshold = str(policy.get("alert_threshold", "medium")).upper()
-        for category in categories:
+        for cid in categories:
             _api(zap_api, "/JSON/ascan/action/setPolicyAttackStrength/",
-                 {"id": category, "attackStrength": strength})
+                 {"id": cid, "attackStrength": strength})
             _api(zap_api, "/JSON/ascan/action/setPolicyAlertThreshold/",
-                 {"id": category, "alertThreshold": threshold})
-    _api(zap_api, "/JSON/ascan/action/enableAllScanners/")
+                 {"id": cid, "alertThreshold": threshold})
+
+    _api(zap_api, "/JSON/ascan/action/enableAllScanners/")   # deterministic starting point
     disabled = list(policy.get("disabled_scanners", [])) if policy else [_SLOW_SCANNERS]
     if disabled:
-        _api(zap_api, "/JSON/ascan/action/disableScanners/",
-             {"ids": ",".join(map(str, disabled))})
-    _api(zap_api, "/JSON/ascan/action/disableScanners/", {"ids": _SLOW_SCANNERS})
+        _api(zap_api, "/JSON/ascan/action/disableScanners/", {"ids": ",".join(map(str, disabled))})
 
 
-def _poll(zap_api: str, view_path: str, scan_id: str, poll_s: float, max_polls: int) -> None:
-    failures = 0
+_MAX_CONSECUTIVE_API_FAILURES = 3
+
+
+def stop_all(zap_api: str) -> dict:
+    """Stop every spider and active scan ZAP is running (W4-3). Both are tried even if one fails:
+    a half-stopped scanner is still attacking. Returns which stopped."""
+    stopped = {}
+    for kind in ("ascan", "spider"):
+        try:
+            _api(zap_api, f"/JSON/{kind}/action/stopAllScans/")
+            stopped[kind] = True
+        except Exception:
+            stopped[kind] = False
+    return stopped
+
+
+def import_openapi(zap_api: str, source: str, target: str, zap_spec_dir: str | None = None) -> dict:
+    """Seed ZAP with every operation an OpenAPI/Swagger spec declares (W6-4), so the scan can
+    attack endpoints and parameters no walk reached.
+
+    A URL is fetched by ZAP itself. A file must be readable by ZAP — `importFile` takes a path on
+    ZAP's machine — so a spec kept under security/dast/ is imported only when
+    `$DAST_ZAP_SPEC_DIR` says where that directory is mounted inside ZAP (compose mounts it at
+    /zap/specs). Otherwise the spec still gives the coverage denominator, and the run says it
+    was not imported.
+    """
+    if source.startswith(("http://", "https://")):
+        _api(zap_api, "/JSON/openapi/action/importUrl/", {"url": source})
+        return {"imported": True}
+    rel = source.split("security/dast/", 1)[-1] if "security/dast/" in source else None
+    if not (zap_spec_dir and rel):
+        return {"imported": False,
+                "note": "spec file not imported into ZAP: set DAST_ZAP_SPEC_DIR to where "
+                        "security/dast is mounted inside ZAP (compose: /zap/specs)"}
+    _api(zap_api, "/JSON/openapi/action/importFile/",
+         {"file": f"{zap_spec_dir.rstrip('/')}/{rel}", "target": target})
+    return {"imported": True}
+
+
+def traverse_regexes(origins) -> list[str]:
+    """Anchored patterns for login-only origins — the same form as the context includes."""
+    return context_regexes(origins)
+
+
+def exclude_traverse(zap_api: str, origins) -> list[str]:
+    """Let ZAP forward a login-only origin's traffic without recording it (scope.traverse).
+    Measured: excluded traffic loads normally and leaves nothing in ZAP's history or site tree,
+    so nothing there can be passively flagged or actively attacked. Session-scoped: call after
+    new_session."""
+    rxs = traverse_regexes(origins)
+    for rx in rxs:
+        _api(zap_api, "/JSON/core/action/excludeFromProxy/", {"regex": rx})
+    return rxs
+
+
+def pause_all(zap_api: str) -> None:
+    """Hold every active scan while the session is re-established (W5-2)."""
+    _api(zap_api, "/JSON/ascan/action/pauseAllScans/")
+
+
+def resume_all(zap_api: str) -> None:
+    _api(zap_api, "/JSON/ascan/action/resumeAllScans/")
+
+
+def add_anti_csrf_tokens(zap_api: str, names) -> None:
+    """Teach ZAP an application's anti-CSRF field names, so it fetches a fresh token for each
+    attack instead of replaying a used one (W5-2). DVWA's `user_token` is not a ZAP default."""
+    for name in names or []:
+        _api(zap_api, "/JSON/acsrf/action/addOptionToken/", {"String": name})
+
+
+def _poll(zap_api: str, view_path: str, scan_id: str, poll_s: float, max_polls: int,
+          on_tick=None) -> None:
+    """Poll a ZAP scan to completion, tolerating a slow answer but not a dead daemon."""
+    try:
+        _poll_until_done(zap_api, view_path, scan_id, poll_s, max_polls, on_tick)
+    except KeyboardInterrupt:
+        # Ctrl-C used to kill the runner and leave ZAP attacking the application on its own.
+        stop_all(zap_api)
+        raise
+
+
+def _poll_until_done(zap_api: str, view_path: str, scan_id: str, poll_s: float,
+                     max_polls: int, on_tick=None) -> None:
+    from runner import events
+    kind = view_path.split("/")[2]                          # ascan | spider
+    failures, last_progress = 0, 0.0
     for _ in range(max_polls):
         try:
             status = _api(zap_api, view_path, {"scanId": scan_id}).get("status")
             failures = 0
-        except Exception as exc:
+        except zapapi.ZapAuthError:
+            raise                       # a refused key is not a busy daemon; say so at once
+        except Exception as exc:        # a busy daemon can miss a poll; a dead one misses all
             failures += 1
-            if failures >= 3:
-                raise ZapUnavailableError(f"ZAP stopped responding after {failures} failed polls: {exc}") from exc
+            if failures >= _MAX_CONSECUTIVE_API_FAILURES:
+                raise ZapUnavailableError(
+                    f"ZAP stopped responding after {failures} consecutive failed polls "
+                    f"({exc}). The daemon may have been killed — check `docker logs zap` for "
+                    f"an OOM (exit 137); browser-driven rules such as DOM-XSS (40026) at high "
+                    f"attack strength are the usual cause."
+                ) from exc
             time.sleep(poll_s)
             continue
+        # The session-liveness check (W5-1) rate-limits itself. True means the session is gone
+        # and could not be re-established (W5-2): everything from here on would attack a
+        # logged-out application, so this scan is stopped rather than finished.
+        if on_tick and on_tick() is True:
+            events.emit("scan_stopped_early", kind=kind, zap_scan_id=scan_id,
+                        reason="session lost and not re-established")
+            try:
+                _api(zap_api, f"/JSON/{kind}/action/stop/", {"scanId": scan_id})
+            except Exception:
+                stop_all(zap_api)
+            return
+        if time.monotonic() - last_progress >= 60 or status == "100":
+            last_progress = time.monotonic()
+            events.emit("scan_progress", kind=kind, zap_scan_id=scan_id, percent=status)
         if status == "100":
             return
         time.sleep(poll_s)
 
 
-def spider(zap_api: str, target: str, poll_s: float = 3.0, max_polls: int = 120) -> str:
-    scan_id = _api(zap_api, "/JSON/spider/action/scan/", {"url": target, "recurse": "true"})["scan"]
+def exclusion_regexes(avoid_actions, login_url: str | None, paths=None) -> list[str]:
+    """URL patterns the scanner must not attack, from what the config already declares.
+
+    `scope.avoid_actions` was only ever enforced during exploration; ZAP itself was free to
+    attack anything it found. Measured on DVWA: one 10-minute scan submitted the "Create /
+    Reset Database" form about 325 times and POSTed to the login form about 1,000 times, so
+    roughly half of all /vulnerabilities/* responses came back as redirects to the login page.
+    The scan was resetting and logging out of the application it was scanning, which is the
+    real cause of findings that appeared and vanished between runs.
+
+    The login page is excluded whether or not it was named: attacking the form that holds the
+    session is how a scan loses the session. Terms are matched as substrings anywhere in the
+    URL, case-insensitively; a login path is escaped so it matches literally.
+    """
+    out: list[str] = []
+    for term in (avoid_actions or []):
+        term = str(term).strip()
+        if term:
+            out.append(f"(?i).*{re.escape(term)}.*")
+    if login_url:
+        # Only the PATH reaches the server. A hash-routed login (/#/login, as in any Angular or
+        # hash-mode SPA) is a fragment: the browser requests "/", so there is no server-side
+        # login page to exclude. Measured: treating "/" as the login path produced (?i).*/.*,
+        # which excluded every URL and turned a Juice Shop scan into a scan of nothing.
+        path = urllib.parse.urlsplit(str(login_url)).path
+        if path.strip("/"):
+            rx = f"(?i).*{re.escape(path)}.*"
+            if rx not in out:
+                out.append(rx)
+    # Endpoints the application team named as off-limits (W4-5): mail, payments, partner
+    # systems, resets. A path and everything beneath it.
+    from runner.scope_guard import path_exclusion_regex
+    for p in paths or []:
+        rx = path_exclusion_regex(p)
+        if rx not in out:
+            out.append(rx)
+    return out
+
+
+def refuse_exclusions_covering(target: str, regexes) -> None:
+    """Refuse to scan if any exclusion would cover the whole application.
+
+    An exclusion that matches the target's root is never what anyone meant — a hash-routed login
+    path, an avoid term that happens to name the host — and its effect is silent: ZAP skips
+    everything, the scan passes, and the empty result reads as a clean one. Failing here turns
+    that into an error message before any traffic, which is the only honest outcome.
+    """
+    roots = {target.rstrip("/"), target.rstrip("/") + "/"}
+    for rx in regexes or []:
+        try:
+            if any(re.match(rx, root) for root in roots):
+                raise ScanScopeError(
+                    f"refusing to scan {target!r}: exclusion {rx!r} matches the application's "
+                    f"root, which would exclude the whole application from the spider and the "
+                    f"active scan and report the resulting silence as a clean scan. Check "
+                    f"scope.avoid_actions and auth.login_url.")
+        except re.error:
+            continue
+
+
+def apply_exclusions(zap_api: str, regexes) -> None:
+    """Tell ZAP to leave these URLs alone, for the spider and the active scan alike.
+
+    Exclusions live in the ZAP session, so this must run AFTER new_session. A failure is
+    raised rather than logged: continuing would attack exactly what we undertook not to.
+    """
+    for rx in regexes or []:
+        for view in ("/JSON/spider/action/excludeFromScan/",
+                     "/JSON/ascan/action/excludeFromScan/"):
+            _api(zap_api, view, {"regex": rx})
+
+
+def context_regexes(allow_entries) -> list[str]:
+    """ZAP context include patterns from the allow list (W4-1).
+
+    An origin admits exactly that scheme, host and port (the default port may be written or
+    omitted); a bare host admits that host on any scheme and port — the same meanings the browser
+    guard uses (runner/scope_guard.entry_matches). Anchored, with the host escaped, so a lookalike
+    (`dvwa.evil.example`) or a host buried in a query string never matches. Kept to the regex
+    subset Java and Python agree on, since ZAP evaluates them and the tests use Python.
+    """
+    from runner.scope_guard import _DEFAULT_PORT, _parts, is_origin
+    tail = r"(?:[/?#].*)?$"
+    out = []
+    for entry in allow_entries or []:
+        entry = str(entry).strip()
+        if is_origin(entry):
+            parts = _parts(entry)
+            if parts is None:
+                continue
+            scheme, host, port = parts
+            port_rx = (f"(?::{port})?" if port == _DEFAULT_PORT.get(scheme) else f":{port}")
+            out.append(f"^{scheme}://{re.escape(host)}{port_rx}{tail}")
+        elif entry:
+            out.append(f"^https?://{re.escape(entry.lower())}(?::\\d+)?{tail}")
+    return out
+
+
+def spider(zap_api: str, target: str, poll_s: float = 3.0, max_polls: int = 120,
+           context_name: str | None = None) -> str:
+    params = {"url": target, "recurse": "true"}
+    if context_name:
+        params["contextName"] = context_name
+    scan_id = _api(zap_api, "/JSON/spider/action/scan/", params)["scan"]
     _poll(zap_api, "/JSON/spider/view/status/", scan_id, poll_s, max_polls)
     return scan_id
 
 
-def active_scan(zap_api: str, target: str, poll_s: float = 5.0, max_polls: int = 120) -> str:
-    scan_id = _api(zap_api, "/JSON/ascan/action/scan/", {"url": target, "recurse": "true"})["scan"]
-    _poll(zap_api, "/JSON/ascan/view/status/", scan_id, poll_s, max_polls)
+def active_scan(zap_api: str, target: str, poll_s: float = 5.0, max_polls: int = 120,
+                context_id: str | None = None, on_tick=None) -> str:
+    params = {"url": target, "recurse": "true"}
+    if context_id:
+        params["contextId"] = context_id
+    scan_id = _api(zap_api, "/JSON/ascan/action/scan/", params)["scan"]
+    _poll(zap_api, "/JSON/ascan/view/status/", scan_id, poll_s, max_polls, on_tick)
     return scan_id
 
 
@@ -133,44 +384,128 @@ def export_alerts(zap_api: str, target: str) -> dict:
     return _api(zap_api, "/JSON/alert/view/alerts/", {"baseurl": target})
 
 
-def exclusion_regexes(avoid_actions, login_url: str | None) -> list[str]:
-    out = [f"(?i).*{re.escape(str(term).strip())}.*" for term in (avoid_actions or [])
-           if str(term).strip()]
-    if login_url:
-        path = urllib.parse.urlsplit(str(login_url)).path or str(login_url)
-        pattern = f"(?i).*{re.escape(path)}.*"
-        if pattern not in out:
-            out.append(pattern)
-    return out
+@contextlib.contextmanager
+def scan_context(zap_api: str, allow_hosts, exclusions):
+    """A per-scan ZAP context from the allow list and exclusions; removed afterwards (W4-1)."""
+    ctx_name = f"dast-{int(time.time() * 1000)}"
+    includes = context_regexes(allow_hosts)
+    ctx_id = str(_api(zap_api, "/JSON/context/action/newContext/",
+                      {"contextName": ctx_name}).get("contextId"))
+    try:
+        for rx in includes:
+            _api(zap_api, "/JSON/context/action/includeInContext/",
+                 {"contextName": ctx_name, "regex": rx})
+        for rx in exclusions or []:
+            _api(zap_api, "/JSON/context/action/excludeFromContext/",
+                 {"contextName": ctx_name, "regex": rx})
+        yield ctx_name, ctx_id, includes
+    finally:
+        try:
+            _api(zap_api, "/JSON/context/action/removeContext/", {"contextName": ctx_name})
+        except Exception:
+            pass          # the session is replaced on the next scan anyway
 
 
-def apply_exclusions(zap_api: str, regexes) -> None:
-    for regex in regexes or []:
-        for endpoint in ("/JSON/spider/action/excludeFromScan/",
-                         "/JSON/ascan/action/excludeFromScan/"):
-            _api(zap_api, endpoint, {"regex": regex})
+DOM_XSS_RULE = "40026"
+
+
+def dom_xss_pass(zap_api: str, target: str, allow_hosts, exclusions, max_min: int = 5,
+                 routes=None, session: dict | None = None, bearer_cookie: str | None = None) -> dict:
+    """Run the DOM-XSS rule on its own, after the main scan (W6-3).
+
+    40026 drives a real browser per payload, one per scanner thread. Inside the main scan on
+    DVWA it exhausted memory and ZAP was OOM-killed (exit 137) six minutes in, losing the whole
+    scan. Here: only 40026, ONE thread (one browser at a time), its own time limit, in its own
+    context — and the caller has already exported the main scan's alerts, so a failure costs
+    this pass and nothing else. It is returned as a record rather than raised.
+
+    The rule only acts on HTML responses, so a recursive pass over the target touches pages,
+    not API calls. `routes` narrows it to named pages.
+    """
+    record = {"state": None, "requests": 0, "alerts": 0, "error": None}
+    alerts: list[dict] = []
+    threads, enabled = None, None
+    from runner import session_refresh
+    try:
+        if session:
+            # The rule's browsers do not carry the scan's login. Measured on DVWA: without
+            # this, its requests to the DOM-XSS page were redirected to login.php and it
+            # tested the login page. Every initiator: the browsers arrive as proxied traffic.
+            session_refresh.install(zap_api, session, bearer_cookie, initiators="")
+        threads = _api(zap_api, "/JSON/ascan/view/optionThreadPerHost/").get("ThreadPerHost")
+        # ZAP's rule set is daemon-global and coverage reads it after this pass: put it back.
+        enabled = [s["id"] for s in _api(zap_api, "/JSON/ascan/view/scanners/").get("scanners", [])
+                   if str(s.get("enabled")).lower() == "true"]
+        _api(zap_api, "/JSON/ascan/action/disableAllScanners/")
+        _api(zap_api, "/JSON/ascan/action/enableScanners/", {"ids": DOM_XSS_RULE})
+        _api(zap_api, "/JSON/ascan/action/setOptionThreadPerHost/", {"Integer": 1})
+        _api(zap_api, "/JSON/ascan/action/setOptionMaxScanDurationInMins/", {"Integer": max_min})
+        _api(zap_api, "/JSON/ascan/action/setOptionMaxRuleDurationInMins/", {"Integer": max_min})
+        with scan_context(zap_api, allow_hosts, exclusions) as (_name, ctx_id, _inc):
+            targets = ([(target.rstrip("/") + r, "false") for r in routes] if routes
+                       else [(target, "true")])
+            for url, recurse in targets:
+                sid = _api(zap_api, "/JSON/ascan/action/scan/",
+                           {"url": url, "recurse": recurse, "contextId": ctx_id})["scan"]
+                _poll(zap_api, "/JSON/ascan/view/status/", sid, 5.0, max(12, max_min * 13))
+                from runner.coverage import rule_outcomes
+                o = rule_outcomes(zap_api, sid).get(DOM_XSS_RULE, {})
+                record.update(state=o.get("state", record["state"]))
+                record["requests"] += o.get("requests", 0)
+                record["alerts"] += o.get("alerts", 0)
+        alerts = [a for a in export_alerts(zap_api, target).get("alerts", [])
+                  if str(a.get("pluginId")) == DOM_XSS_RULE]
+    except Exception as exc:
+        record["error"] = f"{type(exc).__name__}: {exc}"[:300]
+    finally:
+        if session:
+            session_refresh.remove(zap_api)
+        try:
+            if threads:
+                _api(zap_api, "/JSON/ascan/action/setOptionThreadPerHost/",
+                     {"Integer": int(threads)})
+            if enabled is not None:
+                _api(zap_api, "/JSON/ascan/action/disableAllScanners/")
+                if enabled:
+                    _api(zap_api, "/JSON/ascan/action/enableScanners/",
+                         {"ids": ",".join(enabled)})
+        except Exception:
+            pass                         # a dead ZAP is already recorded in `error`
+    return {"alerts": alerts, "record": record}
 
 
 def scan(zap_api: str, target: str, allow_hosts, do_spider: bool = True,
-         max_scan_min: int = 4, policy: dict | None = None,
-         max_rule_min: int | None = None, exclusions=None) -> dict:
-    """Spider + bounded active-scan `target`, return raw ZAP alerts. Refuses out-of-scope
-    targets before touching ZAP (safety pre-check)."""
+         max_scan_min: int = 4, policy: dict | None = None, exclusions=None,
+         max_rule_min: int | None = None, throttle: dict | None = None, liveness=None) -> dict:
+    """Spider + bounded active-scan `target`; return raw ZAP alerts plus the active scan's
+    id. Refuses out-of-scope targets before touching ZAP (safety pre-check)."""
     host = host_of(target)
-    allow = {h.strip().lower() for h in allow_hosts}
-    if host is None or host not in allow:
+    if host is None or not in_scope(target, allow_hosts):
         raise ScanScopeError(
-            f"refusing to scan {target!r}: host {host!r} not in allow-list {sorted(allow)} (NFR-2)."
+            f"refusing to scan {target!r}: host {host!r} not in allow-list {sorted(allow_hosts)} (NFR-2)."
         )
+    # Before ZAP is touched: an exclusion that covers everything must stop the run, not
+    # produce an empty one.
+    refuse_exclusions_covering(target, exclusions)
     configure_policy(zap_api, max_scan_min=max_scan_min, max_rule_min=max_rule_min,
-                     policy=policy)
+                     policy=policy, throttle=throttle)
     apply_exclusions(zap_api, exclusions)
-    _api(zap_api, "/JSON/core/action/accessUrl/", {"url": target, "followRedirects": "true"})
-    if do_spider:
-        spider(zap_api, target)
-    ascan_id = active_scan(zap_api, target)
-    report = export_alerts(zap_api, target)
+    # A ZAP context bounds the spider and the active scan themselves (W4-1). Our two safety
+    # layers only ever covered requests WE send; ZAP's own traffic was bounded by nothing but
+    # the seed URL. Built from the same allow list, removed afterwards whatever happens.
+    with scan_context(zap_api, allow_hosts, exclusions) as (ctx_name, ctx_id, includes):
+        _api(zap_api, "/JSON/core/action/accessUrl/", {"url": target, "followRedirects": "true"})
+        if do_spider:
+            spider(zap_api, target, context_name=ctx_name)
+        ascan_id = active_scan(zap_api, target, context_id=ctx_id,
+                               on_tick=liveness.check if liveness else None)
+        report = export_alerts(zap_api, target)
+    report["context"] = {"name": ctx_name, "include": includes, "exclude": list(exclusions or [])}
+    # Carried so coverage can read back what each rule did (W6-2): "ran and found nothing"
+    # and "never ran" are otherwise the same sentence.
     report["ascan_id"] = ascan_id
+    # Carried so coverage can subtract them: an excluded route was NOT scanned, and must not
+    # be counted as covered or a finding on it would resolve itself.
     report["exclusions"] = list(exclusions or [])
     return report
 
@@ -200,7 +535,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.out == "-":
         print(payload)
     else:
-        with open(args.out, "w", encoding="utf-8") as fh:
+        with open(args.out, "w") as fh:
             fh.write(payload + "\n")
     print(f"scanned {args.target}: {len(report.get('alerts', []))} alerts", file=sys.stderr)
     return 0

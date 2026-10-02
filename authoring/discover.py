@@ -22,11 +22,11 @@ from pathlib import Path
 
 import jsonschema
 
-from authoring import llm_backend
 from runner.action_policy import never_allowed
 
 _ROOT = Path(__file__).resolve().parent.parent
 _SCHEMA = _ROOT / "contracts" / "auth_discovery.schema.json"
+_DEFAULT_MODEL = "claude-opus-4-8"
 
 
 class DiscoveryFailed(Exception):
@@ -52,13 +52,12 @@ def parse_proposal(text: str) -> dict:
         t = fence.group(1).strip()
     start, end = t.find("{"), t.rfind("}")
     if start == -1 or end == -1 or end < start:
-        raise ValueError(
-            f"no JSON object found in the model's reply: {llm_backend.snippet(t)}")
+        raise ValueError("no JSON object found in the model's reply")
     try:
         proposal = json.loads(t[start:end + 1])
     except json.JSONDecodeError as exc:
         raise ValueError(f"invalid JSON in the model's reply: {exc}") from exc
-    jsonschema.validate(proposal, json.loads(_SCHEMA.read_text(encoding="utf-8")))
+    jsonschema.validate(proposal, json.loads(_SCHEMA.read_text()))
     return proposal
 
 
@@ -224,16 +223,14 @@ def summarize_login_page(page) -> dict:
     return {"url": page.url, "title": page.title(), "forms": forms}
 
 
-def propose_auth(summary: dict, model: str, api_key: str | None = None) -> dict:
-    """Ask the model how to log in and how to prove it worked. Raises on any failure.
+def propose_auth(summary: dict, model: str, api_key: str) -> dict:
+    """Ask the model how to log in and how to prove it worked. Raises on any failure."""
+    import anthropic  # lazy
 
-    Routed through llm_backend so it uses the selected provider (Anthropic, or the Copilot CLI
-    that is the approved path inside Nationwide); the model still only emits validated DATA.
-    """
     system = (
         "You read a web application's login page and say how to log in. Output ONLY a JSON "
         "object — no prose, no code fences — validating against this schema:\n"
-        + _SCHEMA.read_text(encoding="utf-8") +
+        + _SCHEMA.read_text() +
         "\nRules: `steps` uses the page's real selectors, preferring stable attributes "
         "(name, id) over position. `value` says WHICH credential to type — never a literal. "
         "For `proof_candidates`, propose two to four ordered best-first, and prefer things "
@@ -244,8 +241,10 @@ def propose_auth(summary: dict, model: str, api_key: str | None = None) -> dict:
         "confident guess costs nothing but a wrong one is caught."
     )
     user = "Login page:\n" + json.dumps(summary, indent=2)
-    text = llm_backend.complete(system, user, model, api_key=api_key, max_tokens=2048)
-    return parse_proposal(text)
+    client = anthropic.Anthropic(api_key=api_key)
+    msg = client.messages.create(model=model, max_tokens=2048, system=system,
+                                 messages=[{"role": "user", "content": user}])
+    return parse_proposal("".join(getattr(b, "text", "") for b in msg.content))
 
 
 def _log_in(page, base_url: str, login_url: str, steps: list[dict], values: dict) -> None:
@@ -281,7 +280,7 @@ def _holds(page, candidate: dict, base_url: str) -> bool:
 
 
 def discover_auth(base_url: str, login_url: str, identifier: str, secret: str, *,
-                  model: str | None = None, api_key: str | None = None,
+                  model: str = _DEFAULT_MODEL, api_key: str | None = None,
                   zap_proxy: str | None = None, headless: bool = True) -> dict:
     """Propose an auth block, verify it live, and return {steps, proof, summary, model}.
 
@@ -293,11 +292,8 @@ def discover_auth(base_url: str, login_url: str, identifier: str, secret: str, *
     from playwright.sync_api import sync_playwright
 
     api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-    if not llm_backend.available(api_key):
-        raise DiscoveryFailed(
-            "discovery needs a model: set ANTHROPIC_API_KEY, or LLM_PROVIDER=copilot with the "
-            "copilot CLI on PATH")
-    model = model or llm_backend.default_model()
+    if not api_key:
+        raise DiscoveryFailed("discovery needs a model: set ANTHROPIC_API_KEY")
 
     launch = {"headless": headless}
     if zap_proxy:

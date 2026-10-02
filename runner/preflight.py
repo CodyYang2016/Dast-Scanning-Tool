@@ -2,7 +2,7 @@
 
 Refuses to scan an unsafe configuration BEFORE any network traffic is sent. This is the
 single most important guardrail: never scan production, never scan an unbounded target.
-Conforms to the frozen spec in docs/runner_design.md §7 and the test-first
+Conforms to the frozen spec in docs/junior_engineer/runner_design.md §7 and the test-first
 suite tests/test_preflight.py.
 
 Fails closed: any doubt raises PreflightError (CLI: non-zero exit), which a scan wrapper
@@ -24,16 +24,19 @@ _DEFAULT_SCHEMA = str(Path(__file__).resolve().parent.parent / "contracts" / "sc
 # Explicit, case-insensitive production denylist — defense-in-depth beyond the schema enum, so
 # loosening scope.schema.json can never silently re-enable production scanning.
 _PROD_VALUES = {"prod", "production"}
+_SHARED = {"test", "staging"}
 
 
 class PreflightError(Exception):
     """Raised when a scope is unsafe/invalid to scan. Callers MUST abort (send no traffic)."""
 
 
-def check_scope(scope: dict) -> None:
+def check_scope(scope: dict, registry=None) -> None:
     """Safety checks on an in-memory scope. Raise PreflightError if unsafe. Pure; no I/O.
 
-    Rejects: missing environment_class; production (any case); missing/empty fqdn_allow_list.
+    Rejects: missing environment_class; production (any case); missing/empty fqdn_allow_list;
+    and, given an environment `registry` (runner/env_registry.py), production-looking hosts,
+    hosts registered as another class, and unregistered shared hosts (W4-6).
     """
     env = scope.get("environment_class")
     if env is None:
@@ -42,11 +45,67 @@ def check_scope(scope: dict) -> None:
         raise PreflightError(
             f"environment_class={env!r} is production — refusing to scan (NFR-2)."
         )
+    # Shared environments must name exact origins (W4-2). A bare host admits every scheme and
+    # port on that machine — an admin port, another service, a plaintext listener — which is
+    # harmless on a disposable dev container and not acceptable on a shared test/staging host.
+    if str(env).strip().lower() in _SHARED and scope.get("fqdn_allow_list"):
+        from runner.scope_guard import is_origin
+        bare = [h for h in scope["fqdn_allow_list"] if not is_origin(h)]
+        if bare:
+            examples = ", ".join(f"https://{h}" for h in bare[:3])
+            raise PreflightError(
+                f"environment_class={env!r} is a shared environment, so scope must name exact "
+                f"origins, not bare hosts: {bare} admit every scheme and port on those machines. "
+                f"Write them as origins, e.g. {examples} (add :port when it is not the default).")
     if not scope.get("fqdn_allow_list"):  # None or empty list
         raise PreflightError(
             "scope has no non-empty 'fqdn_allow_list' — refusing to scan an unbounded "
             "target (NFR-2)."
         )
+    check_traverse(scope)
+    if registry is not None:
+        check_registry(scope, registry)   # attack targets only: a traverse host is never attacked
+
+
+def check_traverse(scope: dict) -> None:
+    """Login-only origins (scope.traverse): exact origins, and never also attack targets."""
+    from runner.scope_guard import entry_matches, is_origin, origin_of
+    traverse = scope.get("traverse_list") or []
+    bare = [t for t in traverse if not is_origin(t)]
+    if bare:
+        raise PreflightError(
+            f"scope.traverse must name exact origins (an identity provider is shared and usually "
+            f"production; every port of it is not ours to reach): {bare}. Write e.g. "
+            f"https://{bare[0]}")
+    for t in traverse:
+        if any(entry_matches(t + "/", a) or origin_of(a) == origin_of(t)
+               for a in scope.get("fqdn_allow_list") or []):
+            raise PreflightError(
+                f"{t} is in both scope.allow and scope.traverse — a host is either attacked or "
+                f"traversed, not both.")
+
+
+def check_registry(scope: dict, registry) -> None:
+    """The declared environment, verified (W4-6). One typed word is not a safety story."""
+    from runner.scope_guard import host_of, is_origin
+    env = str(scope["environment_class"]).strip().lower()
+    for entry in scope["fqdn_allow_list"]:
+        host = host_of(entry) if is_origin(entry) else str(entry).strip().lower()
+        if registry.is_production(host):
+            raise PreflightError(
+                f"{host!r} matches a production hostname pattern — refusing to scan it whatever "
+                f"environment_class says (W4-6). If it is not production, change the pattern "
+                f"in the environment registry, not this scope.")
+        registered = registry.lookup(host)
+        if registered is not None and registered != env:
+            raise PreflightError(
+                f"{host!r} is registered as {registered!r} but this scope declares "
+                f"environment_class={env!r} — refusing to scan until they agree (W4-6).")
+        if registered is None and env in _SHARED:
+            raise PreflightError(
+                f"{host!r} is not registered, and a {env} environment must be: add "
+                f"`{host}: {env}` under `hosts:` in the environment registry "
+                f"(security/dast/environments.yaml or $DAST_ENV_REGISTRY) (W4-6).")
 
 
 def preflight(scope_path: str, schema_path: str = _DEFAULT_SCHEMA) -> dict:
@@ -58,7 +117,7 @@ def preflight(scope_path: str, schema_path: str = _DEFAULT_SCHEMA) -> dict:
     if not os.path.exists(scope_path):
         raise PreflightError(f"scope file not found: {scope_path}")
     try:
-        with open(scope_path, encoding="utf-8") as fh:
+        with open(scope_path) as fh:
             scope = json.load(fh)
     except (json.JSONDecodeError, OSError) as exc:
         raise PreflightError(f"could not read scope.json: {exc}") from exc
@@ -66,11 +125,16 @@ def preflight(scope_path: str, schema_path: str = _DEFAULT_SCHEMA) -> dict:
         raise PreflightError("scope.json must be a JSON object.")
 
     # Explicit safety checks first (clear, safety-specific messages) ...
-    check_scope(scope)
+    from runner import env_registry
+    try:
+        registry = env_registry.load()
+    except Exception as exc:
+        raise PreflightError(f"could not read the environment registry: {exc}") from exc
+    check_scope(scope, registry=registry)
 
     # ... then full structural validation against the contract schema.
     try:
-        with open(schema_path, encoding="utf-8") as fh:
+        with open(schema_path) as fh:
             schema = json.load(fh)
     except OSError as exc:
         raise PreflightError(f"could not read scope schema: {exc}") from exc

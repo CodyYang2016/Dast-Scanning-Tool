@@ -1,6 +1,6 @@
 """Objective acceptance suite for the SARIF exporter (FR-X1).
 
-Oracles independent of our code (see docs/validation_and_testing.md):
+Oracles independent of our code (see docs/junior_engineer/validation_and_testing.md):
   - the VENDORED OFFICIAL OASIS SARIF 2.1.0 schema (third-party validator),
   - published facts (SQL Injection is CWE-89; GitHub's security-severity bands),
   - the input records themselves (conservation, fingerprint carry-through),
@@ -159,3 +159,336 @@ def test_export_drops_resolved_but_keeps_not_scanned(records):
 def test_export_keeps_unlabeled_records(records):
     # Raw normalizer output (status "open") is unaffected.
     assert len(_results(to_sarif(records))) == len(records)
+
+
+# ---- Automation category: one analysis per application -----------------------------------
+#
+# GitHub keys a code-scanning analysis by (tool name, category, ref). Every app exports under
+# the same driver name, so with no category a second application's upload REPLACES the first
+# one's alerts in the Security tab. The category is carried in the SARIF itself as
+# runs[].automationDetails.id — the REST API has no such field.
+
+def test_a_category_is_carried_as_automation_details(records):
+    s = to_sarif(records, driver_version="2.17.0", category="dast/dvwa")
+    assert s["runs"][0]["automationDetails"]["id"] == f"dast/dvwa/{SCAN_ID}"
+
+
+def test_a_categorised_document_still_validates_against_the_official_schema(records):
+    s = to_sarif(records, driver_version="2.17.0", category="dast/dvwa")
+    schema = json.loads(SARIF_SCHEMA.read_text())
+    validator_for(schema)(schema).validate(s)
+
+
+def test_two_applications_do_not_share_an_analysis(records):
+    # The regression test for the overwrite bug: these two ids must differ, or GitHub treats
+    # the uploads as the same analysis and the second deletes the first.
+    a = to_sarif(records, category="dast/dvwa")["runs"][0]["automationDetails"]["id"]
+    b = to_sarif(records, category="dast/juice-shop")["runs"][0]["automationDetails"]["id"]
+    assert a != b
+
+
+def test_no_category_leaves_automation_details_out(records):
+    # An empty id is worse than none: it is a category, and every app would share it.
+    assert "automationDetails" not in to_sarif(records)["runs"][0]
+    assert "automationDetails" not in to_sarif(records, category="")["runs"][0]
+
+
+# ---- actionable findings in the Security tab (W1-2) --------------------------------------
+#
+# GitHub's alert page renders a result's MESSAGE and its rule's HELP. It does not render
+# `properties` — which is why the parameter has been invisible in GitHub despite being in the
+# SARIF all along. Anything a developer needs must therefore be in the message or the help.
+
+def _by_rule(sarif, rule_id):
+    return next(r for r in _rules(sarif) if r["id"] == rule_id)
+
+
+def _sqli_result(sarif):
+    return next(r for r in _results(sarif)
+                if r["ruleId"] == "40018" and r["properties"].get("parameter") == "q")
+
+
+def test_the_sqli_alert_says_where_how_and_how_sure(sarif):
+    # The acceptance criterion from the plan, pinned: the fixture's High SQL injection.
+    assert _sqli_result(sarif)["message"]["text"] == (
+        "SQL Injection in parameter `q` — ZAP sent `apple'` and the server answered "
+        "`HTTP/1.1 500 Internal Server Error`. Confidence: Low."
+    )
+
+
+def test_what_a_developer_needs_is_in_the_message_not_only_in_properties(sarif):
+    msg = _sqli_result(sarif)["message"]["text"]
+    for visible in ("`q`", "apple'", "500", "Low"):
+        assert visible in msg
+
+
+def test_a_finding_with_no_parameter_attack_or_evidence_has_no_empty_slots():
+    rec = {"rule_id": "10020", "title": "Missing Anti-clickjacking Header", "severity": "medium",
+           "endpoint": "/", "fingerprint": "0" * 64, "scan_id": SCAN_ID}
+    msg = to_sarif([rec])["runs"][0]["results"][0]["message"]["text"]
+    assert msg == "Missing Anti-clickjacking Header."
+    assert "``" not in msg and "parameter" not in msg and "sent" not in msg
+
+
+def test_the_rule_carries_the_fix_and_the_reading(sarif):
+    rule = _by_rule(sarif, "40018")
+    assert rule["fullDescription"]["text"] == "SQL injection may be possible."
+    assert "PreparedStatement" in rule["help"]["markdown"]
+    assert "cheatsheetseries.owasp.org" in rule["help"]["markdown"]
+    assert rule["helpUri"].startswith("https://cheatsheetseries.owasp.org/")
+    assert rule["help"]["text"]            # plain-text fallback for clients without markdown
+
+
+def test_every_reference_url_is_listed_in_the_help(records, sarif):
+    for rec in records:
+        for url in rec.get("references") or []:
+            assert url in _by_rule(sarif, rec["rule_id"])["help"]["markdown"]
+
+
+def test_a_rule_without_remediation_has_no_empty_help():
+    rec = {"rule_id": "1", "title": "t", "severity": "low", "endpoint": "/",
+           "fingerprint": "0" * 64, "scan_id": SCAN_ID}
+    rule = to_sarif([rec])["runs"][0]["tool"]["driver"]["rules"][0]
+    assert "help" not in rule and "fullDescription" not in rule and "helpUri" not in rule
+
+
+def test_help_is_carried_once_per_rule_not_per_finding(records, sarif):
+    # 38 findings, 8 rules: the bulky text travels 8 times, which is what keeps the upload small.
+    assert len(_results(sarif)) == len(records)
+    assert len(_rules(sarif)) == len({r["rule_id"] for r in records})
+
+
+def test_zap_gives_identical_help_for_every_finding_of_a_rule(records):
+    # The rule entry takes its help from the FIRST record seen. That is only correct because ZAP
+    # describes the plugin, not the instance. Pin the assumption so a source that varies it
+    # fails here instead of silently showing one finding's text on another.
+    seen = {}
+    for r in records:
+        key = (r.get("description"), r.get("solution"), tuple(r.get("references") or []))
+        assert seen.setdefault(r["rule_id"], key) == key, r["rule_id"]
+
+
+def test_confidence_and_attack_are_also_machine_readable(sarif):
+    props = _sqli_result(sarif)["properties"]
+    assert props["confidence"] == "low" and props["attack"] == "apple'"
+
+
+def test_the_enriched_document_still_validates_against_the_official_schema(sarif):
+    schema = json.loads(SARIF_SCHEMA.read_text())
+    validator_for(schema)(schema).validate(sarif)
+
+
+def test_no_secret_reaches_the_sarif_even_through_evidence():
+    from detections.normalizer import normalize_alert
+    rec = normalize_alert({"pluginId": "1", "alert": "x", "risk": "High", "url": "http://a/b",
+                           "evidence": "Bearer abc123SECRETtoken victim.person@example.com"},
+                          APP_ID, SCAN_ID)
+    blob = json.dumps(to_sarif([rec]))
+    assert "abc123SECRETtoken" not in blob and "victim.person@example.com" not in blob
+
+
+# ---- size guard: GitHub rejects SARIF over 10 MB gzipped ----------------------------------
+
+def test_the_worst_case_github_allows_stays_under_the_upload_limit():
+    # GitHub accepts at most 25,000 results per run and 10 MB gzipped. Build 1,000 noisy
+    # findings over 60 rules with oversized text everywhere, measure, and project linearly to
+    # 25,000: the per-rule help is a fixed cost (carried once per rule), the rest scales.
+    import gzip
+    from detections.normalizer import normalize_alert
+
+    def build(n):
+        alerts = [{"pluginId": str(10000 + i % 60), "alert": f"Rule {i % 60}", "risk": "Medium",
+                   "url": f"http://a/route{i}?p={i}", "param": "p", "confidence": "Medium",
+                   "description": "D" * 2000, "solution": "S" * 2000,
+                   "reference": "\n".join(f"https://ref/{j}" for j in range(10)),
+                   "evidence": "E" * 700 + str(i), "attack": "A" * 700 + str(i)} for i in range(n)]
+        # ~700 chars: just over the 500 cap so truncation is exercised, and close to the
+        # largest real evidence in the fixture (620).
+        recs = [normalize_alert(a, APP_ID, SCAN_ID) for a in alerts]
+        return recs, len(gzip.compress(json.dumps(to_sarif(recs)).encode()))
+
+    recs, small = build(500)
+    assert all(r["evidence_excerpt"].endswith("[truncated]") for r in recs)   # the cap bit
+    _, large = build(1000)
+    per_finding = (large - small) / 500
+    projected = large + per_finding * (25_000 - 1000)
+    assert projected < 10 * 1024 * 1024, f"projected {projected / 1e6:.1f} MB at 25k results"
+
+
+def test_evidence_from_the_target_cannot_inject_markdown_into_the_alert():
+    # Evidence is lifted from the TARGET's response. A backtick in it would close a naive code
+    # span and let the rest render as live markdown — a link inside the Security tab, authored by
+    # whoever controls the scanned application. CommonMark: a code span delimited by N+1
+    # backticks cannot be closed by a run of N inside it.
+    hostile = "ok` [click](http://evil.example) `"
+    rec = {"rule_id": "1", "title": "Reflected", "severity": "high", "endpoint": "/",
+           "fingerprint": "0" * 64, "scan_id": SCAN_ID, "evidence_excerpt": hostile}
+    md = to_sarif([rec])["runs"][0]["results"][0]["message"]["markdown"]
+    start = md.index("evidence: ") + len("evidence: ")
+    fence = md[start:len(md) - len(md[start:].lstrip("`"))]    # the opening delimiter run
+    assert len(fence) >= 2, md
+    body = md[start + len(fence):]
+    assert body.index(fence) > body.index("http://evil.example"), md  # closes AFTER the payload
+
+
+def test_the_plain_text_message_is_unchanged_by_markdown_escaping(sarif):
+    assert _sqli_result(sarif)["message"]["text"].startswith("SQL Injection in parameter `q`")
+
+
+def test_a_multi_line_solution_keeps_its_lines_in_markdown(sarif):
+    md = _by_rule(sarif, "40018")["help"]["markdown"]
+    assert "place.  \nIn general" in md          # hard line break, not a collapsed paragraph
+
+
+# ---- W1-3: the alert says how to replay it ------------------------------------------------
+
+def _repro(**extra):
+    return {"rule_id": "40018", "title": "SQL Injection", "severity": "high", "endpoint": "/x",
+            "fingerprint": "0" * 64, "scan_id": SCAN_ID, **extra}
+
+
+def test_the_message_says_how_to_reproduce():
+    rec = _repro(parameter="email", attack="'", request_line="POST /rest/user/login",
+                 response_status=500)
+    msg = to_sarif([rec])["runs"][0]["results"][0]["message"]["text"]
+    assert msg.endswith("Reproduce: `POST /rest/user/login` → 500.")
+
+
+def test_a_request_line_without_a_status_still_reads_cleanly():
+    msg = to_sarif([_repro(request_line="GET /a")])["runs"][0]["results"][0]["message"]["text"]
+    assert msg.endswith("Reproduce: `GET /a`.")
+
+
+def test_no_reproduction_adds_nothing():
+    msg = to_sarif([_repro()])["runs"][0]["results"][0]["message"]["text"]
+    assert "Reproduce" not in msg
+
+
+def test_a_hostile_request_line_cannot_inject_markdown():
+    # The path carries the attack payload, which is attacker-shaped text.
+    rec = _repro(request_line="GET /s?q=` [x](http://evil.example) `")
+    md = to_sarif([rec])["runs"][0]["results"][0]["message"]["markdown"]
+    assert "`` GET /s?q=` [x](http://evil.example) ` ``" in md
+
+
+# ---- W1-5: a suppressed finding is still published, and marked ---------------------------
+
+def _sup_rec(status="suppressed"):
+    return {"rule_id": "40018", "title": "SQL Injection", "severity": "high", "endpoint": "/x",
+            "fingerprint": "0" * 64, "scan_id": SCAN_ID, "status": status,
+            "suppression": {"reason": "false_positive", "justification": "checked by hand",
+                            "expired": False, "was": "open"}}
+
+
+def test_a_suppressed_finding_stays_in_the_upload():
+    # Dropping it would be how GitHub decides it was "fixed".
+    assert len(to_sarif([_sup_rec()])["runs"][0]["results"]) == 1
+
+
+def test_it_carries_a_sarif_suppression_with_the_justification():
+    (s,) = to_sarif([_sup_rec()])["runs"][0]["results"][0]["suppressions"]
+    assert s == {"kind": "external", "status": "accepted", "justification": "checked by hand"}
+
+
+def test_an_expired_suppression_is_not_marked():
+    rec = _sup_rec(status="open"); rec["suppression"]["expired"] = True
+    assert "suppressions" not in to_sarif([rec])["runs"][0]["results"][0]
+
+
+def test_a_suppressed_document_validates_against_the_official_schema():
+    schema = json.loads(SARIF_SCHEMA.read_text())
+    validator_for(schema)(schema).validate(to_sarif([_sup_rec()]))
+
+
+# ---- the category as GITHUB derives it --------------------------------------------------
+#
+# GitHub splits runs[].automationDetails.id at its LAST "/": the part before is the category, the
+# part after is a run id. Measured on an upload: id "dast/juice-shop" became category "dast" — so
+# every app got the same category and two apps in one repo would overwrite each other, the very bug
+# a per-app category exists to prevent. Tests that only compared our own ids could not see it.
+
+def _github_category(sarif):
+    run_id = sarif["runs"][0]["automationDetails"]["id"]
+    return run_id[: run_id.rfind("/")]
+
+
+def test_github_derives_the_full_per_app_category(records):
+    assert _github_category(to_sarif(records, category="dast/juice-shop")) == "dast/juice-shop"
+
+
+def test_two_apps_get_different_categories_as_github_sees_them(records):
+    a = _github_category(to_sarif(records, category="dast/dvwa"))
+    b = _github_category(to_sarif(records, category="dast/juice-shop"))
+    assert a != b and a == "dast/dvwa" and b == "dast/juice-shop"
+
+
+def test_the_run_id_is_the_scan(records):
+    run_id = to_sarif(records, category="dast/juice-shop")["runs"][0]["automationDetails"]["id"]
+    assert run_id == f"dast/juice-shop/{SCAN_ID}"
+
+
+def test_a_trailing_slash_in_config_is_not_doubled(records):
+    assert _github_category(to_sarif(records, category="dast/juice-shop/")) == "dast/juice-shop"
+
+
+# ---- W1-4: reach the stored request/response from the alert -------------------------------
+
+def _ev_rec(**kw):
+    return {"rule_id": "40018", "severity": "high", "title": "SQL Injection", "fingerprint": "f",
+            "endpoint": "http://app/a", "scan_id": "S1",
+            "exchange_path": "evidence/messages/abc.txt", **kw}
+
+
+def _msg(rec, url=None, markdown=False):
+    from detections.sarif_export import to_sarif
+    r = to_sarif([rec], evidence_url=url)["runs"][0]["results"][0]["message"]
+    return r["markdown" if markdown else "text"]
+
+
+def test_without_a_url_the_message_names_the_file():
+    m = _msg(_ev_rec())
+    assert "Full request/response: `evidence/messages/abc.txt` in this scan's evidence." in m
+
+
+def test_a_per_file_template_links_the_file():
+    m = _msg(_ev_rec(), "https://store.example/dast/{scan_id}/{path}", markdown=True)
+    assert "Full request/response: <https://store.example/dast/S1/evidence/messages/abc.txt>" in m
+
+
+def test_a_template_without_path_links_the_run_and_names_the_file():
+    m = _msg(_ev_rec(), "https://github.com/o/r/actions/runs/42", markdown=True)
+    assert "<https://github.com/o/r/actions/runs/42>" in m
+    assert "`evidence/messages/abc.txt`" in m and "artifact" in m
+
+
+def test_no_exchange_means_no_evidence_clause():
+    rec = _ev_rec(); rec.pop("exchange_path")
+    assert "Full request/response" not in _msg(rec, "https://x.example/{path}")
+
+
+def test_values_substituted_into_the_url_are_percent_encoded():
+    rec = _ev_rec(scan_id="S 1>x", exchange_path="evidence/messages/a b.txt")
+    m = _msg(rec, "https://x.example/{scan_id}/{path}", markdown=True)
+    assert "<https://x.example/S%201%3Ex/evidence/messages/a%20b.txt>" in m
+
+
+def test_only_the_two_placeholders_are_substituted():
+    m = _msg(_ev_rec(), "https://x.example/{path}?q={0}{__class__}")
+    assert "{0}{__class__}" in m
+
+
+def test_a_non_http_template_is_refused():
+    import pytest
+    from detections.sarif_export import to_sarif
+    for bad in ("javascript:alert(1)//{path}", "file:///etc/{path}", "https://x y/{path}"):
+        with pytest.raises(ValueError):
+            to_sarif([_ev_rec()], evidence_url=bad)
+
+
+def test_the_cli_takes_an_evidence_url(tmp_path):
+    import json
+    from detections import sarif_export
+    src = tmp_path / "r.json"; src.write_text(json.dumps([_ev_rec()]))
+    out = tmp_path / "o.sarif"
+    sarif_export.main([str(src), "--evidence-url", "https://x.example/{path}", "-o", str(out)])
+    assert "https://x.example/evidence/messages/abc.txt" in out.read_text()

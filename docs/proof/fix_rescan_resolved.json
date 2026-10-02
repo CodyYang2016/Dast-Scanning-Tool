@@ -1,0 +1,75 @@
+{
+  "scan_1": {
+    "id": "20261001T225433Z",
+    "statuses": {
+      "new": 344
+    }
+  },
+  "scan_2": {
+    "id": "20261001T230452Z",
+    "statuses": {
+      "open": 294,
+      "new": 49,
+      "resolved": 35,
+      "not_scanned": 7
+    }
+  },
+  "scan_1_highs_in_scan_2": [
+    {
+      "title": "Path Traversal",
+      "endpoint": "/vulnerabilities/fi",
+      "parameter": "page",
+      "fingerprint": "22eae886f04209e663a1e72caf57737feecff64a630432a0587b3780fdee9535",
+      "status_after_rescan": "resolved",
+      "in_rescan_sarif": false
+    },
+    {
+      "title": "Cross Site Scripting (Reflected)",
+      "endpoint": "/vulnerabilities/xss_r",
+      "parameter": "name",
+      "fingerprint": "ac4c27db49ed03451c5a0becc6c8ffd0d4e357bb012dc13062c51a03d7fb72ca",
+      "status_after_rescan": "not_scanned",
+      "in_rescan_sarif": true
+    },
+    {
+      "title": "Cross Site Scripting (Reflected)",
+      "endpoint": "/vulnerabilities/sqli",
+      "parameter": "id",
+      "fingerprint": "9695d5cbee507019da7d1d188d658dfe3dfc000c24ce4c9ad16e8be7508811c4",
+      "status_after_rescan": "resolved",
+      "in_rescan_sarif": false
+    },
+    {
+      "title": "Cross Site Scripting (Reflected)",
+      "endpoint": "/vulnerabilities/brute",
+      "parameter": "username",
+      "fingerprint": "5910c6477d624b6e553d51983b2fb5beab3f6eb1357d58b06875ce0934b78487",
+      "status_after_rescan": "resolved",
+      "in_rescan_sarif": false
+    },
+    {
+      "title": "SQL Injection",
+      "endpoint": "/vulnerabilities/sqli_blind",
+      "parameter": "id",
+      "fingerprint": "34241d26a41c776b3ec4171a7501a01143f43ab442c88d155ad8ab791728c91f",
+      "status_after_rescan": "resolved",
+      "in_rescan_sarif": false
+    },
+    {
+      "title": "SQL Injection - MySQL",
+      "endpoint": "/vulnerabilities/sqli",
+      "parameter": "id",
+      "fingerprint": "2673779c3fec4d8e7074d7fc2d6e4feda915a17c4609927f69cce74977a8d980",
+      "status_after_rescan": "resolved",
+      "in_rescan_sarif": false
+    },
+    {
+      "title": "SQL Injection - MySQL",
+      "endpoint": "/vulnerabilities/brute",
+      "parameter": "username",
+      "fingerprint": "e24e982ea88a0e4ff5712df6f0ca61479d8a0a91b1af67660ae70dba99cf998e",
+      "status_after_rescan": "resolved",
+      "in_rescan_sarif": false
+    }
+  ]
+}

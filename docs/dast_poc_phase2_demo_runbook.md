@@ -3,7 +3,7 @@
 This is the **operator's runbook** for the whole Phase 2 demo: every window to open, every
 command to run, every click, what appears on screen, and what to say — in order. It merges the
 Phase 2 script (`dast_poc_phase2_demo_script.md`, which has the talking points and Q&A) with
-the target's Playwright setup guidance and works on
+the Playwright screen-recording runbook (`archive/dast_poc_playwright_demo_runbook.md`) and works on
 **both** demo machines: the **macOS laptop** (Docker Desktop, `$PY`) and the
 **Windows workstation** (Git Bash + Podman in WSL, `.venv/Scripts/python`, images via the
 Nationwide Trusted Registry). Every command below is bash — on Windows run them in **Git Bash
@@ -55,7 +55,7 @@ machines. Paste the block for your OS as the **first thing in Terminal A and Ter
 
 **macOS (Docker Desktop):**
 ```bash
-cd /path/to/ssd-dast-tool-poc
+cd /Users/codyyang/Dast-Scanning-Tool
 PY=.venv/bin/python
 CT=docker                                   # container tool
 JUICE_IMG=bkimminich/juice-shop@sha256:73c53fbf442e8337b3ea3d98c7e8550308854701ebdfce4cc39768f36b75430e
@@ -89,11 +89,11 @@ ZAP_IMG=ntr.nwie.net/docker.io/zaproxy/zap-stable
 | Fact | Detail | Why it matters |
 |---|---|---|
 | Python | `$PY` = the repo venv (mac: 3.12.14; win: 3.11+) with playwright 1.62.0, anthropic, jsonschema, pytest | bare `python`/`python3` is the wrong interpreter on both machines (mac ships 3.9; Windows may pick the Store stub) — **always** use `$PY` |
-| Tests | `$PY -m pytest -q` → current target suite must pass before the demo | your fallback evidence (§9) |
+| Tests | `$PY -m pytest -q` → **213 passed** in <1s | your fallback evidence (§9) |
 | Container tool (mac) | Docker Desktop is at `/Applications/Docker.app`, **but** `/usr/local/bin/docker` is a broken symlink (→ `/Volumes/Docker 1/…`), so `docker` is **not on PATH** in a fresh shell | fix once, see below |
 | Container tool (win) | Podman runs in a WSL VM; the VM may ship a dead `127.0.0.1:8888` proxy that breaks pulls | run `bash ./prepull_playwright_podman_nationwide.sh`; it repairs the VM, restarts it, and verifies cached Playwright/ZAP images |
 | Compose file | `compose.yaml` (project `ssd-dast-poc`) does **not publish ports** for `juice`/`zap` — it's for the all-in-container runner | for a host-side demo you need `localhost:3000` / `localhost:8080`, so start juice+zap with `$CT run -p …` (README "Option B"), not compose |
-| GitHub | `gh` must be authenticated against the approved repository with code scanning enabled; run `gh auth status` the day before. | live SARIF upload only works once these are true; otherwise run without `--upload` |
+| GitHub | `gh` must be authenticated against the account/token that has write access to `Nationwide/ssd-dast-tool-poc`; run `gh auth status` the day before. The **current HEAD commit must be pushed to that remote** (`git push` to `Nationwide/ssd-dast-tool-poc`, not just a personal fork), and the repo must have code scanning / GitHub Advanced Security enabled. | live SARIF upload only works once these are true; running it live is the default for this demo. If they are not met, show a previous live upload's result and state that the command was not run |
 | LLM backend | `explore`/`generate` pick the backend via `LLM_PROVIDER` (`copilot` — Nationwide-approved, or `anthropic` — blocked on the corporate network). Copilot uses `COPILOT_GITHUB_TOKEN`; Anthropic uses `ANTHROPIC_API_KEY`. Keep tokens in gitignored `.secrets/`. | this demo runs the LLM live (Part D2 + Part E); export per §1.7 in both terminals. Without a backend, `--no-llm` gives the same artifact shape |
 | Legacy helper scripts | This checkout includes `compose.demo.yaml`, `cleanup_demo_ports.sh`, `demo_full_scan.sh`, and `demo_replay_flow.sh`, but this Phase 2 demo uses the explicit host-side commands below. | Use the commands in this runbook unless you are intentionally rehearsing one of those helper scripts. |
 
@@ -205,13 +205,30 @@ $CT rm -f juice zap 2>/dev/null; $CT network rm dast 2>/dev/null
 
 $CT network create dast
 $CT run -d --name juice --network dast -p 3000:3000 $JUICE_IMG
+export ZAP_API_KEY=$(openssl rand -hex 24)   # ZAP refuses unkeyed API calls; the runner sends this (W4-4)
 $CT run -d --name zap --network dast -p 8080:8080 $ZAP_IMG \
   zap.sh -daemon -host 0.0.0.0 -port 8080 -silent \
-  -config api.disablekey=true -config 'api.addrs.addr.name=.*' -config api.addrs.addr.regex=true
+  -config api.key="$ZAP_API_KEY" -config 'api.addrs.addr.name=.*' -config api.addrs.addr.regex=true
 ```
 
 Keep the single quotes around `'api.addrs.addr.name=.*'` — Git Bash globs `.*` otherwise, and
 without that flag ZAP answers every host call with `curl: (52) Empty reply`.
+
+**The API key (W4-4).** ZAP no longer runs with an open API. Export `ZAP_API_KEY` in **every**
+terminal that runs `dast`, `runner.*` or a `curl` to ZAP — the same value ZAP was started with.
+A missing or wrong key also shows up as `curl: (52) Empty reply`: a keyed ZAP hangs up rather
+than answering 401.
+
+**Compose's ZAP admits only the runner (W4-7).** Its API accepts calls from the runner's fixed
+address on the compose network and refuses everyone else, key or not. To drive it from the host
+(authoring against compose's ZAP with a published port), start compose with
+`export ZAP_API_ALLOW='.*'`. After pulling the change that introduced this, run
+`docker compose down` once: a container created before the network change is reattached without
+its DNS name, and ZAP then cannot resolve `juice`.
+
+**Stopping a scan.** Ctrl-C in the scanning terminal stops ZAP's spider and active scan as well
+as the runner (exit 130). From another terminal: `$PY -m dast stop <app>`. Check with
+`curl -s -H "X-ZAP-API-Key: $ZAP_API_KEY" http://localhost:8080/JSON/ascan/view/scans/`.
 
 Why these exact names: `runner`, `validate`, and the app `scope.json` all address the target as
 **`juice:3000`** — the container name is the DNS name ZAP resolves on the `dast` network (D7).
@@ -222,7 +239,7 @@ ZAP takes ~20–40 s to come up. Re-run until all three are 200:
 
 ```bash
 curl -s -o /dev/null -w "juice-from-host %{http_code}\n" http://localhost:3000
-curl -s -o /dev/null -w "zap-api        %{http_code}\n" http://localhost:8080/JSON/core/view/version/
+curl -s -H "X-ZAP-API-Key: $ZAP_API_KEY" -o /dev/null -w "zap-api        %{http_code}\n" http://localhost:8080/JSON/core/view/version/
 $CT exec zap curl -sS -m10 -o /dev/null -w "juice-from-zap %{http_code}\n" http://juice:3000/
 ```
 
@@ -233,7 +250,7 @@ which is exactly what `wait_ready()` in `runner/main.py` checks before scanning.
 
 ```bash
 $PY -c "from playwright.sync_api import sync_playwright as s; b=s().start().chromium.launch(); b.close(); print('chromium ok')"
-$PY -m pytest -q          # SEE: all target tests pass
+$PY -m pytest -q          # SEE: 213 passed
 ```
 
 ### 1.5 RUN — clean scratch dir + pick demo credentials
@@ -424,12 +441,15 @@ sed -n '1,25p' out/phase2-demo/results.sarif
 
 **Upload — live is the default:**
 
-- *Live (this repo, `gh` is authenticated):* run the command below. It uses `git rev-parse
-  HEAD` as the commit, which **must already be pushed** (`git status` clean, `git push` done).
+- *Live (this repo, `gh` is authenticated):* run the command below. It names this repo's HEAD as
+  the commit **explicitly** — the upload refuses without a commit and ref (W1-8), because GitHub
+  shows them as the affected branch. That commit **must already be pushed** (`git status` clean,
+  `git push` done). Say it out loud: these are Juice Shop findings attributed to this repo only
+  because it is the demo destination; a real app gets its deployed build's SHA, in its own repo.
   **SEE** `uploaded: id=…` and `status url: …`. Processing takes ~30–60 s.
   ```bash
   $PY -m detections.github_upload out/phase2-demo/results.sarif \
-    --owner Nationwide --repo ssd-dast-tool-poc --ref refs/heads/main
+    --owner Nationwide --repo ssd-dast-tool-poc --ref refs/heads/main --commit "$(git rev-parse HEAD)"
   ```
   This has been run live against the real Security tab; the second such upload is what produced
   the false-"fixed" evidence.
@@ -730,8 +750,13 @@ time $PY -m runner.main \
   --scope out/phase2-demo/gen/scope.json \
   --base-url http://juice:3000 --zap-api http://localhost:8080 --zap-proxy http://localhost:8080 \
   --records-out out/phase2-demo/live-records.json \
-  --coverage-out out/phase2-demo/live-coverage.json; echo "exit=$?"
+  --coverage-out out/phase2-demo/live-coverage.json --expect-findings; echo "exit=$?"
 ```
+`--expect-findings` makes the gate a **self-test**: Juice Shop is deliberately vulnerable, so it
+must find something or the scanner is broken. Without the flag the gate checks health only —
+authenticated, in scope, and at least one route tested — so that a *clean* app passes in a real
+pipeline (W3-2). Whether findings fail a build is `dast report`'s policy gate, which can see
+which findings are new.
 **SAY** (as it starts) "Nothing in `runner/`, `scope_guard.py`, or the normalizer changed. Same
 preflight, same guard, same bounded scan — just a generated `flow.py` and `scope.json` instead
 of hand-authored ones. Preflight runs first, offline: it would abort here if the scope were
@@ -741,11 +766,11 @@ of hand-authored ones. Preflight runs first, offline: it would abort here if the
 
 ```bash
 # 1) ZAP saw the *generated* flow authenticate: count Bearer requests
-curl -s "http://localhost:8080/JSON/search/view/messagesByRequestRegex/?regex=Authorization:%20Bearer" \
+curl -s -H "X-ZAP-API-Key: $ZAP_API_KEY" "http://localhost:8080/JSON/search/view/messagesByRequestRegex/?regex=Authorization:%20Bearer" \
   | $PY -c 'import sys,json;print(len(json.load(sys.stdin)["messagesByRequestRegex"]),"authenticated requests seen by ZAP")'
 
 # 2) active-scan progress
-curl -s "http://localhost:8080/JSON/ascan/view/scans/" | $PY -m json.tool
+curl -s -H "X-ZAP-API-Key: $ZAP_API_KEY" "http://localhost:8080/JSON/ascan/view/scans/" | $PY -m json.tool
 
 # 3) evidence is being captured next to the *generated* scope (redacted HAR)
 ls -R out/phase2-demo/gen/evidence/
@@ -770,7 +795,8 @@ $PY -m runner.main --flow out/phase2-demo/gen/flow.py \
 **Back in Terminal A, SEE** the gate:
 ```json
 { "scan_id": "2026…Z", "app_id": "juice-shop", "requests_seen": <n>, "blocked": 0,
-  "gate": { "authenticated": true, "scope_ok": true, "has_high_or_medium": true,
+  "gate": { "mode": "expect-findings", "authenticated": true, "scope_ok": true,
+            "routes_tested": <hundreds>, "has_high_or_medium": true,
             "detections": <hundreds+>, "passed": true } }
 exit=0
 ```
@@ -781,8 +807,10 @@ detections: 1490`, **2m54s**. Explore trace with the `--no-llm` proposer: `detec
 **SAY** "Same runner, same budget — the explored bundle surfaced 20–30% more detections than
 the human walk, because it exercised more of the authenticated app. That's KI4 closing."
 
-**SAY** "Authenticated, in scope, high/medium found, gate passed, exit 0 — the exact Phase 1
-gate, driven by a generated bundle. That's the Week-2 checkpoint."
+**SAY** "Authenticated, in scope, hundreds of routes tested, high/medium found — the self-test
+gate passed, exit 0, driven by a generated bundle. In a real pipeline the same scan runs without
+`--expect-findings`, so a clean app passes; what fails a build is a *new* high, decided at the
+report stage."
 
 ---
 
@@ -821,7 +849,7 @@ end; everything upstream of the runner was generated."
 *Live upload* (one-way door, same caveat as Part B; HEAD must be pushed):
 ```bash
 $PY -m detections.github_upload out/phase2-demo/live-results.sarif \
-  --owner Nationwide --repo ssd-dast-tool-poc --ref refs/heads/main
+  --owner Nationwide --repo ssd-dast-tool-poc --ref refs/heads/main --commit "$(git rev-parse HEAD)"
 ```
 Then **OPEN** Browser tab 2 and **CLICK** refresh after ~60 s. **CLICK** *Closed* — anything there
 is either a real fix or predates coverage-aware publishing.
@@ -860,7 +888,7 @@ Q&A cheat-sheet: bottom of `docs/dast_poc_phase2_demo_script.md`.
 today, and the suite that backs every piece." Then:
 
 ```bash
-$PY -m pytest -q                          # all target tests pass
+$PY -m pytest -q                          # 213 passed
 sed -n '/## Verification/,/## Out of scope/p' docs/authoring_clis_design.md
 ls out/phase2-demo/warmup/                             # the trace you recorded in §1.6
 ```
@@ -908,12 +936,12 @@ Full teardown at the end of the day: `$CT rm -f juice zap; $CT network rm dast`
 | `services not ready within 120s` from `runner.main` | ZAP can't reach `juice:3000` (different networks / juice exited 133 — KI3 / stale container IPs on Podman) | `$CT exec zap curl … http://juice:3000/`; do the full §1.2 reset (rm both, rm+create network, run both) |
 | `curl: (52) Empty reply` from ZAP API | ZAP started without `api.addrs.addr.name=.*` | restart ZAP with the exact §1.2 command (note the quotes) |
 | A target **on port 8080** returns 400 through the proxy, body `Bad Format`; `docker logs zap` shows `Bad request to API endpoint [...]: No enum constant ...Format.<APP>` | The same `api.addrs.addr.name=.*` that makes ZAP's API reachable also makes ZAP claim **any** proxied request arriving on its own port — so a target on 8080 never reaches the app. Hit onboarding WebGoat, 2026-09-27 | Move the target off 8080 (WebGoat: `-e WEBGOAT_PORT=8083`), or run ZAP's proxy on a different port, or narrow `api.addrs` to the runner's address (W4-4). **Expect this on internal Java apps, which commonly listen on 8080.** |
-| `github_upload` rejected | HEAD commit not on the remote, or token lacks `security_events`/`repo` | `git push` first; `gh auth status` |
+| `refusing to upload: which build was scanned?` | No `--commit`/`--ref` (or `$DAST_TARGET_COMMIT`/`$DAST_TARGET_REF`). There is deliberately no default: the scanner's own checkout is not the target (W1-8) | Pass the deployed build's full SHA and `refs/heads/<branch>`; for this demo, `--commit "$(git rev-parse HEAD)" --ref refs/heads/main` |
+| `github_upload` rejected by GitHub | The commit does not exist in the target repository (not pushed, or a SHA from a different repo), or the token lacks `security_events`/`repo` | `git push` first; check the SHA belongs to the repo you are uploading to; `gh auth status` |
 | Bare `python` → `ModuleNotFoundError` | wrong interpreter (mac 3.9 / Windows Store stub) | `$PY` everywhere |
 | Anthropic smoke test fails with `CERTIFICATE_VERIFY_FAILED` | Python/httpx does not trust the corporate TLS inspection CA yet; `NODE_EXTRA_CA_CERTS` only fixes Node/Playwright | export `SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE` to the same PEM bundle as `NODE_EXTRA_CA_CERTS`, then rerun the smoke test |
 | Anthropic smoke test returns an HTML `Access Blocked by Policy` / Aurascape page | Nationwide policy blocks direct Anthropic API access; TLS and the key may already be fine | switch to the Copilot backend (`export LLM_PROVIDER=copilot` + `COPILOT_GITHUB_TOKEN`, §1.7 Option A), or use `--no-llm` |
 | `explore`/`generate` print `plan_source: fallback` / `LLM path failed` under `LLM_PROVIDER=copilot` | `copilot` not on PATH, `COPILOT_GITHUB_TOKEN` unset, or `LLM_PROVIDER` not exported in this terminal | `command -v copilot`; re-export `LLM_PROVIDER`/`COPILOT_GITHUB_TOKEN`; confirm with `$PY -c "from authoring import llm_backend; print(llm_backend.available())"` |
-| Windows: `available()` is `True` but the LLM call raises `FileNotFoundError: [WinError 2]`, or `OSError: [WinError 193] %1 is not a valid Win32 application` | npm installs the CLI as `copilot.cmd`. `CreateProcess` applies neither `PATHEXT` (so the bare name resolves for `shutil.which` but not for `subprocess` — WinError 2) nor batch interpretation (so the `.cmd` itself cannot be executed — WinError 193). Hit on Windows Git Bash, 2026-09-29 | fixed in the backend: the executable is resolved with `shutil.which` and a `.cmd`/`.bat` shim is run through `cmd.exe /c`, with the prompt passed as a file so cmd cannot re-parse its quotes. On an older checkout there is no workaround other than upgrading |
 | Chromium window never appears in Part D | forgot `--headed`, or running inside a container | add `--headed`; run on the host |
 | `generate`/`explore` prints `LLM path failed … using deterministic fallback` | no/invalid key, network, or off-schema output | that's the designed behavior — say so; or add `--no-llm` to avoid the wait |
 | `EXPLORE ABORT: seeded session dead` | storageState is stale (Juice Shop restarted → users gone), belongs to a different `AUTH_EMAIL`, or was seeded at `localhost:3000` instead of `juice:3000` | re-run Part D `record` (registers the user) then §1.8 `seed` through ZAP at `juice:3000` |
@@ -932,8 +960,9 @@ Full teardown at the end of the day: `$CT rm -f juice zap; $CT network rm dast`
 # ---- pre-flight (Terminal A) — paste the Platform card for your OS FIRST ----
 $CT rm -f juice zap 2>/dev/null; $CT network rm dast 2>/dev/null; $CT network create dast
 $CT run -d --name juice --network dast -p 3000:3000 $JUICE_IMG
-$CT run -d --name zap --network dast -p 8080:8080 $ZAP_IMG zap.sh -daemon -host 0.0.0.0 -port 8080 -silent -config api.disablekey=true -config 'api.addrs.addr.name=.*' -config api.addrs.addr.regex=true
-curl -s -o /dev/null -w "juice %{http_code}\n" http://localhost:3000; curl -s -o /dev/null -w "zap %{http_code}\n" http://localhost:8080/JSON/core/view/version/; $CT exec zap curl -sS -m10 -o /dev/null -w "juice-from-zap %{http_code}\n" http://juice:3000/
+export ZAP_API_KEY=$(openssl rand -hex 24)   # ZAP refuses unkeyed API calls; the runner sends this (W4-4)
+$CT run -d --name zap --network dast -p 8080:8080 $ZAP_IMG zap.sh -daemon -host 0.0.0.0 -port 8080 -silent -config api.key="$ZAP_API_KEY" -config 'api.addrs.addr.name=.*' -config api.addrs.addr.regex=true
+curl -s -o /dev/null -w "juice %{http_code}\n" http://localhost:3000; curl -s -H "X-ZAP-API-Key: $ZAP_API_KEY" -o /dev/null -w "zap %{http_code}\n" http://localhost:8080/JSON/core/view/version/; $CT exec zap curl -sS -m10 -o /dev/null -w "juice-from-zap %{http_code}\n" http://juice:3000/
 $PY -m pytest -q
 rm -rf out/phase2-demo && mkdir -p out/phase2-demo
 export AUTH_EMAIL="dast-demo-$(date +%H%M%S)@juice-sh.op" AUTH_PASSWORD="Dast-Demo-passw0rd!"; echo $AUTH_EMAIL
@@ -946,7 +975,7 @@ $PY -m authoring.seed --app juice-shop --zap-proxy http://localhost:8080 --assis
 # ---- Part B (Terminal B) ----
 $PY -m detections.normalizer contracts/sample_zap_output.json --app-id juice-shop --scan-id demo-fixture-1 -o out/phase2-demo/records.json
 $PY -m detections.sarif_export out/phase2-demo/records.json --app-id juice-shop --driver-version "ZAP 2.17.0" -o out/phase2-demo/results.sarif
-# (optional) $PY -m detections.github_upload out/phase2-demo/results.sarif --owner Nationwide --repo ssd-dast-tool-poc --ref refs/heads/main
+# (optional) $PY -m detections.github_upload out/phase2-demo/results.sarif --owner Nationwide --repo ssd-dast-tool-poc --ref refs/heads/main --commit "$(git rev-parse HEAD)"
 
 # ---- Part D (Terminal A) ----
 $PY -m authoring.record --app juice-shop --zap-proxy http://localhost:8080 --out-dir out/phase2-demo/trace --headed --slow-mo 700
@@ -962,10 +991,10 @@ $PY -m authoring.generate --app juice-shop --trace out/phase2-demo/explore/trace
 $PY -m authoring.validate --plan out/phase2-demo/gen/journey.json --scope out/phase2-demo/gen/scope.json --flow out/phase2-demo/gen/flow.py --base-url http://juice:3000 --zap-proxy http://localhost:8080 --report out/phase2-demo/validation-report.json; echo exit=$?
 
 # ---- Part G ----
-time $PY -m runner.main --flow out/phase2-demo/gen/flow.py --scope out/phase2-demo/gen/scope.json --base-url http://juice:3000 --zap-api http://localhost:8080 --zap-proxy http://localhost:8080 --records-out out/phase2-demo/live-records.json --coverage-out out/phase2-demo/live-coverage.json; echo exit=$?
+time $PY -m runner.main --flow out/phase2-demo/gen/flow.py --scope out/phase2-demo/gen/scope.json --base-url http://juice:3000 --zap-api http://localhost:8080 --zap-proxy http://localhost:8080 --records-out out/phase2-demo/live-records.json --coverage-out out/phase2-demo/live-coverage.json --expect-findings; echo exit=$?
 
 # ---- Part H (coverage-aware: diff first, export the labeled set) ----
 $PY -m detections.lifecycle_diff out/phase2-demo/live-records.json --app-id juice-shop --state out/state.json --coverage out/phase2-demo/live-coverage.json -o out/phase2-demo/live-labeled.json
 $PY -m detections.sarif_export out/phase2-demo/live-labeled.json --app-id juice-shop --driver-version "ZAP 2.17.0" -o out/phase2-demo/live-results.sarif
-# (optional) $PY -m detections.github_upload out/phase2-demo/live-results.sarif --owner Nationwide --repo ssd-dast-tool-poc --ref refs/heads/main
+# (optional) $PY -m detections.github_upload out/phase2-demo/live-results.sarif --owner Nationwide --repo ssd-dast-tool-poc --ref refs/heads/main --commit "$(git rev-parse HEAD)"
 ```

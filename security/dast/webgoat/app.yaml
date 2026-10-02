@@ -1,15 +1,22 @@
-# OWASP WebGoat - the third onboarded application, and the test of the config-only claim.
+# OWASP WebGoat — the third onboarded application, and the test of the "config only" claim.
 #
-# WebGoat is a Spring Boot application with a JSESSIONID cookie and selector-based auth proof.
-# Register a test account through the signup form before authoring; passwords are 6-10 chars.
+# Juice Shop is an Angular SPA with a JWT in localStorage; DVWA is PHP with a PHPSESSID cookie
+# proven by visiting a route. WebGoat is a third shape again: Spring Boot, a JSESSIONID cookie,
+# and authentication proven by an element that only exists once you are logged in — the
+# `selector` proof mode, which no other application here uses.
+#
+# Environment prep (not configuration): WebGoat has no default account, so a test user is
+# registered once through its own signup form. Its passwords must be 6-10 characters.
 
 app_id: webgoat
 environment_class: dev
-base_url: http://webgoat:8083
+base_url: http://webgoat:8083          # NOT 8080: ZAP claims proxied requests on its own
+                                       # port as API calls (api.addrs.addr.name=.*), so a
+                                       # target on 8080 never reaches the app. See §Gotchas.
 
 scope:
   allow: [webgoat]
-  avoid_actions: [logout, reset, delete]
+  avoid_actions: [logout, reset, delete]   # WebGoat's lesson reset wipes progress
 
 auth:
   mode: form
@@ -18,7 +25,13 @@ auth:
     - {action: fill, selector: "input[name=username]", value: identifier}
     - {action: fill, selector: "input[name=password]", value: secret}
     - {action: click, selector: "button[type=submit]"}
+  # No JS-visible token and no clean "authenticated route" to probe — a failed login returns
+  # 200 on /WebGoat/login?error, which a status check would happily accept. The honest proof
+  # is an element that only renders for a logged-in user.
   proof:
+    # #menu-container renders only for a logged-in user and is visible. The logout link would
+    # also be authenticated-only, but it sits inside a collapsed dropdown and is hidden, which
+    # a visibility-based check cannot see.
     selector: "#menu-container"
   identity: provisioned
   credentials:
@@ -33,47 +46,22 @@ record:
     - /WebGoat/service/lessonprogress.mvc
 
 api:
+  # WebGoat's JSON endpoints live under /service/ — neither /api/ nor /rest/, which is exactly
+  # why this is configuration and not a constant in the recorder.
   patterns: ["/service/", "/WebGoat/service/"]
 
 explore:
   seed_routes:
     - /WebGoat/start.mvc
     - /WebGoat/service/lessonmenu.mvc
-    # The lesson page itself: /start.mvc builds its menu in JavaScript, so nothing submittable
-    # is reachable from the seed by following links.
-    - /WebGoat/SqlInjection.lesson
-  # Writes stay denied by posture; these endpoints are the only exceptions, named exactly as the
-  # lesson forms post to them. Each is an idempotent SQL-injection exercise against WebGoat's
-  # own throwaway in-memory database, in a disposable dev container.
-  write_mode: deny
-  safe_forms:
-    - /WebGoat/SqlInjection/attack2
-    - /WebGoat/SqlInjection/attack3
-    - /WebGoat/SqlInjection/attack4
-    - /WebGoat/SqlInjection/attack5
-    - /WebGoat/SqlInjection/assignment5a
-    - /WebGoat/SqlInjection/assignment5b
-    - /WebGoat/SqlInjection/attack8
-    - /WebGoat/SqlInjection/attack9
-    - /WebGoat/SqlInjection/attack10
-  # Disposable values for the lesson fields, benign by design: the point is to reach the
-  # endpoint with a well-formed request, not to solve the lesson. No payloads -- the scanner
-  # supplies those once the request is in its site tree.
-  test_data:
-    query: "SELECT * FROM employees"
-    username: "dast-test"
-    userid: "101"
-    login_count: "1"
-    name: "dast-test"
-    auth_tan: "0000"
-    action_string: "dast-test"
+  safe_forms: []
   budgets:
-    max_pages: 25
+    max_pages: 10
 
 scan:
   policy:
     attack_strength: medium
     alert_threshold: medium
-    disabled_rules: ["40026"]
+    disabled_rules: ["40026"]   # DOM-XSS: browser-driven, OOM-killed the daemon on DVWA (SP-3)
   budgets:
     max_scan_min: 4

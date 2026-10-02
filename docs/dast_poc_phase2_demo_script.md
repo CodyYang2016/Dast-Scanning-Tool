@@ -167,8 +167,11 @@ turns into Security tab alerts."
 If a GitHub token/repo is available, upload it live; otherwise narrate the command:
 
 ```bash
+# --commit/--ref name the build GitHub will say is affected. This demo uploads Juice Shop
+# results to THIS repository as a stand-in, so it attributes them to this repo's pushed
+# HEAD on purpose. For a real app: the deployed build's SHA, to the app's own repository.
 python -m detections.github_upload out/phase2-demo/results.sarif \
-  --owner <org> --repo <repo> --ref refs/heads/main
+  --owner <org> --repo <repo> --ref refs/heads/main --commit "$(git rev-parse HEAD)"
 ```
 
 **Say:** "This is a one-way door worth calling out explicitly: this uploads to GitHub's Security
@@ -207,7 +210,7 @@ entire vocabulary the LLM is allowed to use."
 ## 4. Run `record` — capture the deterministic baseline trace
 
 ```bash
-cd /c/Users/yangq4/poc-work/ssd-dast-tool-poc
+cd /c/Users/yangq4/playground/Warbler-Tech/Dast-Scanning-Tool
 export AUTH_EMAIL="dast-demo-$(date +%H%M%S)@juice-sh.op"
 export AUTH_PASSWORD="Dast-Demo-passw0rd!"
 
@@ -438,8 +441,11 @@ inside the built image.
 python -m runner.main \
   --flow out/phase2-demo/gen/flow.py --scope out/phase2-demo/gen/scope.json \
   --base-url http://juice:3000 --zap-api http://localhost:8080 --zap-proxy http://localhost:8080 \
-  --records-out out/phase2-demo/live-records.json
+  --records-out out/phase2-demo/live-records.json --expect-findings
 ```
+
+`--expect-findings` keeps this a self-test against a deliberately vulnerable app. By default
+the scan gate is health-only, so a clean application passes in a pipeline (W3-2).
 
 > If you specifically want the containerized path (matching `demo_full_scan.sh` exactly), the
 > compose project name is `ssd-dast-poc` (see `name:` in `compose.yaml`), so the network is
@@ -448,8 +454,8 @@ python -m runner.main \
 > `/app/security/dast/juice-shop` read-only. The host-Python form above is simpler and is what
 > this script recommends for the live demo.
 
-**Expect:** the same gate shape as Phase 1 — `authenticated: true`, `scope_ok: true`,
-`has_high_or_medium: true`, `passed: true`, exit code 0, and `out/phase2-demo/live-records.json`
+**Expect:** `mode: expect-findings`, `authenticated: true`, `scope_ok: true`,
+`routes_tested` in the hundreds, `has_high_or_medium: true`, `passed: true`, exit code 0, and `out/phase2-demo/live-records.json`
 written.
 
 **Say:** "Nothing in `runner/`, `runner/scope_guard.py`, or the normalizer changed to make this

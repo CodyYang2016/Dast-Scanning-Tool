@@ -22,6 +22,35 @@ def _is_api(url: str, patterns) -> bool:
     return any(m in url for m in patterns)
 
 
+_MAX_BODY = 20_000
+
+
+def request_event(r) -> dict:
+    """A trace event for one browser request. A write keeps its body (W6-1) — redacted HERE,
+    before it is stored anywhere — because ZAP can only attack the parameters it has seen sent,
+    and a body's field names are what make an API write attackable. Values do not matter to
+    ZAP, so secrets become REDACTED without losing the attack surface."""
+    ev = {"type": "request", "method": r.method, "url": r.url}
+    if r.method.upper() == "GET":
+        return ev
+    body = getattr(r, "post_data", None)
+    if not body:
+        return ev
+    if len(body) > _MAX_BODY:
+        ev["body_omitted"] = "too large"
+        return ev
+    from runner.redact import redact, redact_text
+    ctype = (getattr(r, "headers", None) or {}).get("content-type", "")
+    try:
+        body = json.dumps(redact(json.loads(body))) if "json" in ctype else redact_text(body)
+    except ValueError:
+        body = redact_text(body)
+    ev["body"] = body
+    if ctype:
+        ev["content_type"] = ctype
+    return ev
+
+
 def build_trace(app_id: str, base_url: str, events: list[dict]) -> dict:
     """Assemble a trace (trace.schema.json) from raw captured events. Pure."""
     interactions: list[dict] = []
@@ -43,13 +72,20 @@ def build_trace(app_id: str, base_url: str, events: list[dict]) -> dict:
             interactions.append({"type": "goto", "url": url})
             if url and url not in index:
                 index.append(url)
-        elif etype in ("fill", "click", "login", "submit"):
+        elif etype in ("fill", "click", "login"):
             interactions.append(dict(ev))
         elif etype == "form":
-            forms.append({"url": url, "fields": list(ev.get("fields", []))})
+            # `method` decides whether this form's parameters can ever appear in a URL, and
+            # so whether coverage can see them at all (W6-12).
+            forms.append({"url": url, "method": str(ev.get("method", "GET")).upper(),
+                          "fields": list(ev.get("fields", []))})
         elif etype == "request":
-            api.append({"method": ev.get("method", "GET"), "url": url,
-                        "params": list(ev.get("params", []))})
+            call = {"method": ev.get("method", "GET"), "url": url,
+                    "params": list(ev.get("params", []))}
+            for key in ("body", "content_type", "body_omitted"):
+                if ev.get(key):
+                    call[key] = ev[key]
+            api.append(call)
 
     _note_host(base_url)
     return {
@@ -99,9 +135,8 @@ def crawl(config: dict, email: str, password: str, base_url: str | None = None,
             launch["slow_mo"] = slow_mo
         browser = pw.chromium.launch(**launch)
         page = browser.new_context(ignore_https_errors=True).new_page()
-        page.on("request", lambda r: events.append(
-            {"type": "request", "method": r.method, "url": r.url})
-            if _is_api(r.url, patterns) else None)
+        page.on("request", lambda r: events.append(request_event(r))
+                if _is_api(r.url, patterns) else None)
 
         def goto(route):
             events.append({"type": "goto", "url": base_url + route})
@@ -164,8 +199,8 @@ def _dismiss(page, selectors) -> None:
 def write_trace(trace: dict, out_dir: str) -> None:
     d = Path(out_dir)
     d.mkdir(parents=True, exist_ok=True)
-    (d / "trace.json").write_text(json.dumps(trace, indent=2) + "\n", encoding="utf-8")
-    (d / "index.json").write_text(json.dumps(trace["index"], indent=2) + "\n", encoding="utf-8")
+    (d / "trace.json").write_text(json.dumps(trace, indent=2) + "\n")
+    (d / "index.json").write_text(json.dumps(trace["index"], indent=2) + "\n")
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -48,43 +48,60 @@ def load_app_config(path_or_app_id: str) -> dict:
     if not path.is_file():
         raise FileNotFoundError(f"no app config at {path}")
     try:
-        cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
+        cfg = yaml.safe_load(path.read_text())
     except yaml.YAMLError as exc:
         raise ValueError(f"app config {path} is not valid YAML: {exc}") from exc
     if not isinstance(cfg, dict):
         raise ValueError(f"app config {path} must be a mapping, got {type(cfg).__name__}")
 
     import json  # local: only needed to read the committed schema
-    jsonschema.validate(cfg, json.loads(_APP_SCHEMA.read_text(encoding="utf-8")))
+    jsonschema.validate(cfg, json.loads(_APP_SCHEMA.read_text()))
     return cfg
 
 
+# ---- derived artifacts: the config is the single source, nothing else is authored --------
+
 def scope_from_config(cfg: dict) -> dict:
-    """Derive the runner scope from the single app configuration."""
+    """The scan boundary, derived from the app config (contracts/scope.schema.json shape).
+
+    `explore` used to demand a hand-written scope.json even though every field is already in
+    app.yaml — which meant the autonomous path was the only one that could not be driven from
+    configuration alone. The derived scope goes through exactly the same fail-closed preflight
+    check as a file-based one; nothing about the safety model changes.
+    """
     from runner.scope_guard import host_of
     target = host_of(cfg["base_url"])
     if not target:
-        raise ValueError(f"cannot determine target host from base_url {cfg['base_url']!r}")
-    scope = cfg.get("scope", {})
+        raise ValueError(f"cannot determine the target host from base_url {cfg['base_url']!r}")
+    sc = cfg.get("scope", {})
+    # In a shared environment the target joins the allow list as its ORIGIN, never as a bare host
+    # (which preflight refuses there). In dev, behaviour is unchanged.
+    from runner.scope_guard import origin_of
+    shared = str(cfg["environment_class"]).strip().lower() in ("test", "staging")
+    own = origin_of(cfg["base_url"]) if shared else target
     return {
         "app_id": cfg["app_id"],
         "environment_class": cfg["environment_class"],
         "target_fqdn": target,
-        "fqdn_allow_list": sorted(set(scope.get("allow", [])) | {target}),
-        "fqdn_deny_list": list(scope.get("deny", [])),
-        "avoid_action_list": list(scope.get("avoid_actions", [])),
+        "fqdn_allow_list": sorted(set(sc.get("allow", [])) | {own}),
+        "fqdn_deny_list": list(sc.get("deny", [])),
+        "avoid_action_list": list(sc.get("avoid_actions", [])),
+        "exclude_paths": list(sc.get("exclude", [])),
+        "traverse_list": list(sc.get("traverse", [])),
     }
 
 
 def seed_from_config(cfg: dict) -> dict:
-    """Derive the seeded exploration input from app.yaml."""
+    """The exploration seed (contracts/seed.schema.json shape), derived from the app config."""
     state = storage_state(cfg)
     if not state:
-        raise ValueError("no auth.storage_state in app config; seed a session first")
+        raise ValueError("no auth.storage_state in the app config; run `dast author --explore` "
+                         "or seed a session first")
+    routes = seed_routes(cfg) or ["/"]   # one entry point is enough; discovery finds the rest
     return {
         "target": {"base_url": cfg["base_url"]},
         "session": {"storage_state": state},
-        "seed_routes": seed_routes(cfg) or ["/"],
+        "seed_routes": routes,
         "deny_actions": avoid_actions(cfg),
     }
 
@@ -189,61 +206,64 @@ def safe_forms(cfg: dict) -> list[str]:
 
 
 def submit_get_forms(cfg: dict) -> bool:
+    """May exploration submit read-only (GET) forms? Default yes — that is how parameters are
+    discovered — and state-changing verbs stay default-denied regardless."""
     return bool(cfg.get("explore", {}).get("submit_get_forms", True))
 
 
 def writes_allowed(cfg: dict) -> bool:
+    """May exploration submit state-changing forms?
+
+    Requires BOTH an attestation that the environment is disposable and an explicit opt-in.
+    Two keys rather than one because they are different statements by different people: the
+    environment's owner says the data can be rebuilt, the tool's operator says to use that.
+    """
     return (cfg.get("data_policy") == "disposable"
             and cfg.get("explore", {}).get("write_mode") == "allow")
 
 
 def test_data(cfg: dict) -> dict:
+    """Field name -> value to type when filling a form. Empty by default."""
     return dict(cfg.get("explore", {}).get("test_data", {}))
 
 
-def inferred_fields(cfg: dict) -> dict:
-    """Fields the operator permits the planner to supply a value for, with the shape required.
-
-    Separate from test_data because the two answer different questions: test_data is a value the
-    operator chose, this is permission to choose one, bounded by a pattern and a length. A field
-    in neither is never filled.
-    """
-    return dict(cfg.get("explore", {}).get("inferred_fields", {}))
+def exclude_paths(cfg: dict) -> list[str]:
+    """Endpoints never to be touched, by path (W4-5): a path and everything beneath it."""
+    return list(cfg.get("scope", {}).get("exclude", []))
 
 
 def avoid_actions(cfg: dict) -> list[str]:
     return list(cfg.get("scope", {}).get("avoid_actions", []))
 
 
-def scope_allow(cfg: dict) -> list[str]:
-    """Hosts this application may be reached AND attacked on."""
-    return list(cfg.get("scope", {}).get("allow", []))
-
-
-def scope_deny(cfg: dict) -> list[str]:
-    """Host patterns that must never be contacted, even if otherwise allowed."""
-    return list(cfg.get("scope", {}).get("deny", []))
-
-
 def scan_cookies(cfg: dict) -> dict:
+    """Cookies the scanning browser must carry — state the scan depends on, stated in config
+    rather than left to chance (W6-8)."""
     return dict(cfg.get("auth", {}).get("cookies", {}))
 
 
 def state_probes(cfg: dict) -> list[str]:
+    """Paths whose responses are hashed into coverage to describe the app's condition."""
     return list(cfg.get("scan", {}).get("state_probes", []))
 
 
 def storage_state(cfg: dict) -> str | None:
+    """A file path, or `env:VAR` for a session delivered by a secret store (W5-3)."""
     return cfg["auth"].get("storage_state")
 
 
-def max_pages(cfg: dict, default: int = 50) -> int:
+def storage_state_ttl_hours(cfg: dict) -> float:
+    """How old a stored session file may be before it must be re-seeded (W5-3)."""
+    return float(cfg.get("auth", {}).get("storage_state_ttl_hours", 12))
+
+
+def max_pages(cfg: dict, default: int = 30) -> int:
     return int(cfg.get("explore", {}).get("budgets", {}).get("max_pages", default))
 
 
 _DEFAULT_POLICY = {"attack_strength": "medium", "alert_threshold": "medium",
                    "disabled_rules": ["40026"]}   # DOM-XSS is browser-driven and slow
-_DEFAULT_BUDGETS = {"max_scan_min": 4, "max_rule_min": 1}
+_DEFAULT_BUDGETS = {"max_scan_min": 10, "max_rule_min": 1}
 
 
 def scan_policy(cfg: dict) -> dict:
@@ -294,8 +314,77 @@ def credentials(cfg: dict) -> tuple[str, str]:
 
 
 def output_dir(cfg: dict) -> str | None:
+    """Where this app's artifacts are written, or None to use the default.
+
+    A per-machine override (--out, $DAST_OUT) takes precedence: this file is committed and
+    shared, so an absolute path in it is right on exactly one machine.
+    """
     return cfg.get("output", {}).get("dir")
 
 
 def github_publish(cfg: dict) -> dict:
+    """The configured GitHub code-scanning destination, or {} when none is declared.
+
+    Publishing still requires an explicit --upload. Config states WHERE results would go; it
+    never decides THAT they go, because a Security tab is a one-way door.
+    """
     return dict(cfg.get("publish", {}).get("github", {}))
+
+
+def evidence_url(cfg: dict) -> str | None:
+    """Where alerts link for the stored request/response (W1-4): a template with {scan_id} and
+    {path}, or a page holding the evidence. None means alerts name the file instead."""
+    return cfg.get("publish", {}).get("evidence_url")
+
+
+def gate_fail_on(cfg: dict) -> str | None:
+    """The severity at or above which a NEW finding fails `dast report`, or None for the default.
+    `none` disables the gate. See detections/gate.py."""
+    return cfg.get("gate", {}).get("fail_on")
+
+
+def suppressions_path(app_id: str) -> Path:
+    """security/dast/<app>/suppressions.yaml — reviewed triage decisions (W1-5)."""
+    return _APPS_DIR / app_id / "suppressions.yaml"
+
+
+def scan_reset(cfg: dict) -> dict | None:
+    """The application's own data reset, run before each scan (W6-1), or None."""
+    return cfg.get("scan", {}).get("reset")
+
+
+def dom_xss(cfg: dict) -> dict:
+    """The DOM-XSS pass (W6-3): off unless an app opts in, since it needs a browser per payload
+    and memory to match."""
+    d = cfg.get("scan", {}).get("dom_xss", {})
+    return {"enabled": bool(d.get("enabled", False)), "max_min": int(d.get("max_min", 5)),
+            "routes": list(d.get("routes", []))}
+
+
+def openapi_spec(cfg: dict) -> str | None:
+    """An OpenAPI/Swagger spec for the application (W6-4): a URL, or a path under the repo."""
+    return cfg.get("scan", {}).get("openapi")
+
+
+def scan_reauth(cfg: dict) -> dict:
+    """Whether a session lost mid-scan is re-established by logging in again, and how many times
+    (W5-2). On by default: the alternative is stopping the scan at the first loss."""
+    r = cfg.get("scan", {}).get("reauth", {})
+    return {"enabled": bool(r.get("enabled", True)), "max": int(r.get("max", 3))}
+
+
+def bearer_from_cookie(cfg: dict) -> str | None:
+    """A cookie whose value the application ALSO expects as `Authorization: Bearer` — so a
+    re-established session is sent both ways (W5-2). Juice Shop: `token`."""
+    return cfg.get("auth", {}).get("bearer_from_cookie")
+
+
+def anti_csrf_tokens(cfg: dict) -> list[str]:
+    """Anti-CSRF field names ZAP should refresh per attack (W5-2), beyond its defaults."""
+    return list(cfg.get("scan", {}).get("anti_csrf_tokens", []))
+
+
+def scan_throttle(cfg: dict) -> dict:
+    """How hard the scan may push a shared environment (W4-3): threads per host and a per-request
+    delay. Empty means ZAP's own defaults."""
+    return dict(cfg.get("scan", {}).get("throttle", {}))

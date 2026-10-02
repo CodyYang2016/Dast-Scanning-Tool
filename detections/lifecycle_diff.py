@@ -3,7 +3,7 @@
 Given this scan's detection records and the previous scan's, label each new / open / resolved
 by comparing fingerprints, and persist state so the next scan can diff against this one.
 
-Conforms to the frozen spec in docs/lifecycle_diff_design.md and the
+Conforms to the frozen spec in docs/junior_engineer/lifecycle_diff_design.md and the
 test-first suite tests/test_lifecycle_diff.py. Identity is the fingerprint:
   new         = fingerprint in current only
   open        = fingerprint in both
@@ -14,7 +14,7 @@ The resolved/not_scanned split is coverage-aware (R2): a finding that vanished o
 real fix if this scan actually exercised its route with its rule enabled. `covered` describes what
 the current scan exercised; when it is None the diff is coverage-blind and every previous-only
 finding is `resolved` (legacy behavior, preserved for existing callers). See R2 in
-docs/seeded_session_exploration_design.md.
+docs/junior_engineer/seeded_session_exploration_design.md.
 """
 
 from __future__ import annotations
@@ -28,6 +28,50 @@ from collections.abc import Iterable
 from detections.normalizer import write_json_array
 
 
+def _wrote_to_the_app(covered) -> bool:
+    """True when the scan that produced this coverage was allowed to change the application.
+
+    A write-enabled scan mutates state, so a finding that disappeared may have been fixed or
+    may simply have lost the data it depended on. `resolved` is a claim about a fix, so it is
+    not available from a scan that moved the ground underneath the comparison — the same
+    reasoning as R2's route-coverage rule, applied to the app's state instead of its routes.
+    """
+    return bool(isinstance(covered, dict)
+                and covered.get("policy", {}).get("write_mode") == "allow")
+
+
+def degraded(covered) -> bool:
+    """True when the scan that produced this coverage cannot vouch for what it did NOT find.
+
+    A session lost partway — even one recovered by re-authentication — means part of the scan
+    attacked a logged-out application, and a scan that failed its health gate tested less than
+    it claims. Either way a vanished finding may simply have been unreachable, so `resolved` is
+    not available from it. An UNVERIFIED session (no probe could tell) does not count: that is a
+    gap in what we know, recorded as such, not evidence of a loss.
+    """
+    if not isinstance(covered, dict):
+        return False
+    session = covered.get("session") or {}
+    return (session.get("alive_throughout") is False
+            or (covered.get("health_gate") or {}).get("passed") is False)
+
+
+def _parameter_check(covered):
+    """Return (route, parameter) -> bool: was this finding's own parameter exercised?
+
+    A finding's identity includes its parameter, so route coverage alone cannot support a fix
+    claim: a page visited without `?id=` never tested `id`. Findings with no parameter —
+    missing headers, page-level issues — are judged at route level, which is the right
+    granularity for them. Coverage recorded before this existed has no `route_params`, and
+    those artifacts keep their old behaviour rather than suddenly labelling everything
+    unscanned.
+    """
+    params = covered.get("route_params") if isinstance(covered, dict) else None
+    if not params:
+        return lambda route, parameter: True
+    return lambda route, parameter: (not parameter) or parameter in set(params.get(route, []))
+
+
 def _coverage_check(covered):
     """Return a predicate (route, rule) -> bool for whether this scan exercised that pair.
 
@@ -37,22 +81,13 @@ def _coverage_check(covered):
       - an iterable of (route, rule) pairs -> exercised iff the exact pair is present
     """
     if covered is None:
-        return lambda route, rule, parameter=None: True
+        return lambda route, rule: True
     if isinstance(covered, dict):
         routes = set(covered.get("routes", []))
         rules = set(covered.get("rules", []))
-        params = covered.get("route_params")
-
-        def is_covered(route, rule, parameter=None):
-            if route not in routes or rule not in rules:
-                return False
-            if params and parameter:
-                return parameter in set(params.get(route, []))
-            return True
-
-        return is_covered
+        return lambda route, rule: route in routes and rule in rules
     pairs = {tuple(p) for p in covered}
-    return lambda route, rule, parameter=None: (route, rule) in pairs
+    return lambda route, rule: (route, rule) in pairs
 
 
 def diff(current_records: Iterable[dict], previous_records: Iterable[dict],
@@ -70,6 +105,9 @@ def diff(current_records: Iterable[dict], previous_records: Iterable[dict],
     current_fps = {r["fingerprint"] for r in current}
     previous_fps = {r["fingerprint"] for r in previous}
     is_covered = _coverage_check(covered)
+    param_exercised = _parameter_check(covered)
+    if _wrote_to_the_app(covered) or degraded(covered):   # neither can claim a fix
+        is_covered = lambda route, rule: False    # noqa: E731 — deliberate, one line
 
     out: list[dict] = []
     for r in current:
@@ -77,8 +115,9 @@ def diff(current_records: Iterable[dict], previous_records: Iterable[dict],
         out.append({**r, "status": status})
     for r in previous:
         if r["fingerprint"] not in current_fps:
-            status = "resolved" if is_covered(r.get("endpoint"), r.get("rule_id"),
-                                                r.get("parameter")) else "not_scanned"
+            covered_here = (is_covered(r.get("endpoint"), r.get("rule_id"))
+                            and param_exercised(r.get("endpoint"), r.get("parameter")))
+            status = "resolved" if covered_here else "not_scanned"
             out.append({**r, "status": status})
     return out
 
@@ -86,7 +125,7 @@ def diff(current_records: Iterable[dict], previous_records: Iterable[dict],
 def _load_state(state_path: str) -> dict:
     if not os.path.exists(state_path):
         return {}
-    with open(state_path, encoding="utf-8") as fh:
+    with open(state_path) as fh:
         return json.load(fh)
 
 
@@ -103,7 +142,7 @@ def save_state(state_path: str, app_id: str, records: Iterable[dict], coverage=N
     if coverage is not None:
         entry["coverage"] = coverage
     state[app_id] = entry
-    with open(state_path, "w", encoding="utf-8") as fh:
+    with open(state_path, "w") as fh:
         json.dump(state, fh, indent=2)
 
 
@@ -125,7 +164,7 @@ def load_coverage(state_path: str, app_id: str):
 
 def _read_records(source: str | object) -> list[dict]:
     """Read detection records from a JSON array or NDJSON file/stream."""
-    fh = source if hasattr(source, "read") else open(source, encoding="utf-8")
+    fh = source if hasattr(source, "read") else open(source)
     try:
         text = fh.read()
     finally:
@@ -156,13 +195,13 @@ def main(argv: list[str] | None = None) -> int:
 
     current = _read_records(sys.stdin if args.records == "-" else args.records)
     previous = load_previous(args.state, args.app_id)
-    coverage = json.loads(open(args.coverage, encoding="utf-8").read()) if args.coverage else None
+    coverage = json.loads(open(args.coverage).read()) if args.coverage else None
     labeled = diff(current, previous, coverage)
 
     if args.out == "-":
         write_json_array(labeled, sys.stdout)
     else:
-        with open(args.out, "w", encoding="utf-8") as fh:
+        with open(args.out, "w") as fh:
             write_json_array(labeled, fh)
 
     if not args.no_save:
