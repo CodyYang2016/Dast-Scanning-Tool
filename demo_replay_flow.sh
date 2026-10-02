@@ -50,6 +50,7 @@ podman rm -f ssd-dast-poc_juice_1 ssd-dast-poc_zap_1 >/dev/null 2>&1 || true
 podman network rm "$runner_network" >/dev/null 2>&1 || true
 
 echo ">> Build runner image"
+bash scripts/stage_ca_bundle.sh
 podman build -t "$runner_image" -f Containerfile .
 
 rm -rf out/replay-evidence
