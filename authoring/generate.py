@@ -21,14 +21,19 @@ from pathlib import Path
 
 import jsonschema
 
-from authoring import appconfig, explore, llm_backend
-from runner.action_policy import is_download
+from authoring import appconfig
 from runner.scope_guard import host_of
 
 _ROOT = Path(__file__).resolve().parent.parent
 _JOURNEY_SCHEMA = _ROOT / "contracts" / "journey.schema.json"
 _SCOPE_SCHEMA = _ROOT / "contracts" / "scope.schema.json"
 _VERSIONS_LOCK = _ROOT / "versions.lock"
+
+_DEFAULT_MODEL = "claude-opus-4-8"
+
+
+def _is_absolute(target: str) -> bool:
+    return target.startswith(("http://", "https://"))
 
 
 def _relpath(url: str, base_url: str) -> str:
@@ -37,27 +42,77 @@ def _relpath(url: str, base_url: str) -> str:
     return url if url.startswith("/") else ""
 
 
-def _is_absolute(target: str) -> bool:
-    return target.startswith("http://") or target.startswith("https://")
-
-
 # ---- FR-G2: scope emission --------------------------------------------------------------
 
 def emit_scope(trace: dict, config: dict) -> dict:
+    """Seed the allow-list from hosts actually seen in the trace, everything else from config.
+
+    `environment_class` has no default on purpose: it is what preflight refuses prod on, so a
+    missing value must fail here rather than quietly become "dev".
+    """
     hosts = list(trace.get("hosts") or [])
-    target = host_of(trace["base_url"]) or (hosts[0] if hosts else "localhost")
-    allow = sorted(set(hosts) | set(appconfig.scope_allow(config)) | {target})
+    target = host_of(trace["base_url"]) or (hosts[0] if hosts else None)
+    if target is None:
+        raise ValueError("cannot determine target host from the trace")
+    scope_cfg = config.get("scope", {})
+    if str(config["environment_class"]).strip().lower() in ("test", "staging"):
+        # Shared environment: the configured origins plus the target's own ORIGIN. Hosts merely
+        # observed while recording are not adopted — seeing a host does not put it in scope.
+        from runner.scope_guard import origin_of
+        allow = sorted(set(scope_cfg.get("allow", [])) | {origin_of(trace["base_url"])})
+    else:
+        allow = sorted(set(hosts) | set(scope_cfg.get("allow", [])) | {target})
     return {
         "app_id": trace["app_id"],
         "environment_class": config["environment_class"],
         "target_fqdn": target,
         "fqdn_allow_list": allow,
-        "fqdn_deny_list": sorted(appconfig.scope_deny(config)),
+        "fqdn_deny_list": list(scope_cfg.get("deny", [])),
         "avoid_action_list": appconfig.avoid_actions(config),
+        "exclude_paths": appconfig.exclude_paths(config),
+        "traverse_list": list(config.get("scope", {}).get("traverse", [])),
     }
 
 
 # ---- journey plan: deterministic fallback + validation ----------------------------------
+
+def _allowed_writes(trace: dict, config: dict) -> list[dict]:
+    """Writes the app's JavaScript made during the walk, replayed so ZAP can attack them (W6-1).
+
+    ZAP's spider submits HTML forms itself; what it never sees are API writes made from script.
+    Each is replayed only if the action policy that governs exploration allows it under this
+    application's posture — the same decision, made the same way, so a write the walk could not
+    make is never made by the scan: writes need `data_policy: disposable` + `write_mode: allow`,
+    DELETE needs `safe_forms`, `scope.exclude` and the deny list win, and a credential change is
+    refused at any posture. A read-only app gets exactly the plan it got before.
+    """
+    if not appconfig.writes_allowed(config):
+        return []
+    from runner.action_policy import validate_action
+    scope = appconfig.scope_from_config(config)
+    out = []
+    for a in trace.get("api", []):
+        method = a.get("method", "GET").upper()
+        path = _relpath(a.get("url", ""), trace["base_url"])
+        if method == "GET" or not path or "body_omitted" in a:
+            continue
+        try:
+            fields = list(json.loads(a.get("body") or "{}").keys())
+        except (ValueError, AttributeError):
+            fields = [kv.split("=", 1)[0] for kv in (a.get("body") or "").split("&") if kv]
+        action = {"action": "visit_api",
+                  "target": {"path": path, "method": method, "field_bindings": fields}}
+        if not validate_action(action, scope, safe_forms=appconfig.safe_forms(config),
+                               allow_writes=True).allowed:
+            continue
+        step = {"action": "api_send", "target": path, "method": method}
+        if a.get("body") is not None:
+            step["body"] = a["body"]
+        if a.get("content_type"):
+            step["content_type"] = a["content_type"]
+        out.append(step)
+    return out
+
 
 def journey_from_trace(trace: dict, config: dict) -> dict:
     base = trace["base_url"]
@@ -65,106 +120,32 @@ def journey_from_trace(trace: dict, config: dict) -> dict:
     journey: list[dict] = []
     for route in trace.get("index", []):
         path = _relpath(route, base)
-        if (path and "/login" not in path and path not in ("/#/", "/")
-                and not is_download(path)):
+        if path and "/login" not in path and path not in ("/#/", "/"):
             journey.append({"action": "goto", "target": path})
     for a in trace.get("api", []):
         if a.get("method", "GET").upper() == "GET":
             path = _relpath(a["url"], base)
             if path:
                 journey.append({"action": "api_get", "target": path})
+    journey.extend(_allowed_writes(trace, config))
     if not journey:
         journey = [{"action": "goto", "target": "/#/"}]
     seen, dedup = set(), []
     for s in journey:
-        key = (s["action"], s["target"])
+        key = (s["action"], s["target"], s.get("method"))
         if key not in seen:
             seen.add(key)
             dedup.append(s)
-    dedup.extend(submit_steps(trace, base))
     return {"app_id": trace["app_id"], "base_url": base, "login": login, "journey": dedup}
 
 
-def with_submit_steps(journey, trace: dict, base: str) -> list[dict]:
-    """An authored journey reconciled with the form submissions the trace actually holds. Pure.
-
-    Three deterministic repairs, so the plan's source cannot change what gets submitted:
-      * a planned submit of a selector the walk never submitted is dropped — the only evidence a
-        form is allow-listed and has approved data is that the policy gate let the walk post it;
-      * a planned submit is preceded by a goto of the page it was recorded on and carries the
-        field names the walk filled, because a selector means nothing on another page and the
-        fields are the ones the operator approved, not ones a plan names;
-      * a submit the walk performed and the plan omitted is appended, since dropping it would
-        scan less of the application than the walk reached.
-    """
-    submits = replayable_submits(trace)
-    pages = {ev["selector"]: _relpath(ev.get("url", ""), base) for ev in submits}
-    fields = {ev["selector"]: list(ev.get("fields", [])) for ev in submits}
-    steps: list[dict] = []
-    planned: set[str] = set()
-    for step in (journey or []):
-        if not isinstance(step, dict):
-            continue
-        if step.get("action") != "submit_form":
-            steps.append(step)
-            continue
-        selector = step.get("target")
-        page = pages.get(selector)
-        if not page:
-            continue
-        if not steps or steps[-1] != {"action": "goto", "target": page}:
-            steps.append({"action": "goto", "target": page})
-        steps.append({"action": "submit_form", "target": selector,
-                      "fields": list(fields[selector])})
-        planned.add(selector)
-    recorded = submit_steps(trace, base)
-    for i in range(0, len(recorded) - 1, 2):
-        if recorded[i + 1]["target"] not in planned:
-            steps.extend([recorded[i], recorded[i + 1]])
-    return steps
-
-
-def replayable_submits(trace: dict) -> list[dict]:
-    """The recorded submits a bundle can honestly replay. Pure.
-
-    A submit that answered an inferred field is excluded: its value was reasoned from what that
-    page said at that moment -- a challenge reissued per load, a computed reference -- so the
-    same post later is answering a question that no longer exists, and the application rejects
-    it. Replaying it would put a step in the bundle that looks like coverage and is not. Those
-    submits are real coverage during exploration and are counted there; a repeatable bundle needs
-    the operator to promote the value into test_data, or the journey to re-read the page.
-    """
-    return [ev for ev in trace.get("interactions", [])
-            if ev.get("type") == "submit" and ev.get("selector") and not ev.get("inferred")]
-
-
-def submit_steps(trace: dict, base: str) -> list[dict]:
-    """The goto/submit_form pairs replaying the forms exploration submitted. Pure.
-
-    Each submit is preceded by a goto of the page it was made on, even when that route already
-    appears in the journey: a selector only means anything on its own page, and the goto is what
-    puts the replay there. Appended after the read-only steps so a replay reads before it writes.
-    """
-    steps: list[dict] = []
-    seen: set[tuple[str, str]] = set()
-    for ev in replayable_submits(trace):
-        page_path = _relpath(ev.get("url", ""), base)
-        key = (page_path or "", ev["selector"])
-        if not page_path or key in seen:
-            continue
-        seen.add(key)
-        steps.append({"action": "goto", "target": page_path})
-        steps.append({"action": "submit_form", "target": ev["selector"],
-                      "fields": list(ev.get("fields", []))})
-    return steps
-
-
 def login_block(config: dict) -> dict:
-    """The plan's login block, built from operator config — never authored by the LLM.
+    """The plan's login block, built from operator config.
 
-    How to log in and how authentication is proven are safety-relevant and knowable, so they
-    come from app.yaml. `generate` injects this block into every plan before validation, so a
-    model that omits or invents one cannot change how we authenticate.
+    Deliberately NOT something the LLM authors: how to log in and how authentication is proven
+    are safety-relevant and knowable, so they come from app.yaml. The model contributes the
+    journey only. `generate` injects this block into every plan before validation, so a model
+    that omits it (or invents one) cannot change how we authenticate.
     """
     block: dict = {"url": appconfig.login_url(config)}
     if appconfig.uses_shorthand_login(config):
@@ -181,7 +162,7 @@ def login_block(config: dict) -> dict:
 
 def validate_plan(plan: dict) -> None:
     """Raise jsonschema.ValidationError if the plan is not a valid journey."""
-    jsonschema.validate(plan, json.loads(_JOURNEY_SCHEMA.read_text(encoding="utf-8")))
+    jsonschema.validate(plan, json.loads(_JOURNEY_SCHEMA.read_text()))
 
 
 def parse_plan_text(text: str) -> dict:
@@ -192,7 +173,7 @@ def parse_plan_text(text: str) -> dict:
         t = fence.group(1).strip()
     start, end = t.find("{"), t.rfind("}")
     if start == -1 or end == -1 or end < start:
-        raise ValueError(f"no JSON object found in text: {llm_backend.snippet(t)}")
+        raise ValueError("no JSON object found in text")
     try:
         return json.loads(t[start:end + 1])
     except json.JSONDecodeError as exc:
@@ -251,19 +232,24 @@ def _render_auth_proof(config: dict, w) -> bool:
     return False
 
 
+# The in-page request an api_send step makes: through the browser, so the scope guard and ZAP
+# both see it, with the page's cookies and an optional bearer token.
+_FETCH_JS = ("([url, method, body, ctype, bearer]) => fetch(url, {method, body, "
+             "credentials: 'include', headers: Object.assign(ctype ? {'Content-Type': ctype} : {}, "
+             "bearer ? {'Authorization': 'Bearer ' + bearer} : {})}).then(r => r.status)")
+
+
 def render_flow(plan: dict, config: dict) -> str:
     """Render a validated journey plan into flow.py source. Deterministic (FR-G4); no secrets
     (creds from env, NFR-3). String literals are json.dumps-quoted for safety.
 
-    The banner selectors, credentials and the authentication proof come from `config`, not from
-    the plan — they are the application's, and no app's UI quirks are inherited by another's flow.
+    The banner selectors and the authentication proof come from `config`, not from the plan —
+    they are the application's, and no app's UI quirks are inherited by another's flow.
     """
     banners = appconfig.dismiss_selectors(config)
     # Render as a tuple literal; a single selector needs the trailing comma or the generated
     # loop would iterate over the characters of a string.
     banners_src = "(" + ", ".join(json.dumps(b) for b in banners) + ("," if len(banners) == 1 else "") + ")"
-    creds = appconfig.credential_env_names(config)
-    test_data = appconfig.test_data(config)
     out: list[str] = []
     w = out.append
     w('"""Generated by authoring/generate.py from a journey plan. Do not edit by hand."""')
@@ -282,6 +268,7 @@ def render_flow(plan: dict, config: dict) -> str:
     w("            pass")
     w("")
     w("")
+    creds = appconfig.credential_env_names(config)
     w("def run(page, base_url, evidence_dir=None):")
     w(f'    identifier = os.environ.get({json.dumps(creds[0])}, "")')
     w(f'    secret = os.environ.get({json.dumps(creds[1])}, "")')
@@ -292,29 +279,35 @@ def render_flow(plan: dict, config: dict) -> str:
     has_token = _render_auth_proof(config, w)
     for step in plan["journey"]:
         action, target = step["action"], step["target"]
-        # A target may be absolute (a trace-derived plan carries absolute URLs) or relative.
-        # Gluing base_url onto an absolute URL is nonsense, so only relative paths are joined;
-        # an absolute off-host target is caught by validate's allow-list check.
+        # A target may be absolute or relative: a plan derived from a trace naturally carries
+        # absolute URLs, and an LLM asked for routes from that trace will answer in kind.
+        # Gluing base_url onto an absolute URL produces nonsense, so only relative paths are
+        # joined. An absolute target pointing off-host is caught by validate's allow-list
+        # check, which is where a scope decision belongs.
         url = json.dumps(target) if _is_absolute(target) else f"base_url + {json.dumps(target)}"
         if action == "goto":
             w(f'    page.goto({url}, wait_until="networkidle")')
         elif action == "click":
             w(f'    page.click({json.dumps(target)})')
-        elif action == "submit_form":
-            # The values are the application's approved test data, not the plan's: a field the
-            # operator supplied no value for is left alone, so no step invents what it submits.
-            for name in step.get("fields", []):
-                if name in test_data:
-                    field = json.dumps(explore.field_selector(target, name))
-                    w(f"    page.fill({field}, {json.dumps(test_data[name])})")
-            w(f"    page.eval_on_selector({json.dumps(target)}, "
-              '"f => f.requestSubmit ? f.requestSubmit() : f.submit()")')
-            w('    page.wait_for_load_state("networkidle", timeout=10000)')
+        elif action == "api_send":
+            # From the page, not page.request: the request passes the browser's scope guard
+            # as well as ZAP. The session rides on the page's cookies; an app that also wants
+            # a bearer token names the cookie that holds it (auth.bearer_from_cookie).
+            bearer = appconfig.bearer_from_cookie(config)
+            if bearer:
+                w(f'    _bearer = next((c["value"] for c in page.context.cookies() '
+                  f'if c["name"] == {json.dumps(bearer)}), None)')
+            else:
+                w('    _bearer = None')
+            w(f'    page.evaluate({json.dumps(_FETCH_JS)}, '
+              f'[{url}, {json.dumps(step.get("method", "POST"))}, {json.dumps(step.get("body"))}, '
+              f'{json.dumps(step.get("content_type"))}, _bearer])')
         elif action == "api_get":
             if has_token:
                 w(f'    page.request.get({url}, '
                   'headers={"Authorization": f"Bearer {token}"})')
             else:
+                # No bearer token: the session rides on the context's cookies.
                 w(f'    page.request.get({url})')
     if has_token:
         w('    return {"authenticated": True, "token_present": bool(token)}')
@@ -327,43 +320,56 @@ def render_flow(plan: dict, config: dict) -> str:
 # ---- FR-G3: policy / manifest / lock / auth ---------------------------------------------
 
 def emit_zap_policy(config: dict | None = None, intensity: str = "medium") -> dict:
-    """The scan posture the runner will apply, taken from the application's config (scan.policy).
+    """The scan posture the runner will apply, taken from the application's config (W2-4).
 
-    Committed into the bundle so the policy that produced a set of findings sits alongside them.
-    With no config, the historical posture is used so legacy callers are unaffected.
+    Emitted into the bundle so the policy that produced a set of findings is committed
+    alongside them, and read back by runner/scan.py — it is no longer a file nobody consumes.
     """
-    if config is None:
+    if config is None:  # legacy callers: the historical posture
         return {"intensity": intensity, "attack_strength": intensity,
                 "alert_threshold": "medium", "disabled_scanners": ["40026"]}
     policy = appconfig.scan_policy(config)
     budgets = appconfig.scan_budgets(config)
     return {
+        # Recorded so the scan's coverage artifact, and therefore the lifecycle diff, knows
+        # whether the application was changed while it was being explored.
+        "write_mode": "allow" if appconfig.writes_allowed(config) else "deny",
         "intensity": policy["attack_strength"],
         "attack_strength": policy["attack_strength"],
         "alert_threshold": policy["alert_threshold"],
         "disabled_scanners": list(policy["disabled_rules"]),
         "max_scan_min": budgets["max_scan_min"],
         "max_rule_min": budgets["max_rule_min"],
-        "write_mode": "allow" if appconfig.writes_allowed(config) else "deny",
-        "state_probes": appconfig.state_probes(config),
-        "probe_cookies": appconfig.scan_cookies(config),
     }
 
 
-def emit_manifest(trace: dict) -> dict:
-    return {
+def emit_manifest(trace: dict, plan_source: str = "unknown", model: str | None = None) -> dict:
+    """The bundle's provenance: what produced this plan, from which trace.
+
+    `plan_source` is the load-bearing field. The safety argument for this project is that the
+    LLM emits only a schema-validated journey plan, which deterministic code renders — so a
+    reviewer looking at a committed bundle must be able to tell whether a model was involved,
+    and which one, without rerunning anything or reading terminal scrollback. `model` is
+    present only when one actually authored the plan (W2-14).
+    """
+    manifest = {
         "app_id": trace["app_id"],
         "base_url": trace["base_url"],
         "generated_by": "authoring/generate.py",
+        "plan_source": plan_source,
+        "trace_app_id": trace["app_id"],
         "artifacts": ["flow.py", "scope.json", "auth.json", "zap-policy.yaml",
                       "manifest.json", "lock"],
     }
+    if plan_source == "llm" and model:
+        manifest["model"] = model
+    return manifest
 
 
 def emit_lock() -> dict:
     lock: dict[str, str] = {}
     if _VERSIONS_LOCK.exists():
-        for line in _VERSIONS_LOCK.read_text(encoding="utf-8").splitlines():
+        for line in _VERSIONS_LOCK.read_text().splitlines():
             line = line.strip()
             if not line or line.startswith("#") or ":" not in line:
                 continue
@@ -375,21 +381,28 @@ def emit_lock() -> dict:
 
 def emit_auth(config: dict) -> dict:
     """auth.json references env var names for creds — never the secrets themselves (NFR-3)."""
-    email_env, password_env = appconfig.credential_env_names(config)
-    return {"email_env": email_env, "password_env": password_env}
+    creds = config["auth"].get("credentials", {})
+    return {"email_env": creds.get("email_env", "AUTH_EMAIL"),
+            "password_env": creds.get("password_env", "AUTH_PASSWORD")}
 
 
 # ---- Step A (primary): LLM plan ---------------------------------------------------------
 
-def plan_from_llm(trace: dict, model: str, api_key: str | None = None,
-                  config: dict | None = None) -> dict:
-    """Ask the configured LLM backend for a journey plan (validated). Raises on any failure so
-    callers can fall back.
+def plan_from_llm(trace: dict, model: str, api_key: str, config: dict | None = None) -> dict:
+    """Ask the LLM for a journey plan. Raises on any failure so callers can fall back.
 
-    The model's job is the JOURNEY only; the login block is operator config and is substituted
-    (before validation) from `config`, so the model cannot influence how we authenticate.
+    The model's job is the JOURNEY — which authenticated routes are worth visiting, in what
+    order. How to log in is operator config, so the login block is replaced with the
+    config-derived one *before* validation: the model cannot influence authentication, and an
+    irrelevant field in its reply cannot fail the call. (It could: asked for a plan against a
+    schema documenting both login forms, the model returned both at once, and `oneOf` rejected
+    the combination — killing the LLM path over a block that was about to be discarded.)
+
+    anthropic is imported lazily so the fallback and the tests don't need it.
     """
-    schema = _JOURNEY_SCHEMA.read_text(encoding="utf-8")
+    import anthropic  # lazy
+
+    schema = _JOURNEY_SCHEMA.read_text()
     system = (
         "You convert a web-app crawl trace into a STRICT JSON 'journey plan' for an "
         "authenticated DAST scan. Output ONLY the JSON object — no prose, no code fences. "
@@ -398,108 +411,82 @@ def plan_from_llm(trace: dict, model: str, api_key: str | None = None,
     user = (
         "Crawl trace (no secrets):\n" + json.dumps(trace, indent=2) +
         "\n\nProduce the journey plan. Only the `journey` matters: the authenticated routes "
-        "worth visiting (`goto`), the authenticated GET endpoints worth calling (`api_get`), "
-        "and the forms the crawl submitted (`submit_form`), in a sensible order, drawn from "
-        "the trace. A `submit` interaction in the trace is a form the operator allow-listed and "
-        "approved test data for: replay it as a `goto` of the page it was made on followed by a "
-        "`submit_form` whose `target` is that interaction's `selector` and whose `fields` are "
-        "its field names. Field names only -- the values come from the application's "
-        "configuration at render time, so a plan never carries data. Put the submits after the "
-        "read-only steps so a replay reads before it writes. The real login block is supplied "
-        "from the application's configuration and whatever you put there is discarded. "
-        "Never include credentials."
+        "worth visiting (`goto`) and authenticated GET endpoints worth calling (`api_get`), "
+        "in a sensible order, drawn from the trace. Emit `login` as {\"url\": \"/\"} — the "
+        "real login block is supplied from the application's configuration and whatever you "
+        "put there is discarded. Never include credentials."
     )
-    text = llm_backend.complete(system, user, model, api_key=api_key, max_tokens=4096)
+    client = anthropic.Anthropic(api_key=api_key)
+    # Latest models (Opus 4.8, Sonnet 5, ...) reject temperature/top_p/top_k; omit them.
+    msg = client.messages.create(
+        model=model, max_tokens=4096,
+        system=system, messages=[{"role": "user", "content": user}],
+    )
+    text = "".join(getattr(b, "text", "") for b in msg.content)
     plan = parse_plan_text(text)
     if config is not None:
         plan["login"] = login_block(config)   # operator config wins, before validation
-    plan["journey"] = with_submit_steps(plan.get("journey"), trace,
-                                        plan.get("base_url") or trace["base_url"])
     validate_plan(plan)  # raise if the model's JOURNEY is off-contract
     return plan
 
 
-def make_plan(trace: dict, config: dict, use_llm: bool = True, model: str | None = None,
-              api_key: str | None = None, require_llm: bool = False) -> tuple[dict, str]:
+def make_plan(trace: dict, config: dict, use_llm: bool = True, model: str = _DEFAULT_MODEL,
+              api_key: str | None = None) -> tuple[dict, str]:
     """Return (plan, source) where source is 'llm' or 'fallback'.
 
-    Whatever the plan's origin, the login block is the config-derived one: the model chooses
-    routes, never how we authenticate.
-
-    require_llm turns every reason the LLM path could be skipped into an LLMRequiredError instead
-    of a quiet 'fallback', so a misconfigured provider cannot pass for a deliberate --no-llm run.
+    Whatever the plan's origin, the login block is overwritten with the config-derived one: the
+    model chooses routes, never how we authenticate.
     """
     api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-    model = model or llm_backend.default_model()
-    if require_llm and not use_llm:
-        raise llm_backend.LLMRequiredError("--require-llm contradicts --no-llm")
-    if use_llm and llm_backend.available(api_key):
+    if use_llm and api_key:
         try:
             plan = plan_from_llm(trace, model, api_key, config=config)
             plan["login"] = login_block(config)   # belt and braces for any other caller
             validate_plan(plan)
             return plan, "llm"
         except Exception as exc:  # network/parse/validation — fall back deterministically
-            if require_llm:
-                raise llm_backend.LLMRequiredError(f"LLM plan unavailable: {exc}") from exc
             print(f"generate: LLM path failed ({exc}); using deterministic fallback",
                   file=sys.stderr)
-    elif require_llm:
-        raise llm_backend.LLMRequiredError(
-            f"provider {llm_backend.provider()} is not available "
-            "(is the CLI installed / the token or key set?)")
     plan = journey_from_trace(trace, config)
     validate_plan(plan)
     return plan, "fallback"
 
 
 def generate(trace: dict, out_dir: str, config: dict, use_llm: bool = True,
-             model: str | None = None, api_key: str | None = None,
-             require_llm: bool = False) -> dict:
-    """Produce all authoring artifacts from a trace + app config. Returns a summary dict."""
-    plan, source = make_plan(trace, config, use_llm=use_llm, model=model, api_key=api_key,
-                             require_llm=require_llm)
+             model: str = _DEFAULT_MODEL, api_key: str | None = None) -> dict:
+    """Produce all authoring artifacts from a trace. Returns a summary dict."""
+    plan, source = make_plan(trace, config, use_llm=use_llm, model=model, api_key=api_key)
+    # Record which path produced the plan, so the committed bundle is self-describing.
     flow_src = render_flow(plan, config)
     ast.parse(flow_src)  # guarantee the generated code compiles (FR-G1 pre-check)
 
     d = Path(out_dir)
     d.mkdir(parents=True, exist_ok=True)
-    (d / "journey.json").write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
-    (d / "flow.py").write_text(flow_src, encoding="utf-8")
-    (d / "scope.json").write_text(json.dumps(emit_scope(trace, config), indent=2) + "\n",
-                                  encoding="utf-8")
-    (d / "auth.json").write_text(json.dumps(emit_auth(config), indent=2) + "\n", encoding="utf-8")
+    (d / "journey.json").write_text(json.dumps(plan, indent=2) + "\n")
+    (d / "flow.py").write_text(flow_src)
+    (d / "scope.json").write_text(json.dumps(emit_scope(trace, config), indent=2) + "\n")
+    (d / "auth.json").write_text(json.dumps(emit_auth(config), indent=2) + "\n")
     # json.dumps is valid YAML, so no PyYAML dependency is needed for the .yaml file.
-    (d / "zap-policy.yaml").write_text(json.dumps(emit_zap_policy(config), indent=2) + "\n",
-                                       encoding="utf-8")
-    (d / "manifest.json").write_text(json.dumps(emit_manifest(trace), indent=2) + "\n",
-                                     encoding="utf-8")
-    (d / "lock").write_text(json.dumps(emit_lock(), indent=2) + "\n", encoding="utf-8")
+    (d / "zap-policy.yaml").write_text(json.dumps(emit_zap_policy(config), indent=2) + "\n")
+    (d / "manifest.json").write_text(
+        json.dumps(emit_manifest(trace, plan_source=source, model=model), indent=2) + "\n")
+    (d / "lock").write_text(json.dumps(emit_lock(), indent=2) + "\n")
     return {"plan_source": source, "journey_steps": len(plan["journey"]), "out_dir": str(d)}
 
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Generate flow.py + scan config from a trace (FR-G1-4).")
+    p.add_argument("--app", required=True,
+                   help="App id or path to security/dast/<app>/app.yaml")
     p.add_argument("--trace", required=True, help="Path to trace.json from record")
     p.add_argument("--out-dir", required=True)
-    p.add_argument("--app", default=None,
-                   help="App id or path to app.yaml (defaults to the trace's app_id)")
-    p.add_argument("--model", default=None,
-                   help="LLM model id; defaults to the LLM_PROVIDER's default (Anthropic or Copilot)")
+    p.add_argument("--model", default=_DEFAULT_MODEL)
     p.add_argument("--no-llm", action="store_true", help="Force the deterministic fallback plan")
-    p.add_argument("--require-llm", action="store_true",
-                   help="Fail instead of falling back when the LLM path cannot be taken")
     args = p.parse_args(argv)
 
-    trace = json.loads(Path(args.trace).read_text(encoding="utf-8"))
-    config = appconfig.load_app_config(args.app or trace["app_id"])
-    model = args.model or llm_backend.default_model()
-    try:
-        summary = generate(trace, args.out_dir, config, use_llm=not args.no_llm, model=model,
-                           require_llm=args.require_llm)
-    except llm_backend.LLMRequiredError as exc:
-        print(f"GENERATE ABORT: {exc}", file=sys.stderr)
-        return 3
+    config = appconfig.load_app_config(args.app)
+    trace = json.loads(Path(args.trace).read_text())
+    summary = generate(trace, args.out_dir, config, use_llm=not args.no_llm, model=args.model)
     print(json.dumps(summary, indent=2))
     return 0
 

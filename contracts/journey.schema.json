@@ -123,18 +123,37 @@
               "goto",
               "click",
               "api_get",
-              "submit_form"
+              "api_send"
             ]
           },
           "target": {
             "type": "string",
             "minLength": 1,
-            "description": "URL/route for goto/api_get, or a selector for click/submit_form"
+            "description": "URL/route for goto/api_get/api_send, or a selector for click"
           },
-          "fields": {
-            "type": "array",
-            "items": {"type": "string", "minLength": 1},
-            "description": "Field names a submit_form fills. Names only: the values come from the application's approved explore.test_data at render time, so a plan never carries data."
+          "method": {
+            "type": "string",
+            "enum": [
+              "POST",
+              "PUT",
+              "PATCH",
+              "DELETE"
+            ],
+            "description": "api_send only: the write's HTTP method."
+          },
+          "body": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "api_send only: the recorded body, secrets already redacted (W6-1)."
+          },
+          "content_type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "api_send only: the body's Content-Type."
           }
         }
       }

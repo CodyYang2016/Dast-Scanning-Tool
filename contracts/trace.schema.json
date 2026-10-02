@@ -5,19 +5,37 @@
   "description": "Output of the record CLI (FR-R1/R2/R3): the pages, interactions, forms, API calls, and hosts observed while crawling the pilot app. Consumed by generate to author the journey plan.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["app_id", "base_url", "hosts", "index", "interactions"],
+  "required": [
+    "app_id",
+    "base_url",
+    "hosts",
+    "index",
+    "interactions"
+  ],
   "properties": {
-    "app_id": {"type": "string", "minLength": 1},
-    "base_url": {"type": "string", "minLength": 1, "description": "Target as the crawler reached it, e.g. http://juice:3000"},
+    "app_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "base_url": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Target as the crawler reached it, e.g. http://juice:3000"
+    },
     "hosts": {
       "type": "array",
-      "items": {"type": "string", "minLength": 1},
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
       "uniqueItems": true,
       "description": "Distinct hosts observed; seeds the scope allow-list (FR-G2)."
     },
     "index": {
       "type": "array",
-      "items": {"type": "string"},
+      "items": {
+        "type": "string"
+      },
       "description": "Pages/routes visited (FR-R1)."
     },
     "interactions": {
@@ -25,8 +43,14 @@
       "description": "Ordered interactions incl. the login sequence (FR-R1/R2).",
       "items": {
         "type": "object",
-        "required": ["type"],
-        "properties": {"type": {"type": "string"}},
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "type": "string"
+          }
+        },
         "additionalProperties": true
       }
     },
@@ -35,10 +59,24 @@
       "description": "Discovered forms and their fields (FR-R3).",
       "items": {
         "type": "object",
-        "required": ["url", "fields"],
+        "required": [
+          "url",
+          "fields"
+        ],
         "properties": {
-          "url": {"type": "string"},
-          "fields": {"type": "array", "items": {"type": "string"}}
+          "url": {
+            "type": "string"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "method": {
+            "type": "string",
+            "description": "HTTP method the form submits with. GET parameters reach the URL and so reach coverage; POST-body parameters do not (W6-12)."
+          }
         },
         "additionalProperties": true
       }
@@ -48,11 +86,23 @@
       "description": "Observed XHR/API requests (FR-R3).",
       "items": {
         "type": "object",
-        "required": ["method", "url"],
+        "required": [
+          "method",
+          "url"
+        ],
         "properties": {
-          "method": {"type": "string"},
-          "url": {"type": "string"},
-          "params": {"type": "array", "items": {"type": "string"}}
+          "method": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "params": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
         },
         "additionalProperties": true
       }

@@ -4,9 +4,9 @@ Everything a new application needs is one file: `security/dast/<app>/app.yaml`. 
 `authoring/` or `runner/` may name an application — `tests/test_no_app_specifics.py` fails the
 build if it does — so onboarding is configuration, not a code change.
 
-The target repository has been validated with configuration-only app generation and a green
-automated suite. A live lower-environment run still requires the target team's approval,
-credentials, network access, and a running Nationwide Podman machine.
+**Measured:** WebGoat took **4m32s** from `dast onboard` to a passing gate, DVWA **4m20s**,
+excluding environment prep. If you find yourself editing Python, stop and read §7 — that is a
+gap in the tool, and it should be recorded, not worked around.
 
 ---
 
@@ -16,11 +16,12 @@ Four facts about the target, and two things that must already be true.
 
 | You need | Why | How to check |
 |---|---|---|
-| The URL **as ZAP resolves it** | The browser is proxied through ZAP, so *ZAP* does the DNS. On the compose network that is the container name, e.g. `http://my-app:8443` — not `localhost` | `podman exec zap curl -sS -o /dev/null -w '%{http_code}\n' http://<host>:<port>/` must print a 2xx/3xx |
+| The URL **as ZAP resolves it** | The browser is proxied through ZAP, so *ZAP* does the DNS. On the compose network that is the container name, e.g. `http://dvwa` — not `localhost` | `docker exec zap curl -sS -o /dev/null -w '%{http_code}\n' http://<host>:<port>/` must print a 2xx/3xx |
 | A **test identity** | The scanner never creates accounts unless the app explicitly allows it | Log in by hand once, in a normal browser |
 | The **login form's selectors** | To drive the login | Devtools, or `curl -s <login-url> \| grep -i input` |
 | A **proof of authentication** | So an unproven session is never scanned (§3) | §3's decision table |
 | The environment is **non-production** | `preflight` refuses `prod`, case-insensitively, before any traffic | You state it as `environment_class`; it is the whole safety story, so get it right |
+| ZAP runs **with an API key** | An open ZAP API can be driven by anything that reaches it; a `test`/`staging` scan refuses one (W4-4) | Start ZAP with `-config api.key="$ZAP_API_KEY"` and export the **same** `ZAP_API_KEY` where you run `dast`. Compose refuses to start without it |
 | The app is **not on port 8080** | ZAP claims proxied requests arriving on its own port as API calls, and the app never sees them (W4-7) | See §6 — this is silent, and it is the most confusing failure here |
 
 **Environment prep is not configuration** and is not counted in the timings above: DVWA needs
@@ -28,100 +29,61 @@ its database created (`setup.php` → *Create / Reset Database*), WebGoat needs 
 registered through its signup form (its passwords cap at 10 characters). Do that first, by
 hand, exactly as a person would.
 
-### 1a. Try a bundled target first
+### 1a. Trying it on a bundled target first
 
-DVWA and WebGoat are included as profile-gated targets so the configuration-only workflow can
-be exercised before connecting to an internal application. The default compose run still starts
-only Juice Shop. Use a local override if authoring from the host requires browser access:
+Three applications are already onboarded, and two of them exist precisely to prove this works
+on something that is not the pilot app. If you want to see the whole loop before pointing it at
+your own application, start one of them:
+
+`compose.yaml` publishes **no** host ports, on purpose. But `dast author` drives a real Chromium
+**on your machine** through ZAP, so for authoring both ZAP and the app have to be reachable from
+there. Add a local override — compose picks the file up automatically, and it is yours, not the
+repo's:
 
 ```bash
 cat > compose.override.yaml <<'YAML'
 services:
-  zap:  { ports: ["8090:8080"] }
+  zap:  { ports: ["8080:8080"] }
   dvwa: { ports: ["8081:80"] }
 YAML
-printf '\ncompose.override.yaml\n' >> .git/info/exclude
+echo compose.override.yaml >> .git/info/exclude     # keep it local
 
-podman compose --profile dvwa up -d dvwa zap
-podman compose logs -f dvwa
-
-# ZAP answers its own API on the published port only via the aliases in compose.yaml:
-curl -sS http://127.0.0.1:8090/JSON/core/view/version/                  # expect {"version":"2.17.0"}
-curl -sS -x http://127.0.0.1:8090 -o /dev/null -w '%{http_code}\n' http://dvwa/login.php   # 302
+docker compose --profile dvwa up -d dvwa zap
+docker compose logs -f dvwa                          # wait for it to serve
 ```
 
-If the first curl returns nothing (`curl: (52) Empty reply from server`), see §6 — ZAP is
-proxying the call to itself rather than answering it, and one API call fixes it at runtime.
-
-Create the DVWA database at `http://localhost:8081/setup.php`, then run:
+Then do the prep by hand, once — browse to `http://localhost:8081/setup.php` and press
+*Create / Reset Database* — and run the loop:
 
 ```bash
 export DVWA_USER=admin DVWA_PASS=password
-python -m dast author dvwa --explore --zap-proxy http://127.0.0.1:8090
-python -m dast scan  dvwa --zap-api http://127.0.0.1:8090 --zap-proxy http://127.0.0.1:8090
+python -m dast author dvwa --explore --zap-proxy http://localhost:8080
+python -m dast scan   dvwa
 python -m dast report dvwa
 ```
 
-`--zap-proxy` is the address **your workstation** reaches ZAP on; the `base_url` in `app.yaml`
-stays the address **ZAP** reaches the target on (`http://dvwa`). They are different machines'
-views of the same network and are not interchangeable.
+Both apps are pinned by digest in `versions.lock`, so you get the images these results were
+measured on rather than whatever `:latest` points at today.
 
-Exploration needs a scope and a seed. Neither is a file you write: both are derived from
-`app.yaml` into `out/<app>/authoring/derived/` at author time. Commit
-`security/dast/<app>/scope.json` or `seed.json` only to override that — a hand-tuned allow-list,
-or seed routes that differ from `explore.seed_routes` — and the committed file then wins.
+Three things that will otherwise cost you an afternoon:
 
-### 1b. On a Windows workstation
+- **Publish ports only where that is acceptable.** These are deliberately vulnerable
+  applications. The override above binds them on your machine; do not commit it, and do not do
+  this on a host anyone else can reach. Without the override they are reachable only on the
+  `dast` network, which is all the containerised runner needs.
+- **WebGoat runs on 8083, not its default 8080.** 8080 is ZAP's own port: ZAP claims proxied
+  requests arriving there as API calls, the application never sees them, and the scan finishes
+  clean having tested nothing. The compose service sets `WEBGOAT_PORT=8083` for this reason, and
+  it must match `base_url: http://webgoat:8083`. This is §6's most confusing failure, and it is
+  silent.
+- **`--profile` is required to start it.** Without it compose does not treat the service as
+  part of the run, so a bare `docker compose up` brings up only the pilot app — which is the
+  point, but it surprises people. If a later command seems not to see the container, pass the
+  profile again.
 
-Verified end to end on a Nationwide-managed Windows 11 laptop in Git Bash, against DVWA,
-September 2026. Five things differ from the Linux path, and each one fails in a way that does
-not name its cause.
-
-```bash
-py -3 -m venv .venv && source .venv/Scripts/activate      # `python3` opens the Microsoft Store
-pip install -r requirements.txt && python -m playwright install chromium
-
-# The corporate TLS chain, for pip, requests and Playwright's downloader alike:
-export NODE_EXTRA_CA_CERTS='C:\Users\<you>\certs\nw-ca-all.pem'
-export REQUESTS_CA_BUNDLE="$NODE_EXTRA_CA_CERTS" SSL_CERT_FILE="$NODE_EXTRA_CA_CERTS" \
-       PIP_CERT="$NODE_EXTRA_CA_CERTS"
-```
-
-The CA bundle must be a PEM chain. A DER or truststore export loads as
-`error:8000007B:system library::no protocol option` and is then *silently ignored*.
-
-**Podman, not Docker.** `podman machine` runs the containers in a WSL VM, so the VM — not your
-laptop — is what resolves names and reaches the proxy:
-
-```bash
-unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy    # before starting the machine, always
-export NO_PROXY='localhost,127.0.0.1,.nwie.net' no_proxy="$NO_PROXY"
-podman machine stop && podman machine start
-```
-
-`podman machine start` copies the current shell's proxy variables into the VM. A proxy on
-`127.0.0.1:8888` is the *host's* loopback; inside the VM that address is the VM itself, and
-every pull fails with `proxyconnect tcp: dial tcp 127.0.0.1:8888: connect: connection refused`.
-Started with the variables unset, podman writes the reachable `host.containers.internal:8888`
-itself.
-
-Images must be mirror-qualified, since Docker Hub is not reachable — prefix the digests in
-`compose.yaml` with `ntr.nwie.net/docker.io/` in your `compose.override.yaml`:
-
-```yaml
-services:
-  dvwa:
-    image: ntr.nwie.net/docker.io/vulnerables/web-dvwa@sha256:dae203fe11646a86937bf04db0079adef295f426da68a92b40e3b181f337daa7
-```
-
-Finally, publish ZAP on a port nothing else claims (`8090:8080` above). Windows forwards
-published ports through `wslrelay.exe`, and a port already held by another agent accepts the
-connection and closes it — indistinguishable from ZAP being down.
-
-WebGoat is started with `podman compose --profile webgoat up -d webgoat zap` and listens on
-`http://webgoat:8083`; it must not use ZAP's port `8080`. Register a 6-10 character test
-account before authoring. These vulnerable targets should remain unexposed except through a
-local, explicitly reviewed port override.
+Reading their configs side by side is the fastest way to understand the contract: `dvwa` logs in
+with a username and proves the session by visiting a page, `webgoat` needs a registered account,
+`juice-shop` self-registers and proves the session from `localStorage`. §8 compares all three.
 
 ---
 
@@ -136,7 +98,7 @@ $EDITOR security/dast/my-app/app.yaml       # every TODO is a decision you must 
 login steps and several candidate proofs, and then *verifies* the proposal by logging in:
 
 ```bash
-export MYAPP_USER=…  MYAPP_PASS=…  LLM_PROVIDER=copilot
+export MYAPP_USER=…  MYAPP_PASS=…  ANTHROPIC_API_KEY=…
 python -m dast onboard my-app --base-url http://my-app:8443 --login-url /login \
   --zap-proxy http://localhost:8080 --discover
 ```
@@ -148,8 +110,9 @@ session-ending is refused before it is evaluated rather than after. If nothing s
 command says what it tried and writes the skeleton instead, so you are never handed a config
 that looks finished and is not.
 
-Review the generated config and live proof before scanning; it is a starting point, not an
-authority. The `record`/`api`/`ui` decisions remain yours.
+Measured on DVWA: **11 seconds**, three login steps and a verified `selector` proof, and the
+resulting config passed `dast author` (live auth replay) unchanged. You still review it — it
+is a starting point, not an authority — and the `record`/`api`/`ui` TODOs remain yours.
 
 The skeleton is a valid config with TODOs, not prose — fill them in and it loads. Three keys
 carry all the judgement: the **login shape** (§3), the **proof** (§3), and the **identity**.
@@ -213,29 +176,146 @@ Notes earned the hard way:
 
 ```bash
 export MYAPP_USER=…  MYAPP_PASS=…            # the names you put in auth.credentials
+export ZAP_API_KEY=…                         # the key ZAP was started with
 python -m dast author my-app                 # record → generate → validate
 python -m dast scan   my-app                 # preflight → replay → ZAP → normalize → coverage
 python -m dast report my-app                 # lifecycle diff → SARIF   (--upload to publish)
 ```
 
-For broader authenticated route discovery, seed a session and opt into the bounded exploration
-path explicitly:
-
-```bash
-python -m dast author my-app --explore
-```
-
-Exploration is constrained by the configured scope, deny-list, write policy, authentication
-proof, page budget, and redaction boundary. The model proposes actions; deterministic code decides
-whether they may execute. The recorded walk remains the default target path until the
-lower-environment exploration flow has been validated operationally.
-
 What good looks like:
 
 - **author** — `recorded: N interactions … hosts=['my-app']` (the host must be the one ZAP
   resolves), then `"passed": true` for both the allow-list and the live auth replay.
-- **scan** — a gate with `authenticated: true`, `scope_ok: true`, `blocked: 0`.
-- **report** — `lifecycle: new=…` on the first run, `open=…` on the next.
+- **scan** — a gate with `authenticated: true`, `scope_ok: true`, `routes_tested` above zero,
+  `session_alive: true` (or `null` if no probe could tell — see *Shared environments* below),
+  `blocked: 0`.
+- **report** — `lifecycle: new=…` on the first run, `open=…` on the next, then a `gate:` line and
+  `summary: …/summary.md` — one page with the verdict, counts, new findings, coverage gaps and
+  whether the session held. Read that first.
+
+### Two gates, and which one fails your build
+
+**`scan` checks the scan was healthy**: it authenticated, stayed in scope, and tested at least
+one route. A scan that tested nothing never passes — an over-broad exclusion once turned a Juice
+Shop scan into exactly that, and an older gate passed it. Findings do not affect this gate, so a
+clean application passes. (`--expect-findings` adds "and found a high or medium", for self-tests
+against deliberately vulnerable apps where finding nothing means the scanner is broken.)
+
+**`report` decides whether findings fail the build**, because only after the lifecycle diff is it
+known which findings are **new**. It exits `1` when a new finding is at or above the threshold:
+
+```yaml
+gate:
+  fail_on: high        # critical | high | medium | low | none   (default: high)
+```
+
+`--fail-on` or `$DAST_FAIL_ON` override it per run. A finding that already existed does not fail
+the build again: it has been seen and is somebody's decision, and failing every build on it
+forever is how gates get switched off. SARIF is written and an explicit `--upload` still runs
+when the gate fails, so the evidence is published either way. Exit `2` means a tool error.
+
+### Shared environments: scope, pace, session, stop
+
+A `dev` target can be scoped loosely. Anything with other users (`environment_class: test` or
+`staging`) is held to more:
+
+- **Register the host.** Every `test`/`staging` host must be listed in
+  `security/dast/environments.yaml` (or the file `$DAST_ENV_REGISTRY` names) with its class —
+  `my-app.internal: test`. Preflight refuses an unregistered shared host, a host registered as a
+  different class than `environment_class` says, and any host matching a production pattern
+  (`*.prod.*`, `prod-*`, …) whatever the scope says. `dev` hosts need not be registered.
+- **SSO login through an identity provider.** List it as login-only:
+  `scope.traverse: [https://login.microsoftonline.com]`. The browser may reach it to log in; it
+  is never explored, spidered or attacked, and ZAP forwards its traffic without recording it, so
+  no finding can land on it. Exact origins only, never also in `allow`. It is exempt from the
+  environment registry, because it is not scanned and is usually production.
+- **Scope by origin.** `scope.allow: [https://my-app.internal:8443]` — scheme, host and port.
+  A bare host (`my-app.internal`) means *every scheme and port on that machine*; preflight accepts
+  it for `dev` and refuses it for `test`/`staging`, saying which origin to write instead. ZAP's
+  own spider and active scan are confined to the same origins by a context created for each scan.
+- **Keep it off what must not be touched.** `scope.exclude: [/api/payments, /notify, /admin/reset]`
+  — each path and everything beneath it (`*` matches within one segment). Nothing is sent to
+  them: not by ZAP's spider or active scan, not during exploration, and not by the browser,
+  which gets a local 403 instead. Every exclusion is a detection gap to disclose.
+- **Pace.** `scan.throttle: {threads_per_host: 2, delay_ms: 200}` slows ZAP down; the values in
+  force are recorded in `coverage.json` under `policy`. Unset means ZAP's defaults.
+- **Session.** The scan re-checks the session during the active scan and once at the end. It
+  probes `scan.liveness_path` if set — any path that answers differently logged in and logged out
+  (Juice Shop: `/rest/user/whoami`) — else `auth.proof.route.path`, else the first
+  `scan.state_probes` entry. If the session is lost (401/403, a redirect to the login path, or the
+  logged-out answer), the scan **logs in again**: it pauses ZAP, replays the login, points ZAP's
+  attacks at the new session, and resumes — up to `scan.reauth.max` times (default 3). The loss
+  is still recorded; the summary calls the scan *degraded*, and no finding can be marked
+  `resolved` from it. If the re-login fails or the limit is reached, the active scan is stopped
+  and **the scan fails**. If the app expects the session as a bearer token too, name the cookie
+  that holds it: `auth.bearer_from_cookie: token`. Forms with a per-request anti-CSRF field ZAP
+  does not know: `scan.anti_csrf_tokens: [user_token]`. If no probe can tell logged-in from
+  logged-out, `coverage.json` says `alive_throughout: null` — unknown, not alive.
+- **The stored session.** A seeded `storageState` is a working login. In CI, deliver it from
+  the secret store: `auth.storage_state: env:MY_APP_SESSION` (the JSON, raw or base64); it
+  exists on disk only for the run. A file copy must be mode 600, git-ignored, and younger than
+  `auth.storage_state_ttl_hours` (default 12) — older, and the scan logs in with the flow
+  instead and exploration asks you to re-seed.
+- **Stop.** Ctrl-C stops ZAP's spider and active scan too, not just the runner (exit 130). From
+  another terminal: `python -m dast stop my-app`.
+
+**Not decided yet:** ZAP's active scan attacks every write request it has seen, whatever
+`write_mode` says — `write_mode` governs only exploration (W4-8). Agree with the app team which
+write endpoints are acceptable before scanning a shared environment, and put the rest in
+`scope.exclude`.
+
+### Marking a finding as a false positive, accepted risk, or not yours
+
+Record the decision in `security/dast/<app>/suppressions.yaml`, keyed by the finding's
+fingerprint (in `labeled.json`, or on the alert):
+
+```yaml
+suppressions:
+  - fingerprint: 5910c6477d624b6e553d51983b2fb5beab3f6eb1357d58b06875ce0934b78487
+    reason: accepted_risk          # false_positive | accepted_risk | wont_fix | test_data
+    justification: "Example only — say why, so a reviewer can check it without asking."
+    owner: appsec-team
+    expires: "2026-12-31"          # required for accepted_risk and wont_fix
+```
+
+`dast report` then labels it `suppressed`: it no longer counts toward the gate or the totals, but
+it is **still published** — dropping it from the upload is how GitHub would decide it was fixed —
+and carries the justification as SARIF's suppression marker. When `expires` passes, the finding
+counts again and `report` says so. The lifecycle history underneath is unchanged.
+
+**GitHub ignores that marker.** Verified by uploading a suppressed finding: its alert (#1501, since
+deleted with the rest of that test data) stayed open. A suppression here governs *this tool's* gate and counts; to hide an alert in the Security
+tab, dismiss it there — and `dast triage --from-github` below brings that decision back into
+`suppressions.yaml`, so the two agree.
+
+Dismissed something in GitHub's UI instead? `dast triage <app> --from-github` reads the dismissed
+alerts and writes `suppressions.proposed.yaml` beside the real file, for you to review and merge.
+It never applies anything itself. GitHub does not expose fingerprints, so each alert is matched by
+recomputing ours from its rule, location and the parameter its message names; an older alert that
+names no parameter is matched only when that is unambiguous, and listed otherwise.
+
+### What the scan did, on the record
+
+Every run writes `events.jsonl` beside its artifacts: one JSON line per event, each with a
+timestamp, the scan id and the app id. It covers preflight, login, every blocked or traversed
+request, scan progress, session losses, aborts with their reasons, and the report's gate and
+upload. It answers "what did you touch, what did you refuse, and when?" for an unattended run.
+Set `DAST_LOG_FORMAT=json` to mirror the events to stderr for a log shipper.
+
+### Running it in CI
+
+Every push runs `ruff` and the test suite (`.github/workflows/tests.yml`). A weekly workflow,
+`dast-selftest.yml`, scans Juice Shop through compose with `--expect-findings` — a canary that goes
+red if the scanner ever stops finding vulnerabilities in an app that has them — and keeps the
+results as a downloadable artifact. Its run page shows the scan summary, and each alert's
+request/response link points at that run. It publishes nothing unless run by hand with `upload`
+ticked. `dast report` appends the same summary to `$GITHUB_STEP_SUMMARY` whenever it runs inside
+GitHub Actions.
+For your own application, the natural home for `dast scan` and `dast report` is the app's deploy
+pipeline, which knows the deployed commit to pass as `DAST_TARGET_COMMIT`. Publishing and
+`triage --from-github` use `$GITHUB_TOKEN` (or `$GH_TOKEN`) over HTTP, so the pipeline needs no
+`gh` CLI. On GitHub Enterprise Server, also set `$GITHUB_API_URL`. Locally, with no token, the
+`gh` CLI is used as before.
 
 Artifacts land under `out/<app>/` by default: `authoring/` (trace and bundle) and
 `scans/<scan_id>/` (records, coverage, labels, SARIF, redacted evidence).
@@ -285,6 +365,82 @@ repository with no category share one analysis, and the newer upload **replaces*
 one's alerts. The default of `dast/<app_id>` keeps them apart without any configuration; only
 override it if your organisation already has a naming convention.
 
+GitHub splits the uploaded id at its **last** `/` into category and run id, so the tool sends
+`dast/<app_id>/<scan_id>` and GitHub files it under `dast/<app_id>`. (Sending `dast/<app_id>` alone
+was read as category `dast` for every app — found on a real upload, and why the scan id is there.)
+
+**Branch and commit mean the deployment, not the scanner.** GitHub attaches every alert to a
+branch and commit and shows them as *Affected branches*. For a DAST finding the only meaningful
+values are those of the **build running in the environment you scanned**, which the scanner cannot
+work out for itself — so you must say, and the upload refuses without it:
+
+```bash
+python -m dast report my-app --upload \
+  --commit <full SHA of the deployed build> --ref refs/heads/<deployed branch>
+```
+
+In a pipeline, set `DAST_TARGET_COMMIT` and `DAST_TARGET_REF` in the deploy step instead; for a
+target pinned to one build, `publish.github.commit`/`ref` in `app.yaml` also work. The commit must
+be a full 40-character SHA and the ref a full `refs/heads/…`. Each run's `settings.json` records
+which of the three supplied them. (Earlier versions defaulted to `refs/heads/main` and to the DAST
+tool's *own* checkout, so early Juice Shop alerts claimed to live in the scanner's `main` — W1-8;
+they have since been deleted.) Upload to the **application's** repository, not this one.
+
+Juice Shop's own config is the worked example. GitHub only accepts a commit that exists in the
+repository you upload to, so its findings go to a fork of Juice Shop, on a `deployed/v20.2.0`
+branch at the commit its pinned image was built from — see `publish` in
+`security/dast/juice-shop/app.yaml`, and an alert as it lands:
+https://github.com/CodyYang2016/juice-shop/security/code-scanning/1195
+
+**Moving an app that already has alerts.** Changing the category — including going from the old
+no-category uploads to `dast/<app_id>` — starts a new analysis. The old alerts are not migrated;
+they stop receiving updates and sit open alongside the new ones. To keep updating existing alerts
+in place, keep the old category (for pre-category uploads, pass none). Also: GitHub closes as
+**fixed** any alert missing from the newest upload in the same slot, so upload the *labelled*
+output of `dast report`, never raw records — the lifecycle diff carries findings this scan did not
+reach forward as `not_scanned` precisely so they are not falsely closed.
+
+### What a developer sees on an alert
+
+Each alert now says where, what proved it, how sure the scanner is, and how to fix it:
+
+```
+SQL Injection                                                  High
+/rest/user/login
+SQL Injection in parameter `email` — ZAP sent `'` and the server answered
+`HTTP/1.1 500 Internal Server Error`. Confidence: Low.
+Reproduce: `POST /rest/user/login` → 500.
+
+▾ Rule help
+  SQL injection may be possible.
+  How to fix — Do not trust client side input … use PreparedStatement …
+  References — OWASP SQL Injection Prevention Cheat Sheet
+```
+
+The **confidence** is worth reading first: a Low-confidence finding based on a bare 500 is a lead
+to confirm by hand, not a confirmed injection. The evidence and payload are redacted (tokens,
+bearer values, secret-named fields, emails) and capped at 500 characters before they are stored
+or published; the redactor cannot recognise an opaque session id with no telling key name, so do
+not treat excerpts as guaranteed clean.
+
+**Reproduce** is the request a developer replays. For every high and medium finding the scan also
+stores the full exchange ZAP sent and received, redacted — credential headers (`Cookie`,
+`Authorization`, `Set-Cookie`, API-key headers) keep their name and lose their value, and secret
+form and JSON fields are scrubbed — with the response cut to the part around the evidence. It sits
+at `exchange_path` in the scan's evidence directory (`messages/<fingerprint>.txt`). It is captured
+during the scan because ZAP discards it when the next scan starts.
+
+The alert says where that file is (W1-4) — *Full request/response: …* — in one of three ways:
+
+| Setting | The alert shows |
+|---|---|
+| `publish.evidence_url: https://store.example/dast/{scan_id}/{path}` | a link to the file itself, for an organisation's own artifact store |
+| a page with no `{path}`, e.g. the CI run (`${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`) | the file's name **and** a link to the run. A GitHub artifact is a zip, so a link can reach the run but not the file inside |
+| nothing | the file's name, inside this scan's evidence |
+
+`--evidence-url` and `$DAST_EVIDENCE_URL` override the config, and `settings.json` records which
+one won. Only `http(s)` URLs are accepted.
+
 ---
 
 ## 4a. Which path authored the plan?
@@ -300,44 +456,50 @@ python -c "import json;m=json.load(open('out/my-app/authoring/bundle/manifest.js
 read as *unrecorded* rather than crash or imply either answer.)
 
 `fallback` is not a failure — it is the deterministic planner, and it is the default with
-`--no-llm`. It is also what you get when the selected LLM provider is unavailable or the call
-fails, so check the field rather than assuming. If you expected `llm` and got `fallback`,
+`--no-llm`. But it is also what you get **silently** when `ANTHROPIC_API_KEY` is unset or the
+call fails, so check the field rather than assuming. If you expected `llm` and got `fallback`,
 rerun `python -m authoring.generate --app my-app --trace … --out-dir /tmp/x` and read stderr:
 it names the reason.
 
-For a scheduled or CI run, add `--require-llm` to `dast author` (or to `authoring.explore` /
-`authoring.generate` directly). It exits non-zero instead of falling back, so an expired token,
-a model id the account is not entitled to, or a missing CLI fails the run rather than quietly
-producing a deterministic bundle that looks like a configuration choice.
-
-Exploration makes one model call per step, so the flag distinguishes a flaky provider from a dead
-one rather than failing on the first bad answer:
-
-| during exploration with `--require-llm` | outcome |
-|---|---|
-| provider unavailable (no CLI, no token) | abort immediately — nothing in the run can improve it |
-| an occasional unparseable or off-schema reply | that step falls back; the run continues |
-| three such failures in a row | abort |
-| the walk finishes and the model drove no step | abort |
-| policy refused the proposed action | falls back — the safety layer working, not a broken provider |
-
-When a reply cannot be parsed, the error carries an excerpt of what the model actually said, which
-is usually enough to tell a refusal from a rate-limit notice or a truncated answer. For the full
-picture set `LLM_DEBUG=1`, which prints the CLI's exit code, stdout and stderr for every call.
-
-The Copilot CLI returns its answer on stdout, between `<<<DAST_JSON` markers the prompt asks for.
-It is deliberately not asked to write the JSON to a file: a file write goes through the CLI's
-tool-permission gate, which in a non-interactive session denies it and cannot ask anyone for
-approval, so replies come back as `Blocked: the environment denied every write attempt …` and the
-model's actual answer is lost.
-
-`--require-llm` with `--no-llm` is rejected at argument-parse time, before a session is seeded.
-`dast author --explore` prints `steps_by_source` (`{"llm": n, "fallback": n}`), which is how you
-see how much of the walk the model actually drove without reading stderr.
-
 ## 5. Make the scan worth running
 
-A passing gate is not the same as a useful scan. Two knobs, both configuration:
+A passing gate is not the same as a useful scan. Each knob below is configuration; any you leave
+off is a gap to disclose when results are compared with another tool (the scorecard's SP list).
+
+**Give it the spec, if the app has one (W6-4).** `scan.openapi: https://my-app.internal/openapi.json`
+(or a path beside `app.yaml`). ZAP imports every declared endpoint and parameter, which means
+more to attack than any walk finds, and the report gains a denominator: *"Tested 34 of 41
+declared routes (83%) — source: OpenAPI spec"*, with the routes it missed. Without a spec, the
+denominator is the routes the authoring walk discovered, and the report says so. In compose,
+spec files under `security/dast/` are readable by ZAP; elsewhere, set `DAST_ZAP_SPEC_DIR` to
+where that directory is mounted inside ZAP, or the spec gives the denominator only.
+
+**Test DOM-based XSS (W6-3).** `scan.dom_xss: {enabled: true, max_min: 15}` runs ZAP's
+browser-driven DOM-XSS rule in its own pass after the main scan. It gets one browser at a time,
+its own time limit and the scan's session, and the main results are saved first, so if ZAP runs
+out of memory you lose this pass, not the scan. On DVWA it added ten high-severity findings, with
+ZAP peaking near 5 GiB, so give the ZAP container that much. `routes:` narrows it to named pages.
+
+**Test write paths, on a disposable environment (W6-1).** ZAP's spider already submits HTML
+forms. What it never sees are writes the app makes from its own JavaScript (`fetch`/XHR). With
+`data_policy: disposable` and `explore.write_mode: allow`, those writes are recorded (bodies
+redacted) and replayed by the scan so ZAP can attack them. The usual refusals still apply:
+DELETE only with `safe_forms`, never a path in `scope.exclude`, and never a credential change.
+Give the app a reset so every scan starts from the same data:
+
+```yaml
+scan:
+  reset:
+    url: /setup.php
+    steps:
+      - {action: click, selector: "input[name=create_db]"}
+    verify: {path: /login.php, contains: "Username"}     # the scan does not start without it
+```
+
+A write-enabled scan still never marks a finding `resolved`: its own writes change the data
+while it runs.
+
+Two more knobs:
 
 **Surface — ZAP can only attack parameters it has *seen*.** Visiting `/search` teaches it
 nothing about `?q=`. Put parameterised GETs in `record.authenticated_routes`:
@@ -398,8 +560,21 @@ scope:
 ```
 
 These terms are matched as substrings anywhere in the URL, case-insensitively, and are excluded
-from **both** the spider and the active scan. The login page is excluded automatically whether or
-not you name it — attacking the form that holds the session is how a scan loses its session.
+from **both** the spider and the active scan. A login page with a real path (`/login.php`,
+`/WebGoat/login`) is excluded automatically whether or not you name it — attacking the form that
+holds the session is how a scan loses its session.
+
+A **hash-routed** login (`/#/login`, as in Juice Shop or any hash-mode SPA) is not excluded,
+because nothing after `#` reaches the server — the browser requests `/`. An earlier version did
+exclude it, derived the pattern `/`, and excluded the entire application: the scan passed its gate
+with 60 passive findings instead of ~1,400 and coverage showed 0 routes. So there is now a guard:
+**if any exclusion would match your application's root, the scan refuses to start** and names the
+offending pattern. If you see that error, the culprit is an `avoid_actions` term that is too short
+or names your host, or an `auth.login_url` whose path is `/`. If your SPA's real login endpoint is
+an API call (Juice Shop's is `POST /rest/user/login`), list it in `avoid_actions` yourself — but
+only if attacking it can end the session; a JWT session usually survives it, a cookie session
+usually does not. Exclusion has a price: Juice Shop's High SQL injection is *on*
+`/rest/user/login`, so excluding that endpoint would have hidden it.
 
 List anything that resets, seeds, migrates, exports, logs out, deletes, or sends mail. On an
 internal application, one of these submitted a few hundred times is not a lost finding; it is an
@@ -434,19 +609,30 @@ when there is no XHR surface; a wrong pattern quietly records nothing.
 
 ## 6. When it goes wrong
 
+A login failure is one line — `RUNNER ABORT: authentication failed — <what>` — followed by
+`next: <what to do>`, exit code 2 (W5-4). A browser that is not installed says so and gives the
+install command.
+
 | Symptom | Cause | Fix |
 |---|---|---|
 | The scan passes but finds nothing interesting on an app you know is vulnerable | Either the parameters were never discovered (see §5) or the app was not in a testable state | `dast explain <app>` after a second scan; check `coverage.json` for the rule's `requests`/`alerts` — a rule that sent hundreds of requests and raised nothing points at app state, not at the scanner |
-| Everything returns **400**, body `Bad Format`; `podman logs zap` shows `No enum constant …Format.<APP>` | The target is on **8080**, ZAP's own port, so ZAP answers as its API and the app never sees the request (W4-7) | Move the app off 8080, or run ZAP's proxy elsewhere. **Silent** — the scan "succeeds" against nothing |
-| `AuthProofError: authentication not proven (selector)` while the login clearly worked | The marker is absent on the authenticated page, or you picked one that exists on the login page too | Load both pages and compare; presence-only is enough, visibility is not required |
-| `AuthProofError … (route)` | The route 302s to login, or returns 4xx/5xx | Check the route by hand with a logged-in session; add `forbid_redirect_to` |
-| `Page.fill: Timeout … waiting for locator` | The selector is wrong, or the page did not load through the proxy | Check the ZAP reachability command in §1 first — a proxy problem looks like a selector problem |
-| `credentials not in the environment: MYAPP_USER` | The env vars named in `auth.credentials` are not exported | Export them in the shell that runs `dast` |
+| Everything returns **400**, body `Bad Format`; `docker logs zap` shows `No enum constant …Format.<APP>` | The target is on **8080**, ZAP's own port, so ZAP answers as its API and the app never sees the request (W4-7) | Move the app off 8080 (`-e WEBGOAT_PORT=8083`), or run ZAP's proxy elsewhere. **Silent** — the scan "succeeds" against nothing |
+| `authentication failed — the login was submitted, but authentication was not proven …` (selector proof) while the login clearly worked | The marker is absent on the authenticated page, or you picked one that exists on the login page too | Load both pages and compare; presence-only is enough, visibility is not required |
+| `… not proven — auth check redirected to …/login.php` (route proof) | A wrong password lands here too — check the credentials first. Otherwise | The route 302s to login, or returns 4xx/5xx | Check the route by hand with a logged-in session; add `forbid_redirect_to` |
+| `authentication failed — login page element not found: <selector>` | The selector is wrong, or the page did not load through the proxy | Check the ZAP reachability command in §1 first — a proxy problem looks like a selector problem |
+| `authentication failed — credentials not in the environment: MYAPP_USER` (before any traffic) | The env vars named in `auth.credentials` are not exported | Export them in the shell that runs `dast` |
 | Login works by hand, fails here | A password policy (WebGoat caps at 10 characters), or the account was wiped when the container restarted | Re-provision the account; in-memory databases do not survive a restart |
-| `services not ready within 120s` | ZAP cannot reach the target | `podman exec zap curl …` from §1; check both are on the same network |
-| `curl: (52) Empty reply from server` from ZAP's API on a published host port | ZAP answers as its API only when the `Host` header names an address it knows itself by; a published port does not rewrite it, so ZAP tries to *proxy* the call to `127.0.0.1:<port>` inside the container, where nothing listens | `compose.yaml` registers `127.0.0.1` and `localhost` as aliases. On a ZAP started without them: `curl -sS -H 'Host: zap' 'http://127.0.0.1:8090/JSON/network/action/addAlias/?name=127.0.0.1'` — effective immediately, lost on restart |
-| `RUNNER ABORT: a journey step navigated to a file download rather than a page` | The plan contains a target the browser saves instead of rendering (a PDF, an export, an installer). Chromium aborts that navigation, so the flow cannot be replayed past it | Nothing to configure: the action policy now refuses a page navigation to a download, so re-authoring the bundle drops the step. Only a hand-edited plan can still contain one |
-| `ZapUnavailableError: ZAP stopped responding` | The daemon died — usually OOM (exit 137) from a browser-driven rule | `podman logs zap`; disable `40026` or give the daemon more memory |
+| `services not ready within 120s` | ZAP cannot reach the target | `docker exec zap curl …` from §1; check both are on the same network |
+| `… matches a production hostname pattern` / `… is not registered` / `… is registered as 'dev'` | The environment registry (W4-6) disagrees with the scope | Register the host in `security/dast/environments.yaml` with its real class; never loosen a production pattern to get a scan through |
+| `refusing to scan …: it is on port 8080, the port ZAP listens on` | The app shares ZAP's port; ZAP would answer as its API (W4-7) | Move the app (WebGoat: `WEBGOAT_PORT=8083`) |
+| `stored session … is readable by other users` / `… not git-ignored` / `… past its 12 h limit` | The seeded session file is mishandled or stale (W5-3) | `chmod 600` it, keep it under `.secrets/`, or re-seed with `dast author <app> --explore` |
+| Host-run `dast author` against **compose's** ZAP: `ZAP closed the connection` | Compose's ZAP admits only the runner's address (W4-7) | `export ZAP_API_ALLOW='.*'` before `docker compose up` — the key is still required |
+| Compose: `services not ready`, ZAP logs `UnknownHost: juice` | A container from before the network change was reattached without its DNS name | `docker compose down`, then up again |
+| `ZAP closed the connection without answering` | `ZAP_API_KEY` is missing or differs from the key ZAP was started with. A keyed ZAP hangs up rather than answering 401 | Export the same key in the shell that runs `dast` |
+| `refusing to scan a test environment: ZAP's API is open` | ZAP was started with `api.disablekey=true` | Restart it with `-config api.key=…` |
+| `… is a shared environment, so scope must name exact origins` | A bare host in `scope.allow` for `test`/`staging` | Write it as an origin, e.g. `https://my-app.internal:8443` |
+| Health gate fails with `session_alive: false` | The session died mid-scan and logging in again did not bring it back, or `scan.reauth.max` was reached | `coverage.json` → `session.losses` says when and why; add the action that logs out to `scope.avoid_actions`, check `scan.anti_csrf_tokens`, or raise `scan.reauth.max` |
+| `ZapUnavailableError: ZAP stopped responding` | The daemon died — usually OOM (exit 137) from a browser-driven rule | `docker logs zap`; disable `40026` or give the daemon more memory |
 
 ---
 

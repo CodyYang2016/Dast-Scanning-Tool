@@ -6,9 +6,11 @@ an out-of-scope target BEFORE touching ZAP (NFR-2). If it raised only after call
 misconfig could send traffic — so this asserts the refusal happens with no network.
 """
 
+import json
+
 import pytest
 
-import runner.scan as scan_mod
+from runner import scan as scan_mod
 from runner.scan import ScanScopeError, scan
 
 # A ZAP API that would explode if used — proves scan() never touches the network on refusal.
@@ -34,17 +36,397 @@ def test_scan_scope_check_is_case_insensitive():
     assert not isinstance(exc.value, ScanScopeError)
 
 
-def test_policy_per_rule_budget_reaches_zap(monkeypatch):
+# ---- W2-4: the generated policy actually drives the scan --------------------------------
+# zap-policy.yaml was emitted by `generate` and read by nobody: configure_policy() took a time
+# budget and disabled one hard-coded scanner. Scan depth was therefore an accident of the
+# wall clock and of whatever a previous run left enabled on the daemon — which is exactly the
+# "silent coverage decay" that makes a lifecycle diff untrustworthy. Oracle: the exact ZAP API
+# calls each policy must produce, captured from a fake daemon.
+
+from runner.scan import configure_policy, load_policy, resolved_policy
+
+POLICY = {"intensity": "high", "attack_strength": "high", "alert_threshold": "low",
+          "disabled_scanners": ["40026", "10095"]}
+
+
+class FakeZap:
+    """Records the API calls configure_policy makes, in order."""
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, zap_api, path, params=None, timeout=30.0):
+        self.calls.append((path, dict(params or {})))
+        if path == "/JSON/ascan/view/policies/":
+            return {"policies": [{"id": "0"}, {"id": "4"}]}
+        return {"Result": "OK"}
+
+    def paths(self):
+        return [p for p, _ in self.calls]
+
+    def params_for(self, path):
+        return [q for p, q in self.calls if p == path]
+
+
+def _configure(monkeypatch, **kw):
+    fake = FakeZap()
+    monkeypatch.setattr("runner.scan._api", fake)
+    configure_policy("http://zap", **kw)
+    return fake
+
+
+def test_attack_strength_and_threshold_are_applied_to_every_category(monkeypatch):
+    fake = _configure(monkeypatch, policy=POLICY)
+    strengths = fake.params_for("/JSON/ascan/action/setPolicyAttackStrength/")
+    thresholds = fake.params_for("/JSON/ascan/action/setPolicyAlertThreshold/")
+    assert {p["attackStrength"] for p in strengths} == {"HIGH"}
+    assert {p["alertThreshold"] for p in thresholds} == {"LOW"}
+    assert {p["id"] for p in strengths} == {"0", "4"}      # every category ZAP reports
+
+
+def test_the_rule_set_is_reset_before_disabling_so_runs_do_not_drift(monkeypatch):
+    # Without enableAllScanners first, a rule disabled by a previous run stays disabled and
+    # this scan silently covers less than its policy says.
+    fake = _configure(monkeypatch, policy=POLICY)
+    paths = fake.paths()
+    assert paths.index("/JSON/ascan/action/enableAllScanners/") < \
+           paths.index("/JSON/ascan/action/disableScanners/")
+
+
+def test_disabled_scanners_come_from_the_policy_not_a_constant(monkeypatch):
+    fake = _configure(monkeypatch, policy=POLICY)
+    assert fake.params_for("/JSON/ascan/action/disableScanners/")[0]["ids"] == "40026,10095"
+
+
+def test_a_policy_may_re_enable_everything(monkeypatch):
+    fake = _configure(monkeypatch, policy={**POLICY, "disabled_scanners": []})
+    assert "/JSON/ascan/action/enableAllScanners/" in fake.paths()
+    assert "/JSON/ascan/action/disableScanners/" not in fake.paths()
+
+
+def test_time_budgets_still_bound_the_scan(monkeypatch):
+    fake = _configure(monkeypatch, policy=POLICY, max_scan_min=7, max_rule_min=2)
+    assert fake.params_for("/JSON/ascan/action/setOptionMaxScanDurationInMins/")[0]["Integer"] == 7
+    assert fake.params_for("/JSON/ascan/action/setOptionMaxRuleDurationInMins/")[0]["Integer"] == 2
+
+
+def test_no_policy_keeps_the_previous_behaviour(monkeypatch):
+    # Callers that pass no policy (compose, a hand-run scan) must be unaffected.
+    fake = _configure(monkeypatch)
+    assert "/JSON/ascan/action/setPolicyAttackStrength/" not in fake.paths()
+    assert fake.params_for("/JSON/ascan/action/disableScanners/")[0]["ids"] == "40026"
+
+
+def test_load_policy_reads_the_generated_file(tmp_path):
+    p = tmp_path / "zap-policy.yaml"
+    p.write_text(json.dumps(POLICY))          # generate writes JSON, which is valid YAML
+    assert load_policy(str(p))["attack_strength"] == "high"
+
+
+def test_load_policy_returns_none_when_there_is_no_policy(tmp_path):
+    assert load_policy(str(tmp_path / "absent.yaml")) is None
+
+
+def test_resolved_policy_records_what_was_asked_for(monkeypatch):
+    # The coverage artifact must say which policy produced it, so two scans of the same app
+    # can be compared honestly (R2).
+    resolved = resolved_policy(POLICY, max_scan_min=7, max_rule_min=2)
+    assert resolved["attack_strength"] == "high" and resolved["alert_threshold"] == "low"
+    assert resolved["disabled_scanners"] == ["40026", "10095"]
+    assert resolved["max_scan_min"] == 7
+
+
+# ---- a dead or busy daemon must not surface as a socket traceback -----------------------
+# Observed 2026-09-27: re-enabling DOM-XSS (40026) at HIGH strength OOM-killed the ZAP
+# container mid-scan, and the 6-minute run ended in a raw TimeoutError from http.client with
+# no indication of what had happened. Polling must tolerate a slow answer and say something
+# useful when the daemon is actually gone.
+
+from runner.scan import ZapUnavailableError, _poll
+
+
+def test_polling_survives_a_transient_timeout(monkeypatch):
+    calls = {"n": 0}
+
+    def flaky(zap_api, path, params=None, timeout=30.0):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise TimeoutError("timed out")
+        return {"status": "100"}
+
+    monkeypatch.setattr("runner.scan._api", flaky)
+    monkeypatch.setattr("runner.scan.time.sleep", lambda s: None)
+    _poll("http://zap", "/JSON/ascan/view/status/", "0", poll_s=0, max_polls=10)
+    assert calls["n"] == 3          # two failures absorbed, then the real answer
+
+
+def test_a_daemon_that_stops_answering_raises_something_actionable(monkeypatch):
+    def dead(zap_api, path, params=None, timeout=30.0):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr("runner.scan._api", dead)
+    monkeypatch.setattr("runner.scan.time.sleep", lambda s: None)
+    with pytest.raises(ZapUnavailableError) as exc:
+        _poll("http://zap", "/JSON/ascan/view/status/", "0", poll_s=0, max_polls=10)
+    assert "stopped responding" in str(exc.value)
+
+
+def test_scan_reports_the_active_scan_id_so_its_rules_can_be_read_back(monkeypatch):
+    """Per-rule outcomes are fetched by scan id; without it, coverage cannot say whether a
+    rule ran, ran and found nothing, or was skipped for time (W6-2)."""
+    calls = []
+
+    def fake(zap_api, path, params=None, timeout=30.0):
+        calls.append(path)
+        if path == "/JSON/ascan/action/scan/":
+            return {"scan": "7"}
+        if path.endswith("/view/status/"):
+            return {"status": "100"}
+        if path == "/JSON/ascan/view/policies/":
+            return {"policies": [{"id": "0"}]}
+        if path == "/JSON/core/view/alerts/":
+            return {"alerts": []}
+        return {"Result": "OK"}
+
+    monkeypatch.setattr("runner.scan._api", fake)
+    monkeypatch.setattr("runner.scan.time.sleep", lambda s: None)
+    report = scan("http://zap", "http://app", ["app"], do_spider=False)
+    assert report["ascan_id"] == "7"
+
+
+# ---- keeping the scanner off the application's own controls ----------------------------
+
+def test_avoided_actions_become_scanner_exclusions():
+    rx = scan_mod.exclusion_regexes(["logout", "setup"], None)
+    assert any("logout" in r for r in rx) and any("setup" in r for r in rx)
+
+
+def test_the_login_page_is_excluded_even_when_no_terms_are_given():
+    # Attacking the login form is what logs the scan out of the app it is scanning.
+    rx = scan_mod.exclusion_regexes([], "/login.php")
+    assert rx and all(r.startswith("(?i)") for r in rx)
+    assert any("login" in r for r in rx)
+
+
+def test_a_login_path_is_matched_literally_not_as_a_pattern():
+    (rx,) = scan_mod.exclusion_regexes([], "/login.php")
+    import re
+    assert re.match(rx, "http://app/login.php")
+    assert not re.match(rx, "http://app/loginXphp")      # the dot is escaped
+
+
+def test_nothing_configured_excludes_nothing():
+    assert scan_mod.exclusion_regexes([], None) == []
+
+
+def test_exclusions_are_applied_to_both_the_spider_and_the_active_scan(monkeypatch):
+    calls = []
+    monkeypatch.setattr(scan_mod, "_api", lambda z, p, params=None: calls.append((p, params)) or {})
+    scan_mod.apply_exclusions("http://zap", ["(?i).*logout.*"])
+    paths = [p for p, _ in calls]
+    assert "/JSON/spider/action/excludeFromScan/" in paths
+    assert "/JSON/ascan/action/excludeFromScan/" in paths
+
+
+def test_applying_no_exclusions_touches_nothing(monkeypatch):
+    calls = []
+    monkeypatch.setattr(scan_mod, "_api", lambda z, p, params=None: calls.append(p) or {})
+    scan_mod.apply_exclusions("http://zap", [])
+    assert calls == []
+
+
+def test_a_zap_that_rejects_an_exclusion_fails_the_scan(monkeypatch):
+    # Silently continuing would attack the thing we promised not to attack.
+    def boom(z, p, params=None):
+        raise RuntimeError("no")
+    monkeypatch.setattr(scan_mod, "_api", boom)
+    with pytest.raises(Exception):
+        scan_mod.apply_exclusions("http://zap", ["(?i).*logout.*"])
+
+
+# ---- the per-rule budget must reach ZAP, not just the artifact ---------------------------
+
+def test_the_policys_per_rule_budget_is_applied(monkeypatch):
+    # Measured gap: generate wrote max_rule_min into zap-policy.yaml and configure_policy took
+    # it as a separate argument defaulting to 1, so a configured budget was silently ignored
+    # while coverage.json reported the value that had not been used.
     sent = {}
     monkeypatch.setattr(scan_mod, "_api",
-                        lambda _zap, path, params=None: sent.update({path: params}) or {})
-    scan_mod.configure_policy("http://zap", policy={"max_rule_min": 5})
+                        lambda z, p, params=None: sent.update({p: params}) or {})
+    scan_mod.configure_policy("http://zap", policy={"max_scan_min": 10, "max_rule_min": 5})
     assert sent["/JSON/ascan/action/setOptionMaxRuleDurationInMins/"] == {"Integer": 5}
 
 
-def test_explicit_per_rule_budget_overrides_policy(monkeypatch):
+def test_an_explicit_argument_still_wins_over_the_policy(monkeypatch):
     sent = {}
     monkeypatch.setattr(scan_mod, "_api",
-                        lambda _zap, path, params=None: sent.update({path: params}) or {})
+                        lambda z, p, params=None: sent.update({p: params}) or {})
     scan_mod.configure_policy("http://zap", max_rule_min=2, policy={"max_rule_min": 5})
     assert sent["/JSON/ascan/action/setOptionMaxRuleDurationInMins/"] == {"Integer": 2}
+
+
+def test_no_policy_keeps_the_historical_default(monkeypatch):
+    sent = {}
+    monkeypatch.setattr(scan_mod, "_api",
+                        lambda z, p, params=None: sent.update({p: params}) or {})
+    scan_mod.configure_policy("http://zap")
+    assert sent["/JSON/ascan/action/setOptionMaxRuleDurationInMins/"] == {"Integer": 1}
+
+
+# ---- an exclusion must never cover the whole application ---------------------------------
+#
+# Measured: Juice Shop's login is a hash route, /#/login. urlsplit puts "#/login" in the
+# FRAGMENT, so the path came out as "/" and the login exclusion became (?i).*/.* — every URL.
+# ZAP skipped the entire app in spider and active scan, the run raised 60 passive findings
+# instead of ~1,400, and coverage correctly reported 0 routes. Uploaded, it would have closed
+# ~1,400 alerts as "fixed" on the strength of a scan that tested nothing.
+
+@pytest.mark.parametrize("login_url", ["/#/login", "http://juice:3000/#/login", "/", "#/login"])
+def test_a_hash_routed_login_adds_no_exclusion(login_url):
+    # Nothing after '#' reaches the server — the browser requests '/' — so there is no
+    # server-side login page to exclude.
+    assert scan_mod.exclusion_regexes([], login_url) == []
+
+
+def test_a_real_login_path_is_still_excluded():
+    assert scan_mod.exclusion_regexes([], "/login.php") == [r"(?i).*/login\.php.*"]
+
+
+def test_the_juice_shop_config_no_longer_excludes_everything():
+    import re
+    from authoring import appconfig
+    cfg = appconfig.load_app_config("juice-shop")
+    rx = scan_mod.exclusion_regexes(appconfig.avoid_actions(cfg), appconfig.login_url(cfg))
+    assert not any(re.match(p, "http://juice:3000/rest/products/search?q=a") for p in rx)
+
+
+def test_an_exclusion_covering_the_target_root_refuses_the_scan():
+    with pytest.raises(ScanScopeError, match="whole application"):
+        scan_mod.refuse_exclusions_covering("http://juice:3000", [r"(?i).*/.*"])
+
+
+def test_an_avoid_term_that_names_the_host_refuses_the_scan():
+    # `avoid_actions: [juice]` would match every URL on http://juice:3000 the same way.
+    rx = scan_mod.exclusion_regexes(["juice"], None)
+    with pytest.raises(ScanScopeError):
+        scan_mod.refuse_exclusions_covering("http://juice:3000", rx)
+
+
+def test_ordinary_exclusions_pass_the_guard():
+    rx = scan_mod.exclusion_regexes(["logout", "setup"], "/login.php")
+    scan_mod.refuse_exclusions_covering("http://dvwa", rx)          # does not raise
+
+
+def test_the_guard_runs_before_zap_is_touched(monkeypatch):
+    calls = []
+    monkeypatch.setattr(scan_mod, "_api", lambda z, p, params=None: calls.append(p) or {})
+    with pytest.raises(ScanScopeError):
+        scan("http://zap", "http://juice:3000", ["juice"], exclusions=[r"(?i).*/.*"])
+    assert calls == [], "a refused scan must not reach ZAP at all"
+
+
+def test_a_refused_key_is_not_retried_as_a_busy_daemon(monkeypatch):
+    # Three polls of a 403 used to read as "ZAP stopped responding — check for an OOM", which
+    # sends the operator looking in entirely the wrong place.
+    from runner import zapapi
+    calls = []
+    def refuse(z, p, params=None, timeout=30.0):
+        calls.append(p)
+        raise zapapi.ZapAuthError("ZAP refused the API call (403). Set ZAP_API_KEY ...")
+    monkeypatch.setattr(scan_mod, "_api", refuse)
+    with pytest.raises(zapapi.ZapAuthError):
+        scan_mod._poll("http://zap", "/JSON/ascan/view/status/", "0", 0.0, 5)
+    assert len(calls) == 1
+
+
+# ---- W4-3: slow it down, and make stopping stop ZAP -------------------------------------
+
+def _sent(monkeypatch):
+    calls = {}
+    def fake(z, p, params=None, timeout=30.0):
+        calls[p] = params
+        return {"policies": []}
+    monkeypatch.setattr(scan_mod, "_api", fake)
+    return calls
+
+
+def test_the_throttle_reaches_zap(monkeypatch):
+    calls = _sent(monkeypatch)
+    scan_mod.configure_policy("http://zap", throttle={"threads_per_host": 2, "delay_ms": 250})
+    assert calls["/JSON/ascan/action/setOptionThreadPerHost/"] == {"Integer": 2}
+    assert calls["/JSON/spider/action/setOptionThreadCount/"] == {"Integer": 2}
+    assert calls["/JSON/ascan/action/setOptionDelayInMs/"] == {"Integer": 250}
+
+
+def test_no_throttle_leaves_zaps_defaults_alone(monkeypatch):
+    calls = _sent(monkeypatch)
+    scan_mod.configure_policy("http://zap")
+    assert not any("ThreadPerHost" in p or "DelayInMs" in p or "ThreadCount" in p for p in calls)
+
+
+def test_the_recorded_policy_says_how_hard_the_scan_pushed():
+    assert scan_mod.resolved_policy({}, 10, 1, {"threads_per_host": 2})["throttle"] == \
+        {"threads_per_host": 2}
+    assert scan_mod.resolved_policy({}, 10, 1)["throttle"] == "zap defaults"
+
+
+def test_ctrl_c_stops_zap_before_the_runner_exits(monkeypatch):
+    # Before this, Ctrl-C killed the runner and ZAP kept attacking the application.
+    calls = []
+    def fake(z, p, params=None, timeout=30.0):
+        calls.append(p)
+        if p.endswith("/status/"):
+            raise KeyboardInterrupt
+        return {}
+    monkeypatch.setattr(scan_mod, "_api", fake)
+    with pytest.raises(KeyboardInterrupt):
+        scan_mod._poll("http://zap", "/JSON/ascan/view/status/", "0", 0.0, 5)
+    assert "/JSON/ascan/action/stopAllScans/" in calls
+    assert "/JSON/spider/action/stopAllScans/" in calls
+
+
+def test_stopping_tries_both_even_if_one_fails(monkeypatch):
+    calls = []
+    def fake(z, p, params=None, timeout=30.0):
+        calls.append(p)
+        if "ascan" in p:
+            raise RuntimeError("busy")
+        return {}
+    monkeypatch.setattr(scan_mod, "_api", fake)
+    stopped = scan_mod.stop_all("http://zap")
+    assert "/JSON/spider/action/stopAllScans/" in calls and stopped == {"ascan": False, "spider": True}
+
+
+def test_the_poll_loop_gives_the_liveness_monitor_a_turn(monkeypatch):
+    ticks = []
+    seq = iter(["10", "50", "100"])
+    monkeypatch.setattr(scan_mod, "_api", lambda z, p, params=None, timeout=30.0: {"status": next(seq)})
+    scan_mod._poll("http://zap", "/JSON/ascan/view/status/", "0", 0.0, 10, on_tick=lambda: ticks.append(1))
+    assert len(ticks) >= 2
+
+
+def test_a_monitor_asking_to_stop_stops_that_scan(monkeypatch):
+    # W5-2: a session that is gone and could not be restored — every request from here on
+    # attacks a logged-out application, so the active scan is stopped rather than finished.
+    calls = []
+    def fake(z, p, params=None, timeout=30.0):
+        calls.append((p, dict(params or {})))
+        return {"status": "40"}
+    monkeypatch.setattr(scan_mod, "_api", fake)
+    scan_mod._poll("http://zap", "/JSON/ascan/view/status/", "7", 0.0, 10, on_tick=lambda: True)
+    assert ("/JSON/ascan/action/stop/", {"scanId": "7"}) in calls
+    assert sum(1 for p, _ in calls if p.endswith("/view/status/")) == 1
+
+
+def test_pause_and_resume_address_every_active_scan(monkeypatch):
+    calls = []
+    monkeypatch.setattr(scan_mod, "_api", lambda z, p, params=None, timeout=30.0: calls.append(p) or {})
+    scan_mod.pause_all("http://zap"); scan_mod.resume_all("http://zap")
+    assert calls == ["/JSON/ascan/action/pauseAllScans/", "/JSON/ascan/action/resumeAllScans/"]
+
+
+def test_anti_csrf_token_names_are_registered(monkeypatch):
+    calls = []
+    monkeypatch.setattr(scan_mod, "_api",
+                        lambda z, p, params=None, timeout=30.0: calls.append((p, params)) or {})
+    scan_mod.add_anti_csrf_tokens("http://zap", ["user_token"])
+    assert calls == [("/JSON/acsrf/action/addOptionToken/", {"String": "user_token"})]

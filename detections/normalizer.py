@@ -7,7 +7,7 @@ Scalability convention (project-wide): **stream by default.** The core `normaliz
 iterable of alerts and *yields* records, so no stage needs the whole set in memory. The only
 place that currently reads a whole file is `iter_alerts()`, deliberately isolated so it can be
 swapped for an incremental parser (e.g. ijson) without touching anything downstream. See
-docs/decisions_and_known_issues.md.
+docs/junior_engineer/decisions_and_known_issues.md.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from typing import TextIO
 
 from detections.fingerprint import endpoint_pattern, fingerprint, payload_family
+from runner.redact import redact_text
 
 # ZAP risk -> normalized severity enum (contracts/detection.schema.json).
 _SEVERITY = {
@@ -41,6 +42,60 @@ def _cwe_id(raw) -> str | None:
     return f"CWE-{raw}"
 
 
+# Per-finding strings are capped so one noisy scan cannot push the SARIF past GitHub's 10 MB
+# upload limit; per-rule text is not, because it is carried once per rule rather than per finding.
+_MAX_EXCERPT = 500
+_TRUNCATED = " [truncated]"
+
+_CONFIDENCE = {"High": "high", "Medium": "medium", "Low": "low", "Confirmed": "high"}
+
+
+def _text(raw) -> str | None:
+    value = str(raw or "").strip()
+    return value or None
+
+
+def _excerpt(raw) -> str | None:
+    """A per-finding string safe to store and publish: redacted first, then capped.
+
+    Evidence and attack are lifted from the target's responses and the scanner's payloads, so
+    they can carry session tokens or injected content. Redacting HERE means no downstream stage
+    — records, state, SARIF, GitHub — ever holds the raw value. The redactor knows JWTs, bearer
+    tokens, secret-named fields and emails; an opaque session id with no telling key name would
+    still pass through, which the cap limits but does not close.
+    """
+    value = _text(raw)
+    if value is None:
+        return None
+    # Redact the WHOLE string, then cap. Redacting first means a secret that crosses the cap
+    # boundary is recognised in full rather than cut into an unrecognisable prefix. (This used to
+    # pre-cap before redacting, because the redactor was quadratic in input length — W5-5.)
+    value = redact_text(value)
+    if len(value) > _MAX_EXCERPT:
+        value = value[:_MAX_EXCERPT] + _TRUNCATED
+    return value
+
+
+def _references(raw) -> list[str] | None:
+    """ZAP packs several URLs into one newline-separated string; split them."""
+    refs = [line.strip() for line in str(raw or "").splitlines() if line.strip()]
+    return refs or None
+
+
+def _remediation(alert: dict) -> dict:
+    """What a developer needs to act on the finding (W1-1). Only fields that are present:
+    an empty value is omitted rather than written as "", as `parameter` already is."""
+    fields = {
+        "description": _text(alert.get("description")),
+        "solution": _text(alert.get("solution")),
+        "references": _references(alert.get("reference")),
+        "confidence": _CONFIDENCE.get(str(alert.get("confidence", "")).strip()),
+        "evidence_excerpt": _excerpt(alert.get("evidence")),
+        "attack": _excerpt(alert.get("attack")),
+    }
+    return {k: v for k, v in fields.items() if v}
+
+
 def normalize_alert(alert: dict, app_id: str, scan_id: str) -> dict:
     """Map a single ZAP alert to a detection record (contracts/detection.schema.json)."""
     rule_id = str(alert.get("pluginId", ""))
@@ -60,6 +115,9 @@ def normalize_alert(alert: dict, app_id: str, scan_id: str) -> dict:
         "parameter": parameter,
         "status": "open",  # lifecycle diff (FR-L2) reassigns new/open/resolved
         "evidence_path": None,  # wired in by the runner's evidence capture (FR-E1)
+        # None of these feed the fingerprint above: they describe a finding, they do not
+        # identify it, so adding them leaves every lifecycle history and GitHub alert intact.
+        **_remediation(alert),
     }
 
 
@@ -85,7 +143,7 @@ def iter_alerts(source: str | TextIO) -> Iterator[dict]:
     if hasattr(source, "read"):
         report = json.load(source)
     else:
-        with open(source, encoding="utf-8") as fh:
+        with open(source) as fh:
             report = json.load(fh)
     yield from report.get("alerts", [])
 
@@ -129,7 +187,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.out == "-":
         writer(records, sys.stdout)
     else:
-        with open(args.out, "w", encoding="utf-8") as fh:
+        with open(args.out, "w") as fh:
             writer(records, fh)
     return 0
 

@@ -5,17 +5,17 @@ through a login, scan the authenticated app with OWASP ZAP inside a hard safety 
 normalize the findings with stable fingerprints, and publish them to the GitHub Security tab
 with lifecycle tracking across scans.
 
-**Status: the full loop works end-to-end on real data**, including config-driven onboarding,
-`dast onboard --discover`, the Phase 2 authoring CLIs, coverage-aware lifecycle reporting,
-parameter reachability, and explainable disappeared findings. The target suite passes 316 tests;
-the containerized single-command run preserves the Juice Shop demo, and the LLM path supports
-the Nationwide-approved Copilot provider through `authoring/llm_backend.py`.
+**Status: the full loop works end-to-end on real data**, including the Phase 2 authoring CLIs
+(`record → generate → validate`). 300 automated tests pass; the containerized single-command
+run is verified; and the **auto-generated `flow.py` drives a passing scan** end-to-end
+(Week-2 checkpoint). The LLM path in `generate` runs with an `ANTHROPIC_API_KEY`; without one
+it uses a deterministic fallback (verified here).
 
 An optional **seeded-session + LLM exploration** authoring path is also built and verified: a
 human seeds an authenticated session once (`seed`), an LLM-driven loop explores the authenticated
 surface behind the same safety boundary (`explore`), and the lifecycle diff is **coverage-aware**
 — it only labels a finding `resolved` if the scan actually exercised its route with its rule
-enabled, else `not_scanned`. See `docs/seeded_session_exploration_design.md`.
+enabled, else `not_scanned`. See `docs/junior_engineer/seeded_session_exploration_design.md`.
 
 ## The four proof points (definition of done)
 
@@ -47,17 +47,67 @@ scope.json ─▶ preflight ─▶ replay (Chromium ─▶ ZAP proxy) ─▶ sco
   `scan` (bounded ZAP active scan), `coverage` (route×rule surface exercised), `evidence` (redacted
   HAR + screenshot), `main` (one-command gate).
 - **`detections/`** — the results pipeline: `normalizer`, `fingerprint`, `sarif_export`,
-  `github_upload`, `lifecycle_diff`, `explain`, `reachability` (coverage-aware:
-  `new`/`open`/`resolved`/`not_scanned`).
+  `github_upload`, `lifecycle_diff` (coverage-aware: `new`/`open`/`resolved`/`not_scanned`).
   Pure, streaming, fixture-testable.
 - **`contracts/`** — frozen shared contracts: `scope.json`/`scope.schema.json`,
   `detection.schema.json`, the fingerprint formula (`README.md`), the vendored SARIF schema,
   and the real ZAP fixture `sample_zap_output.json`.
 - **`security/dast/<app>/`** — per-app flow + scope (+ gitignored `evidence/`).
-- **`docs/`** — design + decision docs (see below).
+- **`docs/junior_engineer/`** — design + decision docs (see below).
 
-See [docs/onboarding_a_new_application.md](docs/onboarding_a_new_application.md) for the
-complete lower-environment onboarding and Podman workflow.
+## Onboarding an application
+
+Everything application-specific lives in one file, `security/dast/<app>/app.yaml`, validated
+against `contracts/app.schema.json`: the login route and selectors, how authentication is
+**proven**, whether the tool may create its own account, cookie banners to dismiss, which URLs
+count as API calls, scope and budgets. Nothing under `authoring/` or `runner/` names an
+application — `tests/test_no_app_specifics.py` fails the build if that ever stops being true —
+so onboarding is a configuration change, never a code change.
+
+```bash
+python -m dast onboard my-app --base-url https://my-app.dev.example   # writes the skeleton
+$EDITOR security/dast/my-app/app.yaml                                 # fill in the TODOs
+python -m dast author  my-app      # record (or seed+explore) -> generate -> validate
+python -m dast scan    my-app      # preflight -> replay -> ZAP -> normalize -> coverage
+python -m dast report  my-app      # lifecycle diff -> SARIF  (--upload to publish)
+```
+
+Artifacts land in one predictable place per application:
+
+```
+out/<app>/authoring/        trace/ and bundle/ (flow.py, scope.json, journey.json, …)
+out/<app>/scans/<scan_id>/  records.json, coverage.json, labeled.json, results.sarif,
+                            settings.json, evidence/
+out/<app>/state.json        lifecycle state across scans
+```
+
+`out` is the default root, not a fixed one: `--out`, `$DAST_OUT` and `output.dir` in `app.yaml`
+move the whole workspace, highest precedence first. `settings.json` records which of them won,
+so a redirected run can explain itself. Note that `state.json` moves with it — it is the
+lifecycle history, so an inconsistent redirect makes every finding read `new`.
+
+`dast` is a thin facade: each verb composes the module entry points below, which remain the
+interface for anything unusual (a different proxy, a one-off trace, `--no-replay`).
+
+```bash
+# every authoring CLI takes --app <id> (or a path to the file)
+python -m authoring.record   --app juice-shop --zap-proxy http://localhost:8080 --out-dir rec/
+python -m authoring.generate --app juice-shop --trace rec/trace.json --out-dir gen/
+```
+
+Two applications are onboarded today, and they deliberately differ: **juice-shop** (SPA, email
+login, JWT in `localStorage`, self-registration) and **dvwa** (server-rendered, *username*
+login, PHPSESSID cookie session proven by visiting an authenticated route, provisioned
+identity, no API surface). Between them they exercise every shape the config supports.
+
+**Step-by-step: [`docs/onboarding_a_new_application.md`](docs/onboarding_a_new_application.md)**
+— the two decisions that matter (login shape, proof of authentication), what good output looks
+like, the failure modes each onboarded app actually hit, and the three configs side by side.
+
+`app.yaml` is an **input**: `generate` still emits the frozen artifacts (`scope.json`,
+`auth.json`, `zap-policy.yaml`, `manifest.json`, `lock`) from it, so preflight, the scope guard
+and the runner are unchanged. See `security/dast/juice-shop/app.yaml` for a worked example and
+`docs/dast_poc_remediation_plan.md` for where this is going.
 
 ## Prerequisites
 
@@ -74,80 +124,10 @@ docker compose up --build --abort-on-container-exit --exit-code-from runner
 ```
 
 Builds the runner, starts Juice Shop + ZAP + the runner on one network, runs a safe
-authenticated scan, and exits with the **Phase 1 gate** as its code (0 = pass). Detection
+authenticated scan, and exits with the gate as its code (0 = pass) — in compose, a
+**self-test** (`--expect-findings`): Juice Shop is deliberately vulnerable, so finding nothing
+fails it. Detection
 records land in `./out/records.json`. Images are pinned by digest (`versions.lock`).
-
-### Option A (Podman) — Nationwide lower environment
-
-Podman is the supported container runtime in Nationwide lower environments; the compose file,
-network, bind mount and env var are all OCI-standard, so the same command runs under Podman.
-The commands below use Podman only — do not substitute Docker.
-
-```bash
-# One-time on a Nationwide Windows/WSL workstation: start the machine, fix the stale proxy,
-# and pre-pull the Playwright + ZAP images through the ntr.nwie.net mirror (Git Bash):
-./prepull_playwright_podman_nationwide.sh
-
-# Same single-command run as Option A, on Podman:
-podman compose up --build --abort-on-container-exit --exit-code-from runner
-#   (older Podman: `podman-compose up --build --abort-on-container-exit --exit-code-from runner`)
-
-# On RHEL with SELinux, if the runner cannot write ./out, relabel the bind mount once:
-#   add `:Z` to the volume in compose.yaml  ->  ./out:/app/out:Z
-```
-
-### Bundled onboarding targets
-
-The repository also includes profile-gated DVWA and WebGoat targets. The default compose run
-remains Juice Shop only; start one additional target explicitly:
-
-```bash
-podman compose --profile dvwa up -d dvwa zap
-# create the DVWA database at http://localhost:8081/setup.php using a local port override
-export DVWA_USER=admin DVWA_PASS=password
-python -m dast author dvwa --explore --zap-proxy http://localhost:8080
-python -m dast scan dvwa
-
-podman compose --profile webgoat up -d webgoat zap
-# WebGoat is configured for http://webgoat:8083, not ZAP's port 8080.
-```
-
-Both images are pinned in `versions.lock`; the bundled app configs are under
-`security/dast/dvwa/` and `security/dast/webgoat/`.
-
-### Onboarding a new application (configuration only)
-
-A second application is **one file** — `security/dast/<app>/app.yaml` — never a code change.
-`tests/test_no_app_specifics.py` fails the build if any application name leaks into
-`authoring/`, `runner/` or `dast.py`. The `dast` facade is a thin wrapper over the existing
-`authoring.*` / `runner.main` CLIs.
-
-```bash
-python -m dast onboard my-app --base-url http://my-app:8443   # writes app.yaml to fill in
-$EDITOR security/dast/my-app/app.yaml                         # login shape, proof, credentials
-
-export MY_APP_USER=…  MY_APP_PASS=…        # the env-var NAMES you put in auth.credentials
-python -m dast author my-app               # record → generate → validate (bundle in out/my-app/)
-python -m dast scan   my-app               # preflight → replay → ZAP → normalize → coverage
-python -m dast report my-app               # lifecycle diff → SARIF   (--upload to publish)
-```
-
-**Or let a model write the `auth:` block for you** (`--discover`). It reads the login page,
-proposes the login steps and several candidate proofs, then **verifies** one by logging in —
-a proof is written only after it is observed to hold while logged in **and** to fail while
-logged out. If nothing survives, you get the skeleton, never a config that looks finished and
-is not. Inside Nationwide, set `LLM_PROVIDER=copilot` so the model call goes through the
-approved Copilot CLI (the direct Anthropic API is policy-blocked):
-
-```bash
-export MY_APP_USER=…  MY_APP_PASS=…  LLM_PROVIDER=copilot   # Copilot CLI on PATH + COPILOT_GITHUB_TOKEN
-python -m dast onboard my-app --base-url http://my-app:8443 --login-url /login \
-  --zap-proxy http://localhost:8080 --discover
-```
-
-The login (`selectors` shorthand or a `steps` list), the proof of authentication (`js`,
-`route` or `selector`), the API URL patterns, scope and scan posture all come from `app.yaml`
-and are validated against `contracts/app.schema.json`. Nothing is inherited from the pilot.
 
 ### Option B — local dev loop
 
@@ -155,16 +135,18 @@ and are validated against `contracts/app.schema.json`. Nothing is inherited from
 # 1. Start the pilot app + ZAP daemon on one network
 docker network create dast
 docker run -d --name juice --network dast -p 3000:3000 bkimminich/juice-shop
+export ZAP_API_KEY=$(openssl rand -hex 24)   # ZAP refuses unkeyed API calls; the runner sends this (W4-4)
 docker run -d --name zap  --network dast -p 8080:8080 zaproxy/zap-stable \
   zap.sh -daemon -host 0.0.0.0 -port 8080 -silent \
-  -config api.disablekey=true -config 'api.addrs.addr.name=.*' -config api.addrs.addr.regex=true
+  -config api.key="$ZAP_API_KEY" -config 'api.addrs.addr.name=.*' -config api.addrs.addr.regex=true
 
 # 2. End-to-end runner (preflight → auth replay → scope-enforced scan → normalize)
 python -m runner.main \
   --scope security/dast/juice-shop/scope.json \
   --flow  security/dast/juice-shop/flow.py \
   --base-url http://juice:3000 --records-out out/records.json
-#   -> gate: {authenticated, scope_ok, has_high_or_medium, passed: true}  (exit 0)
+#   -> gate: {mode: expect-findings, authenticated, scope_ok, routes_tested, has_high_or_medium,
+#             passed: true}  (exit 0)
 
 # 3. Lifecycle across two scans, coverage-aware (fix a finding → "resolved"; unreached → "not_scanned")
 python -m detections.lifecycle_diff out/records.json --app-id juice-shop --state out/state.json \
@@ -173,8 +155,15 @@ python -m detections.lifecycle_diff out/records.json --app-id juice-shop --state
 # 4. Publish to the GitHub Security tab (SARIF) from the LABELED set: the export drops only
 #    `resolved` and carries `not_scanned` forward, so GitHub never auto-closes a finding the scan
 #    did not reach (it marks anything absent from the newest upload "fixed").
-python -m detections.sarif_export out/labeled.json -o out.sarif
-python -m detections.github_upload out.sarif --owner <owner> --repo <repo>
+#    `--category` keeps one application's analysis separate from another's: GitHub keys an
+#    analysis by (tool, category, ref), and every app here exports under the same tool name, so
+#    two apps sharing a repository with no category share one analysis and the newer upload
+#    REPLACES the older one's alerts. `dast report` passes dast/<app> automatically.
+python -m detections.sarif_export out/labeled.json --category dast/<app> -o out.sarif
+#    --commit/--ref name the DEPLOYED build that was scanned; GitHub shows them on every alert
+#    as the affected branch. There is no default — the upload refuses without them (W1-8).
+python -m detections.github_upload out.sarif --owner <owner> --repo <repo> \
+  --commit <full SHA of the deployed build> --ref refs/heads/<deployed branch>
 ```
 
 The results pipeline also runs standalone against the committed fixture (no scanner needed):
@@ -192,11 +181,11 @@ is what scans replay (deterministic — protects the lifecycle diff).
 
 ```bash
 # 1. Seed a session once (human logs in; --assisted auto-logs-in the pilot). Saved gitignored.
-python -m authoring.seed --base-url http://juice:3000 --zap-proxy http://localhost:8080 \
-  --assisted --storage-state .secrets/storageState.json     # AUTH_EMAIL/AUTH_PASSWORD from env
+python -m authoring.seed --app juice-shop --zap-proxy http://localhost:8080 --assisted
+#    base_url + storage_state come from the app config; AUTH_EMAIL/AUTH_PASSWORD from env
 
 # 2. Explore from a seed config (storage_state + seed_routes); LLM primary, deterministic fallback.
-python -m authoring.explore --seed security/dast/juice-shop/seed.json \
+python -m authoring.explore --app juice-shop --seed security/dast/juice-shop/seed.json \
   --scope security/dast/juice-shop/scope.json --zap-proxy http://localhost:8080 --out-dir rec/
 #   --no-llm forces the deterministic fallback proposer
 
@@ -213,13 +202,13 @@ python -m detections.lifecycle_diff out/records.json --app-id juice-shop \
 
 ```bash
 pip install -r requirements-dev.txt
-pytest -q          # 213 tests
+pytest -q          # 300 tests
 ```
 
 Testing philosophy is **objective / test-first**: expectations are anchored to independent
 oracles (an external SHA tool, the official OASIS SARIF schema, published CWE facts, the raw
 fixture, sensitivity checks), and the safety-critical modules were written test-first (tests
-committed red, then implemented to green). See `docs/validation_and_testing.md`.
+committed red, then implemented to green). See `docs/junior_engineer/validation_and_testing.md`.
 
 ## Safety (NFR-2 — the top guardrail)
 
@@ -236,9 +225,11 @@ and a **redactor** that scrubs DOM/XHR bodies before anything reaches the model.
 
 ## Docs
 
-| Doc (`docs/`) | What |
+| Doc (`docs/junior_engineer/`) | What |
 |---|---|
 | `architecture_overview.md` | **Start here** — front-to-back: how every part fits, the LLM's role, diagrams |
+| `remaining_work_plan.md` | The 3-week scope + component inventory |
+| `testing_and_running_roadmap.md` | How to run/test (both paths), verification checklist, containerization issues + fixes |
 | `validation_and_testing.md` | Objective-testing method, catalogue, acceptance checklist |
 | `reproducing_the_sample.md` | Regenerate the ZAP fixture from scratch |
 | `sarif_exporter_design.md`, `github_upload_design.md`, `lifecycle_diff_design.md` | Results-pipeline component designs |
@@ -246,10 +237,18 @@ and a **redactor** that scrubs DOM/XHR bodies before anything reaches the model.
 | `authoring_clis_design.md` | Phase 2 record/generate/validate design + the LLM safety architecture |
 | `seeded_session_exploration_design.md` | Seeded-session + LLM exploration loop (`seed`/`explore`), coverage-aware lifecycle (R1/R2) |
 | `chromium_and_playwright_setup.md` | All Playwright/Chromium usage + gotchas |
+| `../onboarding_a_new_application.md` | **Onboarding a new app** — the procedure, the decisions, the failure modes |
+| `../deterministic_vs_llm_discovery.md` | **Deterministic vs LLM-guided discovery** — what each path found, measured, and what running it taught us |
+| `../dast_poc_remediation_plan.md` | The issue register and phase plan derived from the funding review |
 | `decisions_and_known_issues.md` | Every design decision (D1–D10) + known gaps (KI1–KI4) |
 
-Background specs: `docs/dast_poc_requirements.md`, `dast_poc_3week_plan.md`,
-`dast_poc_demo_plan.md`, `dast_poc_day1_runbook.md`.
+Current specs: `docs/dast_poc_requirements.md`, `docs/dast_first_internal_app_readiness.md`,
+`docs/dast_poc_remediation_plan.md`.
+
+Superseded planning and demo material lives in [`docs/archive/`](docs/archive/) — the original
+design proposal, the funding review, the 3-week plan, the Day 1 runbook and the Phase 1 demo
+scripts. Kept because they explain why things are as they are, moved because they no longer
+describe how the tool works.
 
 ## Known gaps (documented, out of POC scope)
 

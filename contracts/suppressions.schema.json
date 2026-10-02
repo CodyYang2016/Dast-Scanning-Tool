@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nationwide.com/ssd-dast-poc/contracts/suppressions.schema.json",
+  "title": "Per-application finding suppressions",
+  "description": "security/dast/<app>/suppressions.yaml — the recorded, reviewable decision that a finding is a false positive, an accepted risk, won't be fixed, or belongs to test data (W1-5). A suppressed finding is still scanned and still published; it stops counting toward the report's policy gate and its counts. Accepted risk and won't-fix MUST expire, so the decision is revisited rather than becoming permanent by accident.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["suppressions"],
+  "properties": {
+    "suppressions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["fingerprint", "reason", "justification"],
+        "properties": {
+          "fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$",
+                          "description": "The finding's identity (detection.schema.json). Rule, endpoint and parameter below are for the human reading this file."},
+          "reason": {"type": "string", "enum": ["false_positive", "accepted_risk", "wont_fix", "test_data"]},
+          "justification": {"type": "string", "minLength": 1,
+                            "description": "Why. A reviewer must be able to check it without asking."},
+          "owner": {"type": "string", "minLength": 1},
+          "expires": {"type": "string", "format": "date", "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                      "description": "YYYY-MM-DD. After this date the finding counts again and `dast report` says the suppression expired."},
+          "rule_id": {"type": "string"},
+          "endpoint": {"type": "string"},
+          "parameter": {"type": ["string", "null"]},
+          "github_alert": {"type": "integer", "description": "The GitHub alert this was imported from, if any."}
+        },
+        "allOf": [
+          {"if": {"properties": {"reason": {"enum": ["accepted_risk", "wont_fix"]}}},
+           "then": {"required": ["expires"]}}
+        ]
+      }
+    }
+  }
+}

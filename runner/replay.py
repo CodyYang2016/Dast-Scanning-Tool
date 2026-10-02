@@ -80,25 +80,47 @@ def wait_for_auth(page, base_url: str, proof: dict, timeout_ms: int = 15000) -> 
     raise AuthProofError(f"unknown auth.proof mode '{mode}'")
 
 
-class FlowError(Exception):
-    """Raised when a journey step cannot be executed as a browser step at all.
+class AuthenticationError(RuntimeError):
+    """The scan could not log in. One line for the operator, plus what to do (W5-4)."""
 
-    Distinct from a failed check: nothing about the application is wrong, the plan is. Carried as
-    its own type so the runner can name the offending step instead of letting a Playwright
-    traceback out of `dast scan`."""
-
-
-# What Chromium says when a navigation turns into a download instead of a page.
-_DOWNLOAD_MARKER = "Download is starting"
+    def __init__(self, message: str, hint: str = ""):
+        super().__init__(message)
+        self.hint = hint
 
 
-def _as_flow_error(exc: BaseException) -> BaseException:
-    """Translate an unexecutable-journey failure into FlowError; leave everything else alone."""
-    if _DOWNLOAD_MARKER in str(exc):
-        return FlowError(
-            "a journey step navigated to a file download rather than a page, so the flow "
-            f"cannot be replayed: {exc}")
-    return exc
+def classify_login_failure(exc: BaseException, base_url: str) -> AuthenticationError:
+    """Turn whatever the login raised into one actionable line. Never a traceback (W5-4)."""
+    import re
+    text = str(exc)
+    first = text.strip().splitlines()[0] if text.strip() else type(exc).__name__
+    if "Executable doesn't exist" in text:
+        return AuthenticationError(
+            "the browser could not start (Playwright's Chromium is not installed)",
+            hint="run: python -m playwright install chromium")
+    # The generated flow raises a plain RuntimeError("auth check …") for its proof; same meaning.
+    if isinstance(exc, AuthProofError) or first.startswith(("auth check", "authentication not proven")):
+        return AuthenticationError(
+            f"the login was submitted, but authentication was not proven — {first}",
+            hint="check the credentials, and that auth.proof matches a logged-in page")
+    if type(exc).__name__ == "TimeoutError":
+        m = re.search(r'waiting for (?:locator\()?"?([^"\n)]+)"?\)?', text)
+        what = m.group(1) if m else "an element"
+        return AuthenticationError(
+            f"login page element not found: {what}",
+            hint="check auth.selectors / auth.steps against the login page, and that the page "
+                 "loads through ZAP (onboarding §1)")
+    if re.search(r"ERR_(PROXY|CONNECTION|NAME_NOT_RESOLVED|ADDRESS)", text):
+        return AuthenticationError(f"could not reach {base_url} through ZAP — {first}",
+                                   hint="check ZAP is up and can resolve the target host")
+    return AuthenticationError(f"{type(exc).__name__}: {first}")
+
+
+def scope_first(guard) -> None:
+    """If the flow failed after the guard blocked a request, the block is the cause and the
+    failure its symptom: report the scope violation. Measured: a login flow that navigated to an
+    off-scope host was reported as "authentication failed — net::ERR_FAILED" when the truth was
+    a safety event."""
+    guard.raise_if_violated()
 
 
 class SessionDeadError(Exception):
@@ -160,22 +182,40 @@ def load_flow(flow_path: str):
 
 
 def _seed_cookies(context, base_url: str, cookies: dict) -> None:
+    """Put configured cookies on the scanning context before the flow runs.
+
+    Some applications keep test-relevant state in a cookie the scanner would never set on its
+    own. DVWA's security level is one: without it a scan of a deliberately vulnerable
+    application found nothing, with the injection rule completing 660 requests and raising no
+    alerts. State a scan depends on belongs in configuration (W6-8).
+    """
     if not cookies:
         return
     from urllib.parse import urlsplit
     host = urlsplit(base_url).hostname
-    context.add_cookies([{"name": key, "value": str(value), "domain": host, "path": "/"}
-                         for key, value in cookies.items()])
+    context.add_cookies([{"name": k, "value": str(v), "domain": host, "path": "/"}
+                         for k, v in cookies.items()])
 
 
 def _context_cookies(context, base_url: str) -> dict[str, str]:
+    """The live session the scan just established, for this host only.
+
+    Handed to the caller through a callback rather than returned in the result: a session
+    cookie is live credential material and must not reach an artifact. It exists so the state
+    probes can see the application as the SCAN saw it — probing without it returns the login
+    page, whose digest is the same whatever changed behind it.
+    """
     host = host_of(base_url)
     try:
         jar = context.cookies()
     except Exception:
         return {}
-    return {cookie["name"]: cookie["value"] for cookie in jar or []
-            if host is None or str(cookie.get("domain", "")).lstrip(".") in (host,)}
+    out: dict[str, str] = {}
+    for c in jar or []:
+        domain = str(c.get("domain", "")).lstrip(".")
+        if host is None or domain == host or host.endswith("." + domain):
+            out[c["name"]] = c["value"]
+    return out
 
 
 def replay(scope: dict, flow_module, base_url: str, zap_proxy: str, headless: bool = True,
@@ -205,16 +245,16 @@ def replay(scope: dict, flow_module, base_url: str, zap_proxy: str, headless: bo
         _seed_cookies(context, base_url, cookies or {})
         page = context.new_page()
         # Safety layer 2: every browser request passes the scope guard before the proxy.
-        page.route("**/*", lambda route: guard.route_handler(route))
+        guard.attach(page)  # page.route + redirect hops
         try:
             run_params = inspect.signature(flow_module.run).parameters
-            try:
-                if evidence_dir and "evidence_dir" in run_params:
-                    result = flow_module.run(page, base_url, evidence_dir=evidence_dir)
-                else:
-                    result = flow_module.run(page, base_url)
-            except Exception as exc:
-                raise _as_flow_error(exc) from exc
+            if evidence_dir and "evidence_dir" in run_params:
+                result = flow_module.run(page, base_url, evidence_dir=evidence_dir)
+            else:
+                result = flow_module.run(page, base_url)
+        except Exception:
+            scope_first(guard)
+            raise
         finally:
             if evidence_dir and "evidence_dir" not in inspect.signature(flow_module.run).parameters:
                 page.screenshot(path=str(Path(evidence_dir) / "screenshot.png"), full_page=True)
@@ -254,13 +294,18 @@ def replay_seeded(scope: dict, base_url: str, zap_proxy: str, storage_state: str
             ctx_kwargs["record_har_path"] = str(Path(evidence_dir) / "active-scan.har")
         context = browser.new_context(**ctx_kwargs)
         page = context.new_page()
-        page.route("**/*", lambda route: guard.route_handler(route))  # safety layer 2
+        guard.attach(page)  # safety layer 2: page.route + redirect hops
         try:
             liveness = prove_auth_live(page, base_url, seed_routes[0], token_check)
             if not liveness["alive"]:
                 raise SessionDeadError(liveness["reason"])
             for route in seed_routes:
                 page.goto(base_url + route, wait_until="networkidle")
+        except SessionDeadError:
+            raise
+        except Exception:
+            scope_first(guard)
+            raise
         finally:
             if evidence_dir:
                 page.screenshot(path=str(Path(evidence_dir) / "screenshot.png"), full_page=True)

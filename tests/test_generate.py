@@ -12,17 +12,17 @@ from pathlib import Path
 import pytest
 from jsonschema import Draft202012Validator
 
+from authoring.appconfig import load_app_config
 from authoring.generate import (
     emit_lock,
+    generate,
     emit_manifest,
     emit_scope,
     emit_zap_policy,
     journey_from_trace,
     parse_plan_text,
     render_flow,
-    submit_steps,
     validate_plan,
-    with_submit_steps,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -43,24 +43,8 @@ TRACE = {
     "api": [{"method": "GET", "url": "http://juice:3000/rest/user/whoami", "params": []}],
 }
 
-PLAN = {
-    "app_id": "juice-shop",
-    "base_url": "http://juice:3000",
-    "login": {
-        "url": "/#/login",
-        "email_selector": "#email",
-        "password_selector": "#password",
-        "submit_selector": "#loginButton",
-        "token_check": "window.localStorage.getItem('token')",
-    },
-    "journey": [
-        {"action": "goto", "target": "/#/basket"},
-        {"action": "api_get", "target": "/rest/user/whoami"},
-    ],
-}
-
-# App config the deterministic transforms read (tests are exempt from the no-app-specifics
-# guard; core modules take all app specifics from a config exactly like this).
+# The operator config that used to be hard-coded inside generate.py. A fixture rather than the
+# committed juice-shop file, so these stay pure unit tests with no dependency on an app dir.
 CONFIG = {
     "app_id": "juice-shop",
     "environment_class": "dev",
@@ -75,7 +59,22 @@ CONFIG = {
         "credentials": {"email_env": "AUTH_EMAIL", "password_env": "AUTH_PASSWORD"},
     },
     "ui": {"dismiss_selectors": ["button[aria-label='Close Welcome Banner']"]},
-    "api": {"patterns": ["/rest/", "/api/"]},
+}
+
+PLAN = {
+    "app_id": "juice-shop",
+    "base_url": "http://juice:3000",
+    "login": {
+        "url": "/#/login",
+        "email_selector": "#email",
+        "password_selector": "#password",
+        "submit_selector": "#loginButton",
+        "token_check": "window.localStorage.getItem('token')",
+    },
+    "journey": [
+        {"action": "goto", "target": "/#/basket"},
+        {"action": "api_get", "target": "/rest/user/whoami"},
+    ],
 }
 
 
@@ -93,13 +92,6 @@ def test_emit_scope_validates_and_allowlists_host():
 def test_journey_from_trace_is_schema_valid():
     plan = journey_from_trace(TRACE, CONFIG)
     Draft202012Validator(json.loads(JOURNEY_SCHEMA.read_text())).validate(plan)
-
-
-def test_journey_from_trace_leaves_out_a_document_the_crawl_walked_into():
-    """A goto step for a download cannot be replayed at all -- Chromium aborts the navigation."""
-    trace = dict(TRACE, index=["/#/basket", "/docs/DVWA_v1.3.pdf"])
-    targets = [s["target"] for s in journey_from_trace(trace, CONFIG)["journey"]]
-    assert "/#/basket" in targets and "/docs/DVWA_v1.3.pdf" not in targets
 
 
 def test_render_flow_is_deterministic():
@@ -141,7 +133,59 @@ def test_parse_plan_text_raises_on_garbage():
 # ---- FR-G3: policy / manifest / lock emission (parse correctly) --------------------------
 
 def test_zap_policy_has_intensity():
-    assert emit_zap_policy(CONFIG)["intensity"] in ("low", "medium", "high")
+    assert emit_zap_policy()["intensity"] in ("low", "medium", "high")
+
+
+# ---- config-driven behaviour (W2-1/W2-2/W2-9): no app knowledge left in the code ---------
+
+def test_emit_scope_takes_environment_class_from_config_not_a_default():
+    staging = {**CONFIG, "environment_class": "staging"}
+    assert emit_scope(TRACE, staging)["environment_class"] == "staging"
+
+
+def test_emit_scope_fails_when_the_config_omits_environment_class():
+    with pytest.raises(KeyError):
+        emit_scope(TRACE, {k: v for k, v in CONFIG.items() if k != "environment_class"})
+
+
+def test_deny_list_and_avoid_actions_come_from_config():
+    scope = emit_scope(TRACE, {**CONFIG, "scope": {"allow": ["juice"], "deny": ["*.cdn.test"],
+                                                   "avoid_actions": ["wipe"]}})
+    assert scope["fqdn_deny_list"] == ["*.cdn.test"]
+    assert scope["avoid_action_list"] == ["wipe"]
+
+
+def test_login_block_comes_from_config_not_the_model():
+    other = {**CONFIG, "auth": {**CONFIG["auth"],
+                                "login_url": "/signin",
+                                "selectors": {"email": "#user", "password": "#pw", "submit": ".go"}}}
+    plan = journey_from_trace(TRACE, other)
+    assert plan["login"]["url"] == "/signin"
+    assert plan["login"]["email_selector"] == "#user"
+
+
+def test_rendered_flow_uses_only_this_apps_banners():
+    src = render_flow(PLAN, {**CONFIG, "ui": {"dismiss_selectors": [".my-cookie-bar"]}})
+    assert ".my-cookie-bar" in src
+    assert "Close Welcome Banner" not in src
+
+
+def test_rendered_flow_for_an_app_with_no_banners_has_an_empty_tuple():
+    src = render_flow(PLAN, {**CONFIG, "ui": {"dismiss_selectors": []}})
+    assert "for sel in ():" in src
+
+
+def test_rendered_flow_uses_the_configured_proof():
+    src = render_flow(PLAN, {**CONFIG,
+                             "auth": {**CONFIG["auth"], "proof": {"js": "window.APP.isLoggedIn"}}})
+    assert "window.APP.isLoggedIn" in src
+    assert "localStorage" not in src
+
+
+def test_committed_pilot_config_still_renders_the_pilot_flow():
+    # End-to-end on the real file: the app dir is the only place naming the pilot.
+    src = render_flow(PLAN, load_app_config("juice-shop"))
+    assert "Close Welcome Banner" in src and "#loginButton" in src
 
 
 def test_manifest_and_lock_are_json_serializable():
@@ -151,220 +195,246 @@ def test_manifest_and_lock_are_json_serializable():
     assert "playwright_version" in json.loads(json.dumps(lock))
 
 
-# ---- the model asked for must match the selected provider --------------------------------
-# A hardcoded default sent Anthropic's model name to the copilot CLI, which rejected it and
-# dropped every run to plan_source=fallback while looking like a model-availability problem.
+# ---- W2-10/W2-11: any login shape, any proof of authentication --------------------------
+# A generated flow must work for an application that has a username field and a session
+# cookie, not just an SPA with an email field and a JS token. Oracle: Python's compiler plus
+# the specific calls each mode must and must not emit.
 
-def test_make_plan_asks_the_provider_for_its_own_default_model(monkeypatch):
-    from authoring import generate as generate_mod
+DVWA_CONFIG = {
+    "app_id": "dvwa",
+    "environment_class": "dev",
+    "base_url": "http://dvwa",
+    "scope": {"allow": ["dvwa"]},
+    "auth": {
+        "mode": "form",
+        "login_url": "/login.php",
+        "steps": [
+            {"action": "fill", "selector": "input[name=username]", "value": "identifier"},
+            {"action": "fill", "selector": "input[name=password]", "value": "secret"},
+            {"action": "click", "selector": "input[type=submit]"},
+        ],
+        "proof": {"route": {"path": "/index.php", "forbid_redirect_to": "login.php"}},
+    },
+}
 
-    monkeypatch.setenv("LLM_PROVIDER", "copilot")
-    monkeypatch.delenv("COPILOT_MODEL", raising=False)
-    asked = {}
-
-    def fake_plan_from_llm(trace, model, api_key, config=None):
-        asked["model"] = model
-        return dict(PLAN)
-
-    monkeypatch.setattr(generate_mod.llm_backend, "available", lambda api_key=None: True)
-    monkeypatch.setattr(generate_mod, "plan_from_llm", fake_plan_from_llm)
-
-    _, source = generate_mod.make_plan(TRACE, CONFIG, use_llm=True)
-
-    assert source == "llm" and asked["model"] == "gpt-5.5"
-
-
-# ---- --require-llm: a broken provider must not masquerade as a deliberate fallback --------
-
-def test_make_plan_requires_llm_raises_when_the_llm_plan_fails(monkeypatch):
-    import pytest
-    from authoring import generate as generate_mod
-    from authoring.llm_backend import LLMRequiredError
-
-    monkeypatch.setattr(generate_mod.llm_backend, "available", lambda api_key=None: True)
-    monkeypatch.setattr(generate_mod, "plan_from_llm",
-                        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("model unavailable")))
-    with pytest.raises(LLMRequiredError):
-        generate_mod.make_plan(TRACE, CONFIG, use_llm=True, require_llm=True)
+DVWA_PLAN = {
+    "app_id": "dvwa",
+    "base_url": "http://dvwa",
+    "login": {"url": "/login.php", "steps": DVWA_CONFIG["auth"]["steps"]},
+    "journey": [{"action": "goto", "target": "/vulnerabilities/sqli/"},
+                {"action": "api_get", "target": "/vulnerabilities/brute/"}],
+}
 
 
-def test_make_plan_requires_llm_raises_when_no_provider_is_available(monkeypatch):
-    import pytest
-    from authoring import generate as generate_mod
-    from authoring.llm_backend import LLMRequiredError
-
-    monkeypatch.setattr(generate_mod.llm_backend, "available", lambda api_key=None: False)
-    with pytest.raises(LLMRequiredError):
-        generate_mod.make_plan(TRACE, CONFIG, use_llm=True, require_llm=True)
+def _compiles(src):
+    ast.parse(src)
+    return src
 
 
-def test_make_plan_requires_llm_rejects_the_contradictory_no_llm_combination():
-    import pytest
-    from authoring import generate as generate_mod
-    from authoring.llm_backend import LLMRequiredError
-
-    with pytest.raises(LLMRequiredError):
-        generate_mod.make_plan(TRACE, CONFIG, use_llm=False, require_llm=True)
+def test_plan_for_a_step_list_login_is_schema_valid():
+    plan = journey_from_trace({**TRACE, "app_id": "dvwa", "base_url": "http://dvwa"}, DVWA_CONFIG)
+    Draft202012Validator(json.loads(JOURNEY_SCHEMA.read_text())).validate(plan)
+    assert plan["login"]["steps"][0]["selector"] == "input[name=username]"
 
 
-def test_make_plan_without_require_llm_still_falls_back(monkeypatch):
-    from authoring import generate as generate_mod
+def test_rendered_flow_drives_a_username_login():
+    src = _compiles(render_flow(DVWA_PLAN, DVWA_CONFIG))
+    assert 'page.fill("input[name=username]", identifier)' in src
+    assert 'page.fill("input[name=password]", secret)' in src
+    assert 'page.click("input[type=submit]")' in src
 
-    monkeypatch.setattr(generate_mod.llm_backend, "available", lambda api_key=None: False)
-    _plan, source = generate_mod.make_plan(TRACE, CONFIG, use_llm=True)
+
+def test_route_proof_checks_status_and_login_redirect_instead_of_a_token():
+    src = _compiles(render_flow(DVWA_PLAN, DVWA_CONFIG))
+    assert "/index.php" in src and "login.php" in src
+    assert "wait_for_function" not in src        # nothing to evaluate in JS
+    assert "localStorage" not in src
+
+
+def test_cookie_session_flow_sends_no_bearer_header():
+    # There is no token to bear; the session rides on the context's cookies.
+    src = _compiles(render_flow(DVWA_PLAN, DVWA_CONFIG))
+    assert "Authorization" not in src and "Bearer" not in src
+    assert 'page.request.get(base_url + "/vulnerabilities/brute/")' in src
+
+
+def test_selector_proof_waits_for_a_logged_in_marker():
+    cfg = {**DVWA_CONFIG, "auth": {**DVWA_CONFIG["auth"], "proof": {"selector": "nav .logout"}}}
+    src = _compiles(render_flow(DVWA_PLAN, cfg))
+    assert 'page.wait_for_selector("nav .logout"' in src
+
+
+def test_js_proof_still_renders_the_token_path_with_a_bearer_header():
+    src = _compiles(render_flow(PLAN, CONFIG))
+    assert "wait_for_function" in src and "Bearer" in src
+
+
+def test_every_proof_mode_raises_when_authentication_cannot_be_proven():
+    # Fail closed: each rendered flow must refuse to continue rather than scan logged out.
+    for cfg, plan in ((CONFIG, PLAN), (DVWA_CONFIG, DVWA_PLAN),
+                      ({**DVWA_CONFIG, "auth": {**DVWA_CONFIG["auth"],
+                                                "proof": {"selector": ".logout"}}}, DVWA_PLAN)):
+        assert "raise RuntimeError" in render_flow(plan, cfg)
+
+
+# ---- the model's login block must not be able to fail the LLM path ----------------------
+# The login block is operator config: make_plan overwrites whatever the model sent. But
+# plan_from_llm validated the model's version FIRST, so an irrelevant field could kill the
+# whole call and fall back silently. Observed live on DVWA: asked for a plan against a schema
+# documenting both login forms, the model emitted both the shorthand selectors AND a steps
+# list; `oneOf` rejected "both" and the LLM path died on a field we discard.
+
+from authoring.generate import make_plan
+
+OVER_SPECIFIED_LOGIN = {
+    "app_id": "dvwa", "base_url": "http://dvwa",
+    "login": {                                   # both forms at once — off-contract
+        "url": "/login.php",
+        "email_selector": "input[name=username]",
+        "password_selector": "input[name=password]",
+        "submit_selector": "input[name=Login]",
+        "steps": [{"action": "fill", "selector": "input[name=username]", "value": "identifier"}],
+    },
+    "journey": [{"action": "goto", "target": "/vulnerabilities/sqli/?id=1"}],
+}
+
+
+def test_llm_path_survives_an_over_specified_login_block(monkeypatch):
+    monkeypatch.setattr("authoring.generate.plan_from_llm",
+                        lambda trace, model, api_key, config=None: dict(OVER_SPECIFIED_LOGIN))
+    plan, source = make_plan(TRACE, CONFIG, api_key="k")
+    assert source == "llm"                       # not silently dropped to the fallback
+    assert plan["journey"] == OVER_SPECIFIED_LOGIN["journey"]     # the model's routes survive
+
+
+def test_the_config_login_block_replaces_whatever_the_model_sent(monkeypatch):
+    monkeypatch.setattr("authoring.generate.plan_from_llm",
+                        lambda trace, model, api_key, config=None: dict(OVER_SPECIFIED_LOGIN))
+    plan, _ = make_plan(TRACE, CONFIG, api_key="k")
+    assert plan["login"]["email_selector"] == "#email"           # from CONFIG, not the model
+    assert "steps" not in plan["login"]
+
+
+def test_a_model_plan_with_no_login_block_is_fine(monkeypatch):
+    no_login = {k: v for k, v in OVER_SPECIFIED_LOGIN.items() if k != "login"}
+    monkeypatch.setattr("authoring.generate.plan_from_llm",
+                        lambda trace, model, api_key, config=None: dict(no_login))
+    plan, source = make_plan(TRACE, CONFIG, api_key="k")
+    assert source == "llm" and plan["login"]["url"] == "/#/login"
+
+
+def test_an_off_contract_journey_still_falls_back(monkeypatch):
+    # The part the model IS responsible for must still be validated.
+    bad = {**OVER_SPECIFIED_LOGIN, "journey": [{"action": "rm -rf", "target": "/"}]}
+    monkeypatch.setattr("authoring.generate.plan_from_llm",
+                        lambda trace, model, api_key, config=None: dict(bad))
+    _, source = make_plan(TRACE, CONFIG, api_key="k")
     assert source == "fallback"
 
 
-# ---- controlled mutation: a submitted form replays as fill + submit ----------------------
+class _FakeAnthropicModule:
+    """Stands in for the anthropic SDK so plan_from_llm runs for real, offline."""
+    def __init__(self, reply: str):
+        self._reply = reply
 
-SUBMIT_TRACE = dict(
-    TRACE,
-    interactions=TRACE["interactions"] + [
-        {"type": "goto", "url": "http://juice:3000/#/search"},
-        {"type": "submit", "url": "http://juice:3000/#/search",
-         "selector": "form >> nth=0", "fields": ["q"]},
-    ],
-)
-SUBMIT_CONFIG = dict(CONFIG, explore={"test_data": {"q": "dast-test"}})
+    def Anthropic(self, api_key=None):           # noqa: N802 — mirrors the SDK's name
+        reply = self._reply
 
-
-def test_a_submitted_form_becomes_a_goto_then_a_submit_step():
-    plan = journey_from_trace(SUBMIT_TRACE, SUBMIT_CONFIG)
-    Draft202012Validator(json.loads(JOURNEY_SCHEMA.read_text())).validate(plan)
-    assert plan["journey"][-2:] == [
-        {"action": "goto", "target": "/#/search"},
-        {"action": "submit_form", "target": "form >> nth=0", "fields": ["q"]},
-    ]
+        class _Messages:
+            def create(self, **kw):
+                return type("Msg", (), {"content": [type("B", (), {"text": reply})()]})()
+        return type("Client", (), {"messages": _Messages()})()
 
 
-def test_a_plan_carries_field_names_but_never_values():
-    plan = journey_from_trace(SUBMIT_TRACE, SUBMIT_CONFIG)
-    assert "dast-test" not in json.dumps(plan)
+def _with_fake_anthropic(monkeypatch, reply):
+    import sys
+    monkeypatch.setitem(sys.modules, "anthropic", _FakeAnthropicModule(reply))
 
 
-def test_rendered_submit_fills_approved_values_and_submits_through_the_page():
-    src = render_flow(journey_from_trace(SUBMIT_TRACE, SUBMIT_CONFIG), SUBMIT_CONFIG)
-    ast.parse(src)
-    assert 'page.fill("form >> nth=0 >> [name=\\"q\\"]", "dast-test")' in src
-    # requestSubmit, so an app that intercepts its own forms in JS still sees the submit
-    assert "requestSubmit" in src
+def test_plan_from_llm_accepts_a_reply_whose_login_is_over_specified(monkeypatch):
+    """The real defect: plan_from_llm validated the model's login block before returning, so
+    a field make_plan discards could fail the call. Only the journey is the model's job."""
+    from authoring.generate import plan_from_llm
+    _with_fake_anthropic(monkeypatch, json.dumps(OVER_SPECIFIED_LOGIN))
+    plan = plan_from_llm(TRACE, "some-model", "k", config=CONFIG)
+    assert plan["journey"] == OVER_SPECIFIED_LOGIN["journey"]
+    assert plan["login"]["email_selector"] == "#email"       # replaced from config
 
 
-def test_rendered_submit_leaves_out_a_field_with_no_approved_value():
-    trace = dict(SUBMIT_TRACE, interactions=TRACE["interactions"] + [
-        {"type": "goto", "url": "http://juice:3000/#/search"},
-        {"type": "submit", "url": "http://juice:3000/#/search",
-         "selector": "form >> nth=0", "fields": ["q", "unapproved"]},
-    ])
-    src = render_flow(journey_from_trace(trace, SUBMIT_CONFIG), SUBMIT_CONFIG)
-    assert "unapproved" not in src and "dast-test" in src
+def test_plan_from_llm_still_rejects_an_off_contract_journey(monkeypatch):
+    from authoring.generate import plan_from_llm
+    bad = {**OVER_SPECIFIED_LOGIN, "journey": [{"action": "exfiltrate", "target": "/"}]}
+    _with_fake_anthropic(monkeypatch, json.dumps(bad))
+    with pytest.raises(Exception):
+        plan_from_llm(TRACE, "some-model", "k", config=CONFIG)
 
 
-def test_rendered_submit_escapes_a_quote_in_a_test_value():
-    """Values are json.dumps'd, so a quote cannot close the literal and break the flow."""
-    config = dict(CONFIG, explore={"test_data": {"q": 'he said "hi"'}})
-    src = render_flow(journey_from_trace(SUBMIT_TRACE, config), config)
-    ast.parse(src)
-    assert '"he said \\"hi\\""' in src
+def test_plan_from_llm_rejects_a_journey_step_with_an_unknown_field(monkeypatch):
+    from authoring.generate import plan_from_llm
+    bad = {**OVER_SPECIFIED_LOGIN,
+           "journey": [{"action": "goto", "target": "/x", "headers": {"X": "y"}}]}
+    _with_fake_anthropic(monkeypatch, json.dumps(bad))
+    with pytest.raises(Exception):
+        plan_from_llm(TRACE, "some-model", "k", config=CONFIG)
 
 
-# ---- an LLM-authored plan may not quietly drop (or invent) a form submission -------------
+# ---- a journey target may be absolute; the renderer must not concatenate it -------------
+# The renderer emitted `base_url + target`, which is right for "/x" and catastrophic for
+# "http://host/x" — it produced page.goto("http://dvwahttp://dvwa/security.php"). Observed on
+# the first successful live LLM run: asked for routes from a trace whose `index` holds
+# absolute URLs, the model answered with absolute URLs, which is entirely reasonable.
 
-def test_an_llm_plan_keeps_the_submit_the_walk_performed():
-    """The walk's submit is evidence: a plan that omits it would scan less than was reached."""
-    from authoring.generate import with_submit_steps
-
-    journey = with_submit_steps([{"action": "goto", "target": "/#/about"}],
-                                SUBMIT_TRACE, "http://juice:3000")
-    assert journey == [
-        {"action": "goto", "target": "/#/about"},
-        {"action": "goto", "target": "/#/search"},
-        {"action": "submit_form", "target": "form >> nth=0", "fields": ["q"]},
-    ]
-
-
-def test_an_llm_planned_submit_is_not_duplicated_and_gets_its_page():
-    from authoring.generate import with_submit_steps
-
-    journey = with_submit_steps([{"action": "submit_form", "target": "form >> nth=0"}],
-                                SUBMIT_TRACE, "http://juice:3000")
-    assert journey == [
-        {"action": "goto", "target": "/#/search"},
-        {"action": "submit_form", "target": "form >> nth=0", "fields": ["q"]},
-    ]
+ABS_PLAN = {
+    "app_id": "dvwa", "base_url": "http://dvwa",
+    "login": {"url": "/login.php", "steps": DVWA_CONFIG["auth"]["steps"]},
+    "journey": [{"action": "goto", "target": "http://dvwa/security.php"},
+                {"action": "api_get", "target": "http://dvwa/vulnerabilities/sqli/?id=1"},
+                {"action": "goto", "target": "/relative/stays/relative"}],
+}
 
 
-def test_an_llm_planned_submit_of_a_form_the_walk_never_posted_is_dropped():
-    """The only evidence a form is allow-listed with approved data is that the gate let it post."""
-    from authoring.generate import with_submit_steps
-
-    journey = with_submit_steps([{"action": "submit_form", "target": "#invented"}],
-                                dict(SUBMIT_TRACE, interactions=TRACE["interactions"]),
-                                "http://juice:3000")
-    assert journey == []
+def test_absolute_targets_are_not_glued_onto_the_base_url():
+    src = render_flow(ABS_PLAN, DVWA_CONFIG)
+    assert "base_url + \"http://" not in src            # the bug
+    assert 'page.goto("http://dvwa/security.php"' in src
+    assert 'page.request.get("http://dvwa/vulnerabilities/sqli/?id=1"' in src
 
 
-def test_an_llm_planned_submit_carries_the_fields_the_walk_filled_not_the_plans():
-    from authoring.generate import with_submit_steps
-
-    journey = with_submit_steps(
-        [{"action": "submit_form", "target": "form >> nth=0", "fields": ["q", "invented"]}],
-        SUBMIT_TRACE, "http://juice:3000")
-    assert journey[-1]["fields"] == ["q"]
+def test_relative_targets_still_use_the_base_url():
+    src = render_flow(ABS_PLAN, DVWA_CONFIG)
+    assert 'page.goto(base_url + "/relative/stays/relative"' in src
 
 
-def test_a_plan_with_no_journey_at_all_still_gets_the_walks_submits():
-    from authoring.generate import with_submit_steps
-
-    assert with_submit_steps(None, SUBMIT_TRACE, "http://juice:3000") == [
-        {"action": "goto", "target": "/#/search"},
-        {"action": "submit_form", "target": "form >> nth=0", "fields": ["q"]},
-    ]
+def test_a_flow_mixing_both_forms_compiles():
+    ast.parse(render_flow(ABS_PLAN, DVWA_CONFIG))
 
 
-def test_the_llm_plan_prompt_asks_for_the_submits(monkeypatch):
-    from authoring import generate as generate_mod
+# ---- the bundle must record its own provenance (W2-14) ----------------------------------
+# `plan_source` was printed by the CLI and persisted nowhere, so "did a model author this
+# bundle?" could only be answered from terminal scrollback or by diffing the plan against a
+# freshly generated deterministic one. For a project whose safety argument is "the LLM emits
+# only a schema-validated plan, and here is that artifact", the artifact has to say so.
 
-    seen = {}
-
-    def fake_complete(system, user, model, **kwargs):
-        seen["user"] = user
-        return json.dumps({"app_id": "juice", "base_url": "http://juice:3000",
-                           "login": {"url": "/#/login"}, "journey": []})
-
-    monkeypatch.setattr(generate_mod.llm_backend, "complete", fake_complete)
-    plan = generate_mod.plan_from_llm(SUBMIT_TRACE, "m", "k", config=SUBMIT_CONFIG)
-    # Naming the action is not enough: a model that is not told how to build one emits a
-    # selector with no page, or fields it invented.
-    assert "submit_form" in seen["user"]
-    assert "`goto` of the page it was made on" in seen["user"]
-    assert "whose `fields` are its field names" in seen["user"]
-    assert "Field names only" in seen["user"]
-    # and the submit survives a plan that left it out
-    assert plan["journey"][-1]["action"] == "submit_form"
+def test_manifest_records_a_deterministic_plan_as_such():
+    m = emit_manifest(TRACE, plan_source="fallback")
+    assert m["plan_source"] == "fallback"
+    assert "model" not in m                      # no model was involved; do not imply one
 
 
-# ---- a submit that answered a challenge is not replayable -------------------------------
-
-INFERRED_TRACE = dict(
-    TRACE,
-    interactions=TRACE["interactions"] + [
-        {"type": "submit", "url": "http://juice:3000/#/search",
-         "selector": "form >> nth=0", "fields": ["q"], "inferred": []},
-        {"type": "submit", "url": "http://juice:3000/#/gate",
-         "selector": "form >> nth=1", "fields": ["answer", "note"], "inferred": ["answer"]},
-    ],
-)
+def test_manifest_records_the_model_that_authored_the_plan():
+    m = emit_manifest(TRACE, plan_source="llm", model="claude-opus-4-8")
+    assert m["plan_source"] == "llm" and m["model"] == "claude-opus-4-8"
 
 
-def test_a_submit_whose_value_was_inferred_is_left_out_of_the_bundle():
-    """Its answer was reasoned from what the page said then; posting it again is refused, so a
-    replay step would look like coverage and deliver none."""
-    steps = submit_steps(INFERRED_TRACE, "http://juice:3000")
-    assert [s["target"] for s in steps] == ["/#/search", "form >> nth=0"]
+def test_manifest_stays_backwards_compatible_for_callers_that_say_nothing():
+    m = emit_manifest(TRACE)
+    assert m["app_id"] == "juice-shop" and m["plan_source"] == "unknown"
 
 
-def test_a_plan_cannot_reinstate_an_inferred_submit():
-    journey = [{"action": "submit_form", "target": "form >> nth=1"}]
-    steps = with_submit_steps(journey, INFERRED_TRACE, "http://juice:3000")
-    assert all(s["target"] != "form >> nth=1" for s in steps)
+def test_generate_writes_the_provenance_it_used(tmp_path):
+    out = tmp_path / "bundle"
+    summary = generate(TRACE, str(out), CONFIG, use_llm=False)
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert summary["plan_source"] == "fallback"
+    assert manifest["plan_source"] == "fallback"     # the file agrees with the CLI output
+    assert manifest["trace_app_id"] == TRACE["app_id"]

@@ -10,6 +10,7 @@ from pathlib import Path
 
 from jsonschema import Draft202012Validator
 
+from authoring import record
 from authoring.record import build_trace
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -59,3 +60,17 @@ def test_interactions_preserve_order():
     types = [i["type"] for i in _trace()["interactions"]]
     # login sequence present and in order: goto -> fill -> click
     assert types.index("goto") < types.index("fill") < types.index("click")
+
+
+def test_a_forms_method_survives_into_the_trace():
+    # Reachability has to tell a GET form (whose parameters land in the URL, and so in
+    # coverage) from a POST one (whose do not).
+    t = record.build_trace("app", "http://app", [
+        {"type": "form", "url": "http://app/sqli/", "method": "GET", "fields": ["id"]}])
+    assert t["forms"] == [{"url": "http://app/sqli/", "method": "GET", "fields": ["id"]}]
+
+
+def test_a_form_event_without_a_method_defaults_to_get():
+    t = record.build_trace("app", "http://app", [
+        {"type": "form", "url": "http://app/x", "fields": ["a"]}])
+    assert t["forms"][0]["method"] == "GET"

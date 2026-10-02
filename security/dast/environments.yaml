@@ -1,0 +1,30 @@
+# The environment registry (W4-6): which class each scanned host belongs to.
+#
+# Preflight checks every host in a scope against this file before any traffic:
+#   * a host matching `prod_host_patterns` is refused, whatever environment_class says;
+#   * a host listed under `hosts` must match the scope's declared environment_class;
+#   * a `test` or `staging` host must be listed here at all. `dev` hosts need not be —
+#     disposable containers come and go.
+#
+# This file stands in for a real registry (a CMDB or an app inventory API). Point
+# $DAST_ENV_REGISTRY at another file to use one kept elsewhere. Patterns use shell globbing
+# (`*`, `?`) and are matched case-insensitively.
+
+prod_host_patterns:
+  - "*.prod.*"
+  - "*.prod"
+  - "prod.*"
+  - "prod-*"
+  - "*-prod"
+  - "*-prod.*"
+  - "*.production.*"
+  - "production.*"
+
+hosts:
+  # The bundled targets, on the compose network.
+  juice: dev
+  dvwa: dev
+  webgoat: dev
+  # An internal application is added here when it is onboarded, e.g.
+  #   orders.test.example.internal: test
+  #   "*.staging.example.internal": staging

@@ -4,13 +4,12 @@ Written and frozen BEFORE detections/lifecycle_diff.py exists, so the implementa
 conform to these — not the other way around. Oracle: hand-built fingerprint sets with
 known-correct labels (set theory), plus round-trip state persistence.
 
-See docs/lifecycle_diff_design.md for the frozen API and criteria.
+See docs/junior_engineer/lifecycle_diff_design.md for the frozen API and criteria.
 """
 
 import json
 from pathlib import Path
 
-import pytest
 from jsonschema import Draft202012Validator
 
 # Import target does not exist yet (test-first). Until it's implemented this whole module is
@@ -246,3 +245,87 @@ def test_not_scanned_record_validates_against_schema():
     out = diff([], prev, {"routes": [], "rules": []})
     assert out[0]["status"] == "not_scanned"
     Draft202012Validator(_DET_SCHEMA).validate(out[0])
+
+
+# ---- a write-enabled scan may not claim a fix (W2-15) -----------------------------------
+# Writes mutate the application, so scan N+1 sees a different app than scan N. A finding that
+# vanished might have been fixed, or the data it depended on might simply be gone. The diff
+# already refuses to claim `resolved` for a route it did not exercise (R2); the same honesty
+# applies when the scan itself changed the app underneath the comparison.
+
+def test_a_write_enabled_scan_labels_vanished_findings_not_scanned():
+    previous = [rec("aaa", endpoint="/orders", rule_id="40018")]
+    coverage = {"routes": ["/orders"], "rules": ["40018"], "policy": {"write_mode": "allow"}}
+    labels = _by_status(diff([], previous, coverage))
+    assert labels["not_scanned"] == {"aaa"} and not labels["resolved"]
+
+
+def test_a_read_only_scan_still_resolves_what_it_exercised():
+    previous = [rec("aaa", endpoint="/orders", rule_id="40018")]
+    coverage = {"routes": ["/orders"], "rules": ["40018"], "policy": {"write_mode": "deny"}}
+    labels = _by_status(diff([], previous, coverage))
+    assert labels["resolved"] == {"aaa"} and not labels["not_scanned"]
+
+
+def test_coverage_without_a_policy_block_behaves_as_before():
+    previous = [rec("aaa", endpoint="/orders", rule_id="40018")]
+    labels = _by_status(diff([], previous, {"routes": ["/orders"], "rules": ["40018"]}))
+    assert labels["resolved"] == {"aaa"}
+
+
+# ---- W6-10: claiming a fix needs parameter-level evidence -------------------------------
+
+PARAM_COV = {"routes": ["/sqli"], "rules": ["40018"], "route_params": {"/sqli": ["id"]}}
+
+
+def test_a_finding_resolves_when_its_parameter_was_exercised():
+    previous = [rec("aaa", endpoint="/sqli", rule_id="40018", parameter="id")]
+    assert _by_status(diff([], previous, PARAM_COV))["resolved"] == {"aaa"}
+
+
+def test_a_finding_does_not_resolve_when_its_parameter_never_was():
+    # The real case: /vulnerabilities/sqli was visited bare, so ?id= was never tested, yet
+    # the route counted as covered and the finding would have been called fixed.
+    cov = {**PARAM_COV, "route_params": {"/sqli": []}}
+    previous = [rec("aaa", endpoint="/sqli", rule_id="40018", parameter="id")]
+    assert _by_status(diff([], previous, cov))["not_scanned"] == {"aaa"}
+
+
+def test_a_finding_with_no_parameter_still_judges_at_route_level():
+    # Header and page-level findings have no parameter; route coverage is the right test.
+    previous = [rec("aaa", endpoint="/sqli", rule_id="40018", parameter=None)]
+    cov = {**PARAM_COV, "route_params": {"/sqli": []}}
+    assert _by_status(diff([], previous, cov))["resolved"] == {"aaa"}
+
+
+def test_coverage_without_parameter_data_behaves_as_before():
+    # Older coverage artifacts have no route_params; they must keep working.
+    previous = [rec("aaa", endpoint="/sqli", rule_id="40018", parameter="id")]
+    assert _by_status(diff([], previous, {"routes": ["/sqli"], "rules": ["40018"]}))["resolved"] \
+        == {"aaa"}
+
+
+# ---- a degraded scan may not claim a fix either -------------------------------------------
+# If the session died partway (even if it was recovered), part of the scan attacked a
+# logged-out application: a finding that vanished may simply not have been reachable.
+
+def test_a_scan_that_lost_its_session_labels_vanished_findings_not_scanned():
+    previous = [rec("aaa", endpoint="/orders", rule_id="40018")]
+    coverage = {"routes": ["/orders"], "rules": ["40018"],
+                "session": {"alive_throughout": False, "alive_at_end": True}}
+    labels = _by_status(diff([], previous, coverage))
+    assert labels["not_scanned"] == {"aaa"} and not labels["resolved"]
+
+
+def test_an_unhealthy_scan_labels_vanished_findings_not_scanned():
+    previous = [rec("aaa", endpoint="/orders", rule_id="40018")]
+    coverage = {"routes": ["/orders"], "rules": ["40018"], "health_gate": {"passed": False}}
+    labels = _by_status(diff([], previous, coverage))
+    assert labels["not_scanned"] == {"aaa"} and not labels["resolved"]
+
+
+def test_an_unverified_session_does_not_by_itself_block_resolution():
+    previous = [rec("aaa", endpoint="/orders", rule_id="40018")]
+    coverage = {"routes": ["/orders"], "rules": ["40018"],
+                "session": {"alive_throughout": None}, "health_gate": {"passed": True}}
+    assert _by_status(diff([], previous, coverage))["resolved"] == {"aaa"}

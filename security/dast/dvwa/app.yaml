@@ -1,37 +1,62 @@
-# DVWA - the second onboarded application.
+# DVWA (Damn Vulnerable Web Application) — the second onboarded application.
 #
-# DVWA uses a username, a PHPSESSID cookie, a provisioned identity, and route auth proof.
-# Create its database once through /setup.php before using the configured account.
+# This file is the whole onboarding: there is no DVWA-specific line anywhere in `authoring/`
+# or `runner/`, and tests/test_no_app_specifics.py fails the build if one appears. DVWA was
+# chosen as the acceptance target precisely because it breaks the pilot's assumptions:
+#   * it logs in with a USERNAME, not an email;
+#   * its session is a PHPSESSID cookie — there is no token reachable from JavaScript, so
+#     authentication has to be proven by visiting an authenticated page;
+#   * it has no self-registration, so the tool uses a provisioned identity;
+#   * it is server-rendered, so there is no XHR API surface to record.
+#
+# Environment prep (not configuration): the container needs its database created once via
+# setup.php -> "Create / Reset Database" before admin/password works.
 
 app_id: dvwa
 environment_class: dev
+# A throwaway container rebuilt by setup.php: someone can attest the data is expendable,
+# which is what write mode requires. A shared internal environment would stay `durable`.
 data_policy: disposable
-base_url: http://dvwa
+base_url: http://dvwa            # as ZAP resolves it on the `dast` network
 
 scope:
   allow: [dvwa]
   avoid_actions: [logout, setup, phpinfo, captcha]
+  # logout ends the session; setup resets the database; the captcha lesson loads Google
+  # reCAPTCHA, and a third-party asset is an out-of-scope request the scan refuses (D4).
 
 auth:
   mode: form
   login_url: /login.php
+  # A username field, so the three-selector shorthand does not fit. The form also carries an
+  # anti-CSRF `user_token`; driving the real form in a browser submits it for free.
   steps:
     - {action: fill, selector: "input[name=username]", value: identifier}
     - {action: fill, selector: "input[name=password]", value: secret}
     - {action: click, selector: "input[name=Login]"}
+  # No JS-visible token exists: the session is a PHPSESSID cookie. Proof is that an
+  # authenticated page answers and does not bounce us back to the login form.
   proof:
     route:
       path: /index.php
       forbid_redirect_to: login.php
-  identity: provisioned
+  identity: provisioned          # admin/password ships with the app; nothing is registered
   credentials:
     email_env: DVWA_USER
     password_env: DVWA_PASS
   storage_state: .secrets/dvwa-storageState.json
+  # DVWA keeps its security level in a cookie. Without it the app defaults to a hardened
+  # mode and a deliberately vulnerable application yields nothing — measured: the SQL
+  # injection rule completed 660 requests and raised no alerts. State the scan depends on
+  # belongs here, not in whatever the browser happened to inherit (W6-8).
   cookies:
     security: low
 
 record:
+  # Routes visited after login. The query strings matter as much as the paths: ZAP can only
+  # attack parameters it has SEEN, and visiting /vulnerabilities/sqli/ with no `id` leaves the
+  # injection point invisible (readiness SP-4). These are GETs, so the read-only posture in
+  # `explore.safe_forms` is unaffected.
   authenticated_routes:
     - /vulnerabilities/sqli/?id=1&Submit=Submit
     - /vulnerabilities/xss_r/?name=test
@@ -39,30 +64,72 @@ record:
     - /vulnerabilities/brute/?username=admin&password=test&Login=Login
     - /security.php
 
+# No `api:` block on purpose — DVWA is server-rendered and exposes no XHR API, so nothing
+# should be recorded as an API call.
+
 explore:
   seed_routes:
     - /index.php
     - /vulnerabilities/sqli/
     - /vulnerabilities/xss_r/
-  safe_forms: []
+  safe_forms: []                 # not needed: write_mode covers POST forms wholesale
   write_mode: deny
-  test_data:
+  # Writes are SUPPORTED here (data_policy is disposable) but left off pending one
+  # unexplained result: a write-enabled autonomous run covered 89 routes and produced 966
+  # records — the most of any run — yet the two SQL-injection highs a read-only run finds on
+  # ?id= were absent, with the route in the journey, in coverage, rule 40018 enabled and the
+  # scan completed to 100%. Most likely a submitted form changed DVWA's security level, or
+  # the per-rule budget thinned across the larger surface; neither is confirmed. Flip to
+  # `allow` to reproduce. That we cannot yet answer "why did this finding disappear" is the
+  # real gap (W6-2: record truncation and app state alongside coverage).
+  test_data:                     # only these field names are ever typed into a form
     name: dast-test
     message: dast-test-message
     ip: 127.0.0.1
     username: admin
     id: "1"
+    # Without this the brute-force lesson's form submits `password=` empty, so the parameter
+    # never reaches the scanner: `dast report` named it as the one remaining un-exercised
+    # parameter, and the one high-severity finding on it was seen in a single run out of
+    # sixteen. A throwaway value, never a real credential — and it is a LOGIN field, not a
+    # password-change field, so the credential guard (_CREDENTIAL_FIELDS) is unaffected.
     password: dast-test-password
   budgets:
     max_pages: 30
 
 scan:
+  # Posture is a choice, not a default (readiness SP-1..SP-5), and every exclusion here is a
+  # detection gap to disclose when these results are compared with another tool.
+  #
+  # DOM-XSS (40026) stays disabled, now with evidence rather than folklore: enabling it at
+  # attack_strength high drove Selenium browsers until the ZAP container was OOM-killed
+  # (exit 137) six minutes into a scan, taking the target down with it. Re-enabling it is a
+  # provisioning question — more memory for the daemon — not a flag (SP-3).
   policy:
     attack_strength: high
     alert_threshold: low
     disabled_rules: ["40026"]
   budgets:
     max_scan_min: 10
+  # Hashed into coverage.json so two scans can be compared for "was the app in the same
+  # condition?" — the question that cost an hour when five highs became zero.
   state_probes:
     - /security.php
     - /vulnerabilities/sqli/?id=1&Submit=Submit
+  # Every DVWA form carries a one-time `user_token`. ZAP does not know the name, so its attacks
+  # replayed a used token and DVWA rejected them; named here, ZAP fetches a fresh one per attack
+  # (W5-2). A session lost mid-scan is re-established by logging in again (scan.reauth, on by
+  # default).
+  anti_csrf_tokens: [user_token]
+  # Put DVWA's data back to its starting state before every scan (W6-1): its own "Create / Reset
+  # Database" button. Verified by the login page answering, which it does only once the database
+  # exists — a scan that cannot prove its starting state does not start.
+  reset:
+    url: /setup.php
+    steps:
+      - {action: click, selector: "input[name=create_db]"}
+    verify: {path: /login.php, contains: "Username"}
+  # DOM-based XSS, in its own pass after the main scan (W6-3). Measured on this container: over
+  # every page it hit the 15-minute limit but found the DOM-XSS lesson (and confirmed the
+  # reflected-XSS one executes) with ZAP at ~4.8 GiB and up throughout.
+  dom_xss: {enabled: true, max_min: 15}

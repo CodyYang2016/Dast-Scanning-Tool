@@ -108,3 +108,102 @@ def test_write_json_array_handles_empty():
     buf = io.StringIO()
     write_json_array(iter([]), buf)
     assert json.loads(buf.getvalue()) == []
+
+
+# ---- actionable findings: carry ZAP's remediation content (W1-1) -------------------------
+#
+# Oracle: counts transcribed from the committed fixture by hand, not computed by the code under
+# test. ZAP supplies description on 38/38 alerts, solution on 32, evidence on 26, attack on 7,
+# a reference on 27 (8 of them several newline-separated URLs), confidence on all 38.
+
+# sha256 of the sorted fixture fingerprints, captured BEFORE this change. None of the new fields
+# may feed identity: if this moves, every lifecycle history and GitHub alert loses its identity.
+_FINGERPRINTS_BEFORE = "7dbc605a024b164c475457ba829890ed114520c7040cd3d2f4d36b695c12eebb"
+
+
+def _records(report):
+    return list(normalize(report["alerts"], APP_ID, SCAN_ID))
+
+
+def test_adding_remediation_does_not_change_any_fingerprint(report):
+    import hashlib
+    fps = sorted(r["fingerprint"] for r in _records(report))
+    assert hashlib.sha256("\n".join(fps).encode()).hexdigest() == _FINGERPRINTS_BEFORE
+
+
+def test_remediation_content_is_conserved_from_the_fixture(report):
+    recs = _records(report)
+    assert sum(1 for r in recs if r.get("description")) == 38
+    assert sum(1 for r in recs if r.get("solution")) == 32
+    assert sum(1 for r in recs if r.get("evidence_excerpt")) == 26
+    assert sum(1 for r in recs if r.get("attack")) == 7
+    assert sum(1 for r in recs if r.get("references")) == 27
+    assert sum(1 for r in recs if r.get("confidence")) == 38
+
+
+def test_references_are_split_into_separate_urls(report):
+    recs = _records(report)
+    multi = [r["references"] for r in recs if len(r.get("references") or []) > 1]
+    assert len(multi) == 8
+    for refs in multi:
+        assert all(u.startswith("http") and "\n" not in u and u == u.strip() for u in refs)
+
+
+def test_confidence_is_normalised_like_severity(report):
+    assert {r["confidence"] for r in _records(report)} <= {"high", "medium", "low"}
+
+
+def test_empty_remediation_fields_are_omitted_not_blank():
+    rec = normalize_alert({"pluginId": "1", "alert": "x", "risk": "Low",
+                           "url": "http://a/b", "evidence": "", "attack": "  "}, APP_ID, SCAN_ID)
+    for f in ("description", "solution", "references", "evidence_excerpt", "attack"):
+        assert f not in rec
+
+
+# The one genuinely risky part: evidence and attack are strings lifted from the TARGET's
+# responses and the scanner's payloads, so they can carry live session material.
+_SECRETS = {
+    "jwt": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.c2lnbmF0dXJlLXZhbHVl",
+    "bearer": "Bearer abc123SECRETtoken",
+    "session": '"session": "s3ss10n-VALUE-xyz"',
+    "email": "victim.person@example.com",
+}
+
+
+def test_evidence_is_redacted_before_it_reaches_the_record():
+    leaky = " | ".join(_SECRETS.values())
+    rec = normalize_alert({"pluginId": "1", "alert": "x", "risk": "High", "url": "http://a/b",
+                           "evidence": leaky, "attack": leaky}, APP_ID, SCAN_ID)
+    blob = json.dumps(rec)
+    for raw in ("eyJhbGciOiJIUzI1NiJ9", "abc123SECRETtoken", "s3ss10n-VALUE-xyz",
+                "victim.person@example.com"):
+        assert raw not in blob, f"{raw!r} leaked into the record"
+    assert "REDACTED" in rec["evidence_excerpt"] and "REDACTED" in rec["attack"]
+
+
+def test_a_long_evidence_string_is_capped_with_a_marker():
+    rec = normalize_alert({"pluginId": "1", "alert": "x", "risk": "High", "url": "http://a/b",
+                           "evidence": "A" * 2000}, APP_ID, SCAN_ID)
+    assert len(rec["evidence_excerpt"]) <= 520
+    assert rec["evidence_excerpt"].endswith("[truncated]")
+
+
+def test_enriched_records_still_validate(report, validator):
+    for rec in _records(report):
+        assert not list(validator.iter_errors(rec))
+
+
+def test_a_record_without_any_new_field_still_validates(validator):
+    old = {"app_id": "a", "scan_id": SCAN_ID, "fingerprint": "0" * 64, "rule_id": "1",
+           "title": "t", "severity": "low", "endpoint": "/", "status": "open"}
+    assert not list(validator.iter_errors(old))
+
+
+def test_a_secret_crossing_the_cap_is_redacted_whole():
+    # Redaction runs on the whole string before the cap. A JWT starting just inside the kept 500
+    # characters and running well past them must not leave its prefix behind.
+    jwt = "eyJ" + "A" * 1800 + ".eyJzdWIiOiIxIn0.c2lnbmF0dXJl"
+    rec = normalize_alert({"pluginId": "1", "alert": "x", "risk": "High", "url": "http://a/b",
+                           "evidence": "B" * 480 + " " + jwt}, APP_ID, SCAN_ID)
+    assert "eyJAAAA" not in rec["evidence_excerpt"]
+    assert "REDACTED" in rec["evidence_excerpt"]

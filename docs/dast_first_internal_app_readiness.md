@@ -83,13 +83,13 @@ The PoC's safety model was designed for a disposable container on an isolated ne
 
 | Task | Why | Owner | Sessions |
 | --- | --- | --- | --- |
-| Split scope into "may traverse" and "may attack" | An SSO login must be reachable but must never be scanned; today `fqdn_allow_list` authorises both | Tool | 1 |
-| Bound ZAP itself with a context and include/exclude regex | `/JSON/context/` is never called; the spider and active scan are bounded only by the seed URL, so the two documented safety layers cover browser-originated requests only | Tool | 1 |
-| Extend scope matching to (scheme, host, port) and handle redirects | KI2: host-only matching authorises every port and scheme on an allow-listed host | Tool | 1 |
-| Add throttling and a kill switch | Rate limiting was explicitly descoped; there is no way to stop a scan today except Ctrl-C | Tool | 1 |
-| Exclude destructive and integration endpoints per app | Active scanning a shared environment can trigger mail, SMS, payments or partner test systems | Tool + App | 0.5 |
-| Verify `environment_class` against the app registry; deny prod hostname patterns | Preflight trusts a hand-typed string — against real hostnames one typo is the entire safety story | Tool + Gov | 1 |
-| Enable the ZAP API key and bind the daemon to the runner | Currently `api.disablekey=true` with `api.addrs.addr.regex=.*` | Platform | 0.5 |
+| ✅ *Done 2026-10-01: `scope.traverse`.* Split scope into "may traverse" and "may attack" | An SSO login must be reachable but must never be scanned; today `fqdn_allow_list` authorises both | Tool | 1 |
+| ✅ *Done 2026-10-01 (W4-1).* Bound ZAP itself with a context and include/exclude regex | `/JSON/context/` is never called; the spider and active scan are bounded only by the seed URL, so the two documented safety layers cover browser-originated requests only | Tool | 1 |
+| ✅ *Done 2026-10-01 (W4-2), redirects excepted.* Extend scope matching to (scheme, host, port) and handle redirects | KI2: host-only matching authorises every port and scheme on an allow-listed host | Tool | 1 |
+| ✅ *Done 2026-10-01 (W4-3): `scan.throttle`, Ctrl-C stops ZAP, `dast stop`.* Add throttling and a kill switch | Rate limiting was explicitly descoped; there is no way to stop a scan today except Ctrl-C | Tool | 1 |
+| ✅ *Done 2026-10-01 (W4-5): `scope.exclude`.* Exclude destructive and integration endpoints per app | Active scanning a shared environment can trigger mail, SMS, payments or partner test systems | Tool + App | 0.5 |
+| ✅ *Done 2026-10-01 (W4-6) against a file registry; a real registry plugs in behind `lookup()`.* Verify `environment_class` against the app registry; deny prod hostname patterns | Preflight trusts a hand-typed string — against real hostnames one typo is the entire safety story | Tool + Gov | 1 |
+| ✅ *Key done 2026-10-01 (W4-4); binding remains.* Enable the ZAP API key and bind the daemon to the runner | Currently `api.disablekey=true` with `api.addrs.addr.regex=.*` | Platform | 0.5 |
 
 **Exit criteria:** a deliberate misconfiguration test suite passes — wrong environment class, off-scope host, off-scope port, IdP host, and an excluded destructive endpoint are each refused, logged, and provable after the fact.
 
@@ -101,8 +101,8 @@ The seeded-session design already exists and is the right one; what is missing i
 | --- | --- | --- | --- |
 | Corporate TLS and egress | ZAP is a MITM proxy: the Nationwide CA chain must be trusted by Chromium and ZAP, and both need proxy settings. Note `nw-ca-all.pem` is committed **empty** (0 bytes) while two runbooks reference it — source it at runtime, do not commit it. | Platform | 1–2 |
 | Seed an SSO/MFA session for real | Human logs in once through `authoring/seed.py`; capture what breaks (conditional access, device trust, session binding to IP or user agent) | Tool + App | 1–2 |
-| Put `storageState` in a secret store with a TTL | Today it is a live credential in a working tree at `.secrets/storageState.json` | Platform | 1 |
-| Handle mid-scan session expiry | Liveness is proven once before a multi-minute scan. Add a post-scan re-check and mark the scan *degraded* so no finding can be labelled `resolved` from a scan that lost its session | Tool | 1 |
+| ✅ *Done 2026-10-01 (W5-3): `env:VAR` from a secret store, TTL, permission and git-ignore checks.* Put `storageState` in a secret store with a TTL | Today it is a live credential in a working tree at `.secrets/storageState.json` | Platform | 1 |
+| ✅ *Done 2026-10-01 (W5-1, W5-2): loss detected, the session re-established by logging in again, and a degraded scan never resolves findings.* Handle mid-scan session expiry | Liveness is proven once before a multi-minute scan. Add a post-scan re-check and mark the scan *degraded* so no finding can be labelled `resolved` from a scan that lost its session | Tool | 1 |
 | Agree a test identity | A dedicated non-privileged service identity with no access to real customer data, and a documented re-seed cadence | App + Gov | — |
 
 **Exit criteria:** an authenticated page of the real app is reachable through the ZAP proxy, proven by `prove_auth_live()`, with the session sourced from the secret store and no credential on local disk.
@@ -126,7 +126,7 @@ Confirmed against the committed ZAP fixture (38 alerts): the content already exi
 | Task | Detail | Owner | Sessions |
 | --- | --- | --- | --- |
 | One scheduled workflow | scan → `lifecycle_diff` → `sarif_export` → upload → retain evidence. No `.github/workflows/` exists today and upload is a manual `gh` call | Tool | 1 |
-| Split the demo assertion from the policy gate | `evaluate_gate()` passes only when a high/medium finding exists, so a clean app fails — this must not be consumed as a CI gate | Tool | 0.5 |
+| Split the demo assertion from the policy gate | ✅ done (W3-2) — `scan` is a health gate by default (authenticated, in scope, ≥1 route tested), `--expect-findings` keeps the self-test, and `dast report` fails only on **new** findings at or above `gate.fail_on` | Tool | 0.5 |
 | Structured logging with a scan id (NFR-4) | Only `runner/scope_guard.py` logs today; you will be asked to evidence what the scanner did to that environment | Tool | 1 |
 | Durable state | `out/state.json` holds every record of the last scan and is the de facto database | Tool | 1 |
 | Confirm GitHub Advanced Security on the target repo | SARIF upload will not surface alerts without it | App | — |
@@ -141,7 +141,7 @@ Do not point a full active scan at a real environment on day one. Climb, and sto
 2. **Authenticated walk, passive only.** Seed, explore, capture coverage. Produces a route inventory and passive findings with zero attack traffic.
 3. **Bounded active scan on one low-risk route,** off-hours, throttled, with the app team watching logs and error rates.
 4. **Full bounded active scan** of the authenticated surface, still off-hours and throttled.
-5. **Second scan for lifecycle:** fix one finding, re-scan, show it flip to `resolved` while an unvisited route's findings correctly show `not_scanned`. This is the project's own definition of done and has still not been demonstrated.
+5. **Second scan for lifecycle:** fix one finding, re-scan, show it flip to `resolved` while an unvisited route's findings correctly show `not_scanned`. This is the project's own definition of done. *Demonstrated on DVWA 2026-10-01: six highs `resolved`, the unvisited route's `not_scanned` and still published — [evidence](proof/fix_rescan_resolved.md).*
 6. **Benchmark run.** With the SP-1 to SP-5 postures settled and written down, run the scan that the commercial tools will be compared against, under the protocol below.
 
 **Exit criteria:** two consecutive scans complete unattended with no environment incident, the app team accepts the findings as useful, and the benchmark run is complete with every posture exclusion recorded.
@@ -159,6 +159,8 @@ The PoC's current scan configuration was tuned for a repeatable stage demo again
 > *Consequence of doing nothing:* injection, authorization and business-logic classes go untested, and the vendors' extra findings will read as better detection when the real difference is safety posture.
 >
 > *Recommendation:* exercise write paths in test environments, but by populating `safe_forms` per application rather than removing the policy — keep the guardrail that an LLM never decides a mutation is safe, since governed authoring is a differentiator, not overhead. Agree with the app team which write paths are in play, what data they touch, and how the environment is restored. Note that write-enabled scans are not idempotent: test data drifts between runs, so budget a data reset or the lifecycle diff gets noisy.
+>
+> *Update 2026-10-01 (W6-1):* ZAP's spider already submits HTML forms; the writes that were missing are those an app makes from its own JavaScript. On a `disposable` + `write_mode: allow` app they are now recorded and replayed into ZAP — Juice Shop's basket write was attacked 834 times in a minute — and `scan.reset` restores the data before each scan.
 
 > **SP-2. Scan duration bounds.**
 >
@@ -175,6 +177,8 @@ The PoC's current scan configuration was tuned for a repeatable stage demo again
 > *Consequence:* an entire client-side vulnerability class is untested, specifically the one that matters most for SPAs — awkward when the comparison tools do test it.
 >
 > *Recommendation:* re-enable with proper browser configuration and a longer budget, or disclose the exclusion on the scorecard.
+>
+> *Update 2026-10-01 (W6-3):* reproduced (OOM) and solved by isolation: `scan.dom_xss` runs the rule alone, one browser, its own limit, after the main results are saved. On DVWA it found the DOM-XSS lesson the other 112 rules never had, at ~15 min and ~5 GiB.
 
 > **SP-4. Attack surface: how does the scanner learn what to attack?**
 >
@@ -183,10 +187,14 @@ The PoC's current scan configuration was tuned for a repeatable stage demo again
 > *Consequence:* more scan time mostly re-attacks the same small surface. Surface is a harder constraint than duration.
 >
 > *Recommendation:* import an OpenAPI or GraphQL specification where one exists, and treat crawl breadth as a measured output of the pilot rather than an assumption.
+>
+> *Update 2026-10-01 (W6-4):* `scan.openapi` imports a spec into ZAP and gives coverage a denominator. On Juice Shop the embedded B2B spec put an API the walk never reached into the scan.
 
 > **SP-5. Session handling under a write-heavy scan.**
 >
 > *Current state:* no ZAP context, no session-management or re-authentication rules, no anti-CSRF token handling; liveness is proven once before the scan begins.
+>
+> *Update 2026-10-01:* a ZAP context now bounds every scan (W4-1), and the session is re-probed during the active scan and once at the end (W5-1). A lost session is **re-established**: the scan pauses, logs in again, points ZAP's attacks at the new session and resumes, up to a limit (W5-2). Named anti-CSRF fields are refreshed per attack. Verified by deleting DVWA's sessions mid-scan: re-established at 97 s, all seven highs found. A scan that lost its session is marked degraded and cannot resolve findings; one that could not recover is stopped and fails.
 >
 > *Consequence:* attacking forms logs the scanner out and regenerates CSRF tokens. A longer, write-enabled scan can therefore find *fewer* issues than a short one, because most of it runs unauthenticated against a login page — the single most likely way for the pilot to produce a misleadingly poor result.
 >
@@ -220,7 +228,7 @@ Settling SP-1 through SP-5 should bring the PoC close to credible on the common 
 | Write paths never exercised | Yes | Per-app `safe_forms` allow-list and an agreed data reset (SP-1) |
 | DOM XSS rule disabled | Yes | Re-enable 40026 with browser configuration (SP-3) |
 | Unknown endpoints and parameters | Partly | Specification import; better crawl (SP-4) |
-| Scanner loses its session mid-scan | Partly | ZAP context, re-authentication and anti-CSRF rules (SP-5) |
+| Scanner loses its session mid-scan | Yes — done 2026-10-01 | ZAP context, re-authentication and anti-CSRF tokens (SP-5, W5-2) |
 | Blind / out-of-band vulnerabilities | No | OAST infrastructure and network approval (SP-6) |
 | Broken access control | No | Multi-identity scanning — a new capability (SP-7) |
 | Rule depth and false-positive rate | No | Nothing: this is the ZAP engine, and it is where vendor research budgets go |
@@ -244,6 +252,8 @@ Run every tool against the same application, the same environment, the same auth
 | Data residency | Does scan traffic or evidence leave Nationwide? | Ahead |
 | Unattended operation | Scheduled scan with nobody watching | Behind until Gate 5 — every commercial tool has this, so its absence will be scored |
 | Total cost at fleet scale | Licence and run cost across the intended application estate | Ahead, but only credible once the engineering cost of the gates is included |
+
+A signable draft of this scorecard — weights, must-win criteria, end conditions — is in [`evaluation_scorecard.md`](evaluation_scorecard.md) (W6-7).
 
 Disclose every posture exclusion agreed in SP-1 to SP-7 alongside the results. A scorecard that omits them turns a deliberate safety choice into an apparent detection weakness.
 

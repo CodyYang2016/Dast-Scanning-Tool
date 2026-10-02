@@ -15,10 +15,10 @@ import json
 import re
 from pathlib import Path
 
-_REDACTED = "REDACTED"
+# Request/response headers whose values must never be kept — one list, shared with redact_text.
+from runner.redact import SENSITIVE_HEADERS as _SENSITIVE_HEADERS
 
-# Request/response headers whose values must never be kept.
-_SENSITIVE_HEADERS = {"authorization", "cookie", "set-cookie", "x-auth-token", "proxy-authorization"}
+_REDACTED = "REDACTED"
 
 # JWT-ish and generic token/password patterns to scrub from bodies (best-effort).
 _JWT = re.compile(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
@@ -82,5 +82,5 @@ def evidence_relpath(scan_id: str, filename: str = "active-scan.har") -> str:
 def redact_har_file(path: str) -> None:
     """Redact a HAR file in place (read, scrub, overwrite)."""
     p = Path(path)
-    har = json.loads(p.read_text(encoding="utf-8"))
-    p.write_text(json.dumps(redact_har(har), indent=2), encoding="utf-8")
+    har = json.loads(p.read_text())
+    p.write_text(json.dumps(redact_har(har), indent=2))

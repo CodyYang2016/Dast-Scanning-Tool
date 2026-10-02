@@ -21,7 +21,11 @@
     },
     "environment_class": {
       "type": "string",
-      "enum": ["dev", "test", "staging"],
+      "enum": [
+        "dev",
+        "test",
+        "staging"
+      ],
       "description": "Target tier. 'prod' is intentionally excluded so the runner can never scan production (FR-S3 / NFR-2)."
     },
     "target_fqdn": {
@@ -31,22 +35,50 @@
     },
     "fqdn_allow_list": {
       "type": "array",
-      "items": { "type": "string", "minLength": 1 },
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
       "minItems": 1,
       "uniqueItems": true,
-      "description": "Exact hosts the scanner may contact. Any in-flight request to a host not listed here is blocked (FR-S4)."
+      "description": "Exact hosts the scanner may contact. Any in-flight request to a host not listed here is blocked (FR-S4). A bare host (`app.internal`) admits that host on every scheme and port; an origin (`https://app.internal:8443`) admits exactly that scheme, host and port, default ports normalised (W4-2). test and staging environments must use origins \u2014 preflight refuses bare hosts there, since every port of a shared machine is not 'in scope'."
     },
     "fqdn_deny_list": {
       "type": "array",
-      "items": { "type": "string", "minLength": 1 },
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
       "uniqueItems": true,
       "description": "Hosts that must never be contacted; hard-blocks even if otherwise allowed."
     },
     "avoid_action_list": {
       "type": "array",
-      "items": { "type": "string", "minLength": 1 },
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
       "uniqueItems": true,
       "description": "Actions the crawler/scanner must never trigger, matched per the documented rule (e.g. URL substring)."
+    },
+    "exclude_paths": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 2,
+        "pattern": "^/"
+      },
+      "uniqueItems": true,
+      "description": "Paths never to be touched, each with everything beneath it (W4-5); from app.yaml scope.exclude."
+    },
+    "traverse_list": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Login-only origins: reachable for authentication, never attacked (from app.yaml scope.traverse)."
     }
   }
 }
