@@ -437,18 +437,18 @@ def test_report_writes_a_summary_beside_the_sarif(tmp_path, monkeypatch):
     monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
     d = _scan_dir(tmp_path)
     _report(tmp_path)
-    md = (d / "summary.md").read_text()
+    md = (d / "summary.md").read_text(encoding="utf-8")
     assert md.startswith("# DAST scan — gateapp") and "FAILED" in md
 
 
 def test_in_actions_the_summary_is_appended_to_the_run_page(tmp_path, monkeypatch):
     monkeypatch.delenv("DAST_FAIL_ON", raising=False)
     page = tmp_path / "step_summary.md"
-    page.write_text("earlier step\n")
+    page.write_text("earlier step\n", encoding="utf-8")
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(page))
     _scan_dir(tmp_path)
     _report(tmp_path)
-    text = page.read_text()
+    text = page.read_text(encoding="utf-8")
     assert text.startswith("earlier step\n") and "# DAST scan — gateapp" in text
 
 
