@@ -96,6 +96,8 @@ services:
     build:
       context: .
       dockerfile: Containerfile
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
     # Both only need to have STARTED; the runner's wait_ready() polls until each actually
     # serves (juice-shop is distroless so a compose healthcheck isn't possible — see above).
     depends_on: [juice, zap]

@@ -31,6 +31,7 @@ network="ssd-dast-poc_dast"
 runner_image="localhost/ssd-dast-poc_runner:latest"
 runner_ip="${DAST_RUNNER_IP:-172.28.0.10}"
 compose_files=(-f compose.yaml -f compose.demo.yaml)
+export PIP_INDEX_URL="${PIP_INDEX_URL:-https://art.nwie.net/artifactory/api/pypi/pypi/simple}"
 
 echo ">> Reset full-scan demo containers"
 podman-compose "${compose_files[@]}" down -v >/dev/null 2>&1 || true

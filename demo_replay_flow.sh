@@ -23,6 +23,7 @@ runner_subnet="${DAST_SUBNET:-172.28.0.0/24}"
 runner_ip="${DAST_RUNNER_IP:-172.28.0.10}"
 zap_api_allow="${ZAP_API_ALLOW:-^(?:172[.]28[.]0[.]10|zap|127[.]0[.]0[.]1|localhost)\$}"
 juice_image="${JUICE_IMAGE:-bkimminich/juice-shop@sha256:73c53fbf442e8337b3ea3d98c7e8550308854701ebdfce4cc39768f36b75430e}"
+pip_index_url="${PIP_INDEX_URL:-https://art.nwie.net/artifactory/api/pypi/pypi/simple}"
 zap_image="${ZAP_IMAGE:-zaproxy/zap-stable@sha256:781a2bdaea47324e7bab583e2263f21d257b0aee61ed51521a5be45f5f5081ef}"
 
 run_runner_python() {
@@ -51,7 +52,7 @@ podman network rm "$runner_network" >/dev/null 2>&1 || true
 
 echo ">> Build runner image"
 bash scripts/stage_ca_bundle.sh
-podman build -t "$runner_image" -f Containerfile .
+podman build --build-arg "PIP_INDEX_URL=$pip_index_url" -t "$runner_image" -f Containerfile .
 
 rm -rf out/replay-evidence
 mkdir -p out/replay-evidence

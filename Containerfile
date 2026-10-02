@@ -13,6 +13,8 @@ WORKDIR /app
 COPY certs/ /usr/local/share/ca-certificates/
 RUN update-ca-certificates
 ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt
+# Inside Nationwide the proxy blocks files.pythonhosted.org; the demo scripts pass Artifactory.
+ARG PIP_INDEX_URL=https://pypi.org/simple
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
