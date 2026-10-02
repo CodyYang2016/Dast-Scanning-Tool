@@ -39,6 +39,7 @@ podman rm -f ssd-dast-poc_juice_1 ssd-dast-poc_zap_1 ssd-dast-poc_runner_1 >/dev
 podman network rm "$network" dast >/dev/null 2>&1 || true
 
 echo ">> Build runner image"
+bash scripts/stage_ca_bundle.sh
 podman-compose "${compose_files[@]}" build runner
 
 rm -f out/records.json out/coverage.json out/labeled.json out/results.sarif out/state.json

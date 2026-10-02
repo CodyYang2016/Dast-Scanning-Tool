@@ -137,6 +137,7 @@ Podman's foreground `podman-compose up` fails on Windows, and the Podman VM can 
 ```bash
 podman login ntr.nwie.net -u <your-nwie-userid>
 bash ./prepull_playwright_podman_nationwide.sh        # repairs the Podman VM proxy, pre-pulls images
+export DAST_CA_BUNDLE="$HOME/certs/nw-ca-all.pem"     # Nationwide CA (PEM, the default); pip in the image build needs it
 export ZAP_API_KEY=$(openssl rand -hex 24)            # ZAP refuses unkeyed API calls
 export ZAP_IMAGE=ntr.nwie.net/docker.io/zaproxy/zap-stable
 export JUICE_IMAGE=ntr.nwie.net/docker.io/bkimminich/juice-shop

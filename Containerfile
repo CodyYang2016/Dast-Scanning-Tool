@@ -8,6 +8,11 @@ WORKDIR /app
 # Runtime deps. Playwright is pinned to the base image's version (1.62.0), so its bundled
 # Chromium already matches — no browser re-download needed. pip uses the image's configured
 # index; behind TLS interception point it at the approved mirror with PIP_INDEX_URL.
+# certs/corporate-ca.crt is the corporate CA, staged by scripts/stage_ca_bundle.sh, that lets pip
+# verify a TLS-intercepting proxy.
+COPY certs/ /usr/local/share/ca-certificates/
+RUN update-ca-certificates
+ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
