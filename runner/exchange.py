@@ -118,7 +118,7 @@ def attach(alerts, records, evidence_dir, evidence_relpath: str, fetch, cap: int
                 counts["failed"] += 1
                 continue
             out_dir.mkdir(parents=True, exist_ok=True)
-            (out_dir / f"{fp}.txt").write_text(exchange_text(message, alert.get("evidence")))
+            (out_dir / f"{fp}.txt").write_text(exchange_text(message, alert.get("evidence")), encoding="utf-8")
             stored[fp] = (request_line(message), response_status(message),
                           f"{evidence_relpath}/messages/{fp}.txt")
         line, status, path = stored[fp]

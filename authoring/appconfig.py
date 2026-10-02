@@ -48,14 +48,14 @@ def load_app_config(path_or_app_id: str) -> dict:
     if not path.is_file():
         raise FileNotFoundError(f"no app config at {path}")
     try:
-        cfg = yaml.safe_load(path.read_text())
+        cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
     except yaml.YAMLError as exc:
         raise ValueError(f"app config {path} is not valid YAML: {exc}") from exc
     if not isinstance(cfg, dict):
         raise ValueError(f"app config {path} must be a mapping, got {type(cfg).__name__}")
 
     import json  # local: only needed to read the committed schema
-    jsonschema.validate(cfg, json.loads(_APP_SCHEMA.read_text()))
+    jsonschema.validate(cfg, json.loads(_APP_SCHEMA.read_text(encoding="utf-8")))
     return cfg
 
 

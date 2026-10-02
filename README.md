@@ -129,6 +129,27 @@ authenticated scan, and exits with the gate as its code (0 = pass) — in compos
 fails it. Detection
 records land in `./out/records.json`. Images are pinned by digest (`versions.lock`).
 
+### Option A on a Nationwide Windows workstation (Git Bash + Podman)
+
+Podman's foreground `podman-compose up` fails on Windows, and the Podman VM can carry a stale
+`127.0.0.1:8888` proxy, so inside Nationwide use the helper scripts at the repo root instead:
+
+```bash
+podman login ntr.nwie.net -u <your-nwie-userid>
+bash ./prepull_playwright_podman_nationwide.sh        # repairs the Podman VM proxy, pre-pulls images
+export ZAP_API_KEY=$(openssl rand -hex 24)            # ZAP refuses unkeyed API calls
+export ZAP_IMAGE=ntr.nwie.net/docker.io/zaproxy/zap-stable
+export JUICE_IMAGE=ntr.nwie.net/docker.io/bkimminich/juice-shop
+bash ./demo_replay_flow.sh      # replay only: Playwright login + journey through ZAP, no active scan
+bash ./demo_full_scan.sh        # full gate, then out/labeled.json + out/results.sarif
+bash ./cleanup_demo_ports.sh    # free ports 3000/8080 and remove demo containers
+```
+
+The scripts start the runner on the address ZAP admits (`172.28.0.10`) with the same
+`ZAP_API_KEY`. `JUICE_IMAGE`/`ZAP_IMAGE` default to the digests in `versions.lock`. Upload the
+SARIF with `python -m detections.github_upload out/results.sarif --owner <o> --repo <r> --ref
+refs/heads/<branch> --commit <sha>`. Full walkthrough: `docs/dast_poc_phase2_demo_runbook.md`.
+
 ### Option B — local dev loop
 
 ```bash

@@ -21,7 +21,7 @@ import sys
 
 def encode_sarif(sarif_bytes: bytes) -> str:
     """gzip then base64 the raw SARIF bytes — the exact encoding GitHub expects."""
-    return base64.b64encode(gzip.compress(sarif_bytes)).decode("ascii")
+    return base64.b64encode(gzip.compress(sarif_bytes, mtime=0)).decode("ascii")
 
 
 def build_payload(sarif_bytes: bytes, commit_sha: str, ref: str,

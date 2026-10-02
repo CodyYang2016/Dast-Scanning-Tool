@@ -430,3 +430,38 @@ def test_anti_csrf_token_names_are_registered(monkeypatch):
                         lambda z, p, params=None, timeout=30.0: calls.append((p, params)) or {})
     scan_mod.add_anti_csrf_tokens("http://zap", ["user_token"])
     assert calls == [("/JSON/acsrf/action/addOptionToken/", {"String": "user_token"})]
+
+
+# ---- the policy's scanner list is honoured exactly, and recorded as sent ------------------
+
+def test_only_the_scanners_the_policy_names_are_disabled(monkeypatch):
+    fake = _configure(monkeypatch, policy={"disabled_scanners": ["40018"]})
+    assert fake.params_for("/JSON/ascan/action/disableScanners/") == [{"ids": "40018"}]
+
+
+def test_a_policy_without_a_scanner_list_still_disables_the_slow_scanner(monkeypatch):
+    # The recorded posture defaults to 40026 when the key is absent, so the request must too:
+    # otherwise coverage.json claims a rule was off that ZAP actually ran.
+    fake = _configure(monkeypatch, policy={"attack_strength": "high"})
+    assert fake.params_for("/JSON/ascan/action/disableScanners/") == [{"ids": "40026"}]
+
+
+def test_a_scalar_where_a_list_belongs_is_refused(monkeypatch):
+    # `disabled_scanners: 40026` in YAML is a str/int; iterating it would disable scanners
+    # "4", "0", "0", "2", "6" — a run that looks configured and tests the wrong rule set.
+    from runner.scan import ScanPolicyError
+    for bad in ("40026", 40026):
+        fake = FakeZap()
+        monkeypatch.setattr("runner.scan._api", fake)
+        with pytest.raises(ScanPolicyError, match=r"disabled_scanners: \[40026\]"):
+            configure_policy("http://zap", policy={"disabled_scanners": bad})
+        assert "/JSON/ascan/action/disableScanners/" not in fake.paths()
+        with pytest.raises(ScanPolicyError):
+            resolved_policy({"disabled_scanners": bad}, 4, 1)
+
+
+def test_recorded_posture_is_what_was_sent(monkeypatch):
+    policy = {"disabled_scanners": [40018, "40026"]}
+    fake = _configure(monkeypatch, policy=policy)
+    sent = [p["ids"] for p in fake.params_for("/JSON/ascan/action/disableScanners/")]
+    assert sent == [",".join(resolved_policy(policy, 4, 1)["disabled_scanners"])]

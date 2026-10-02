@@ -30,7 +30,7 @@ from runner.replay import (AuthenticationError, SessionDeadError, classify_login
 from runner import zapapi
 from runner import events, session_refresh
 from runner.reset import ResetError
-from runner.scan import (ScanScopeError, ZapUnavailableError, add_anti_csrf_tokens,
+from runner.scan import (ScanPolicyError, ScanScopeError, ZapUnavailableError, add_anti_csrf_tokens,
                          dom_xss_pass, exclude_traverse, import_openapi, pause_all,
                          resume_all, load_policy, new_session,
                         exclusion_regexes as scan_exclusions,
@@ -122,7 +122,7 @@ def bundle_app_config(scope_path: str) -> dict | None:
     """
     try:
         from authoring import appconfig
-        scope = json.loads(Path(scope_path).read_text())
+        scope = json.loads(Path(scope_path).read_text(encoding="utf-8"))
         return appconfig.load_app_config(scope["app_id"])
     except Exception:
         return None
@@ -211,7 +211,7 @@ def declared_surface(source: str, zap_api: str, fetch_text=None) -> dict:
         text = (fetch_text or (lambda u: coverage_capture.fetch_probe_full(zap_api, u)[1]))(source)
     else:
         p = Path(source)
-        text = (p if p.is_absolute() else Path(__file__).resolve().parent.parent / p).read_text()
+        text = (p if p.is_absolute() else Path(__file__).resolve().parent.parent / p).read_text(encoding="utf-8")
     ops = inventory.from_openapi(inventory.parse_spec(text))
     return {"source": "openapi", "spec": source, "operations": len(ops),
             "routes": sorted({route for _m, route in ops})}
@@ -596,7 +596,7 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             if state_cm is not None:
                 state_cm.__exit__(None, None, None)
-    except (PreflightError, ScanScopeError, ScopeViolation, ZapUnavailableError,
+    except (PreflightError, ScanPolicyError, ScanScopeError, ScopeViolation, ZapUnavailableError,
             zapapi.ZapAuthError, SessionStoreError, ResetError) as exc:
         print(f"RUNNER ABORT: {exc}", file=sys.stderr)
         _final_event(args, "abort", kind=type(exc).__name__, reason=str(exc))
@@ -617,10 +617,10 @@ def main(argv: list[str] | None = None) -> int:
                          expect_findings=args.expect_findings)
     coverage["health_gate"] = gate      # kept with the scan, for the report's summary
     if args.records_out:
-        with open(args.records_out, "w") as fh:
+        with open(args.records_out, "w", encoding="utf-8") as fh:
             write_json_array(records, fh)
     if args.coverage_out:
-        with open(args.coverage_out, "w") as fh:
+        with open(args.coverage_out, "w", encoding="utf-8") as fh:
             json.dump(coverage, fh, indent=2)
 
     events.emit("scan_done", records=len(records), routes=len(coverage.get("routes") or []),

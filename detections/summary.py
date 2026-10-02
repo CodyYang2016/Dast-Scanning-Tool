@@ -300,15 +300,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--scan-id", default="")
     p.add_argument("-o", "--out", default="-")
     args = p.parse_args(argv)
-    records = json.load(open(args.labeled))
-    settings = json.load(open(args.settings)) if args.settings else {}
+    records = json.load(open(args.labeled, encoding="utf-8"))
+    settings = json.load(open(args.settings, encoding="utf-8")) if args.settings else {}
     scan_id = args.scan_id or max((r.get("scan_id") or "" for r in records), default="")
-    page = render(records, json.load(open(args.coverage)), settings,
+    page = render(records, json.load(open(args.coverage, encoding="utf-8")), settings,
                   app_id=args.app_id, scan_id=scan_id)
     if args.out == "-":
         sys.stdout.write(page)
     else:
-        with open(args.out, "w") as fh:
+        with open(args.out, "w", encoding="utf-8") as fh:
             fh.write(page)
     return 0
 

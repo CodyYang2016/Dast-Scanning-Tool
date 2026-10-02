@@ -127,3 +127,10 @@ def test_a_bare_branch_name_is_refused_with_the_right_form(no_network, capsys):
     calls, sarif = no_network
     assert gu.main([sarif, "--owner", "o", "--repo", "r", "--ref", "main", "--commit", SHA]) == 2
     assert "refs/heads/main" in capsys.readouterr().err
+
+
+def test_encode_sarif_is_byte_for_byte_deterministic():
+    # gzip stamps the current time unless told otherwise; an upload retried a second later
+    # must carry the same payload.
+    assert encode_sarif(b'{"runs":[]}') == encode_sarif(b'{"runs":[]}')
+    assert base64.b64decode(encode_sarif(b"x"))[4:8] == b"\x00\x00\x00\x00"
