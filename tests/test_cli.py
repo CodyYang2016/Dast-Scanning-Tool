@@ -182,8 +182,8 @@ def test_a_path_inside_the_repo_prints_relative():
 def test_a_path_outside_the_repo_prints_absolute_instead_of_raising():
     # Path.relative_to raises ValueError outside its base; every command ended with such a
     # print, so a redirected run would have died after doing all the work.
-    shown = dast.display(Path("/tmp/dast-artifacts/x"))
-    assert shown == "/tmp/dast-artifacts/x"
+    outside = Path("/tmp/dast-artifacts/x")
+    assert dast.display(outside) == str(outside)
 
 
 # ---- publish destination ------------------------------------------------------------------
