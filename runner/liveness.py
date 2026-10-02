@@ -112,10 +112,15 @@ class SessionMonitor:
         self._state["alive_throughout"] = False
         if self._state["lost_after_s"] is None:
             self._state["lost_after_s"] = at
+        from runner import events
+        events.emit("session_lost", at_s=at, probe=self.url)
         loss = {"at_s": at, "recovered": self._recover()}
         if not loss["recovered"]:
             loss["reason"] = self._why_not
             self._alive = False
+            events.emit("session_not_recovered", at_s=at, reason=self._why_not)
+        else:
+            events.emit("session_reestablished", at_s=at)
         self._state["losses"].append(loss)
         return not loss["recovered"]
 

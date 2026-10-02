@@ -87,6 +87,7 @@ def scope_from_config(cfg: dict) -> dict:
         "fqdn_deny_list": list(sc.get("deny", [])),
         "avoid_action_list": list(sc.get("avoid_actions", [])),
         "exclude_paths": list(sc.get("exclude", [])),
+        "traverse_list": list(sc.get("traverse", [])),
     }
 
 

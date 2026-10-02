@@ -63,8 +63,11 @@ SHA = "0123456789abcdef0123456789abcdef01234567"
 
 @pytest.fixture
 def no_network(monkeypatch, tmp_path):
+    from detections import github_api
     calls = []
-    monkeypatch.setattr(gu, "_gh_api", lambda args, stdin=None: calls.append(args) or b'{"id":"x"}')
+    # The network boundary (W3-5): everything GitHub-bound goes through github_api.request.
+    monkeypatch.setattr(github_api, "request",
+                        lambda method, path, body=None: calls.append(path) or {"id": "x"})
     for var in ("DAST_TARGET_COMMIT", "DAST_TARGET_REF"):
         monkeypatch.delenv(var, raising=False)
     sarif = tmp_path / "r.sarif"; sarif.write_text("{}")
@@ -74,7 +77,8 @@ def no_network(monkeypatch, tmp_path):
 def test_the_scanners_own_commit_is_never_used(monkeypatch, no_network):
     def refuse(cmd, *a, **k):
         raise AssertionError(f"shelled out to {cmd}: the scanner's checkout is not the target")
-    monkeypatch.setattr(gu.subprocess, "run", refuse)
+    import subprocess
+    monkeypatch.setattr(subprocess, "run", refuse)
     calls, sarif = no_network
     assert gu.main([sarif, "--owner", "o", "--repo", "r", "--ref", "refs/heads/main"]) == 2
     assert calls == [] and not hasattr(gu, "_git_head")

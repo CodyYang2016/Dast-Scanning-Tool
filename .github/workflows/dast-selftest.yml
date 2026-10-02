@@ -117,6 +117,7 @@ jobs:
           path: out
       - name: upload SARIF
         env:
+          # Used over HTTP by detections/github_api.py — no gh CLI needed (W3-5).
           GH_TOKEN: ${{ github.token }}
         # The deployment is named explicitly — this repository's commit, as a demo destination.
         run: |

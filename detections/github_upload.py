@@ -2,7 +2,8 @@
 
 GitHub's code-scanning API wants the SARIF gzip-compressed then base64-encoded, plus the
 commit sha and ref it applies to. This module builds that payload (pure, unit-tested) and
-POSTs it via the authenticated `gh` CLI, then polls processing status.
+POSTs it with a token over HTTP (detections/github_api.py; `gh` when no token is set), then
+polls processing status.
 
   POST /repos/{owner}/{repo}/code-scanning/sarifs   -> {id, url}
   GET  {url}                                         -> {processing_status, ...}
@@ -13,10 +14,8 @@ from __future__ import annotations
 import argparse
 import base64
 import gzip
-import json
 import os
 import re
-import subprocess
 import sys
 
 
@@ -34,26 +33,17 @@ def build_payload(sarif_bytes: bytes, commit_sha: str, ref: str,
     return payload
 
 
-def _gh_api(args: list[str], stdin: bytes | None = None) -> bytes:
-    return subprocess.run(
-        ["gh", "api", *args], input=stdin, capture_output=True, check=True
-    ).stdout
-
-
 def upload(owner: str, repo: str, sarif_path: str, commit_sha: str, ref: str) -> dict:
     """Upload a SARIF file; returns GitHub's {id, url} response."""
+    from detections import github_api
     with open(sarif_path, "rb") as fh:
         payload = build_payload(fh.read(), commit_sha, ref)
-    out = _gh_api(
-        [f"/repos/{owner}/{repo}/code-scanning/sarifs", "-X", "POST", "--input", "-"],
-        stdin=json.dumps(payload).encode(),
-    )
-    return json.loads(out)
+    return github_api.request("POST", f"/repos/{owner}/{repo}/code-scanning/sarifs", payload)
 
 
 def processing_status(owner: str, repo: str, sarif_id: str) -> dict:
-    out = _gh_api([f"/repos/{owner}/{repo}/code-scanning/sarifs/{sarif_id}"])
-    return json.loads(out)
+    from detections import github_api
+    return github_api.request("GET", f"/repos/{owner}/{repo}/code-scanning/sarifs/{sarif_id}")
 
 
 _FULL_SHA = re.compile(r"^[0-9a-f]{40}$")

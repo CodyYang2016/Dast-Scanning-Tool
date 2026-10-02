@@ -133,6 +133,8 @@ class ScopeGuard:
         self._allow = [h.strip() for h in scope.get("fqdn_allow_list", [])]
         self._deny = [p.strip().lower() for p in scope.get("fqdn_deny_list", [])]
         self._exclude = list(scope.get("exclude_paths") or [])
+        # Login-only origins (an SSO identity provider): reachable, never attacked.
+        self._traverse = [t.strip() for t in scope.get("traverse_list") or []]
         self._decisions: list[Decision] = []
         self.excluded: list[str] = []    # in scope, but declared off-limits (W4-5): refused
 
@@ -144,19 +146,26 @@ class ScopeGuard:
         for pattern in self._deny:
             if fnmatch.fnmatch(host, pattern):
                 return Decision(False, url, host, f"deny-list match: {pattern}")
-        if not in_scope(url, self._allow):
-            return Decision(False, url, host, "not in allow-list (host, or scheme/port for an "
-                                              "origin entry)")
-        return Decision(True, url, host, "allow-list match")
+        if in_scope(url, self._allow):
+            return Decision(True, url, host, "allow-list match")
+        if in_scope(url, self._traverse):
+            return Decision(True, url, host, "traverse (login-only host): reached, never attacked")
+        return Decision(False, url, host, "not in allow-list (host, or scheme/port for an "
+                                          "origin entry)")
 
     def check(self, url: str) -> Decision:
         """Evaluate a URL, record + log the decision, and track violations. Returns Decision."""
         d = self._evaluate(url)
         self._decisions.append(d)
+        from runner import events
         if d.allowed:
             log.debug("scope allow: host=%s url=%s", d.host, d.url)
+            if d.reason.startswith("traverse"):
+                events.emit("scope_decision", decision="traverse", url=d.url, host=d.host)
         else:
             log.warning("scope BLOCK: host=%s url=%s reason=%s", d.host, d.url, d.reason)
+            events.emit("scope_decision", decision="block", url=d.url, host=d.host,
+                        reason=d.reason, mode=self.mode)
         return d
 
     @property
@@ -214,6 +223,9 @@ class ScopeGuard:
                      f"it could be blocked")
         self._decisions.append(d)
         log.warning("scope BLOCK (redirect): host=%s url=%s reason=%s", d.host, d.url, d.reason)
+        from runner import events
+        events.emit("scope_decision", decision="block", url=d.url, host=d.host,
+                    reason=d.reason, mode=self.mode, redirect_from=source.url)
 
     def route_handler(self, route) -> None:
         """Playwright page.route handler: continue allowed requests, abort blocked ones."""
@@ -225,6 +237,8 @@ class ScopeGuard:
             # recorded walk that visits the page would crash. Nothing reaches ZAP or the app.
             self.excluded.append(route.request.url)
             log.info("excluded path refused: %s", route.request.url)
+            from runner import events
+            events.emit("scope_decision", decision="excluded", url=route.request.url)
             route.fulfill(status=403, content_type="text/plain",
                           body="refused by the DAST runner: this path is in scope.exclude (W4-5)")
         elif d.allowed:

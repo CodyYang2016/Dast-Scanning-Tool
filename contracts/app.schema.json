@@ -73,6 +73,15 @@
           },
           "uniqueItems": true,
           "description": "Endpoints the scanner must never touch, by path (W4-5) \u2014 mail, SMS, payments, partner systems, resets. Each covers the path and everything beneath it (`/api/payments` covers `/api/payments/42`, not `/api/paymentsx`); `*` matches within one segment; case-insensitive. Enforced on ZAP's spider and active scan, in the per-scan ZAP context, and during exploration. Each one is a detection gap to disclose."
+        },
+        "traverse": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^https?://[^/]+$"
+          },
+          "description": "Login-only origins, such as an SSO identity provider: the browser may reach them to authenticate; they are never explored, spidered or attacked, and ZAP forwards their traffic without recording it. Exact origins only, never also in `allow`. Exempt from the environment registry, since they are not attacked and are usually production."
         }
       }
     },

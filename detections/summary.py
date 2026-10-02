@@ -268,7 +268,8 @@ def _published(settings: dict, uploaded: bool | None) -> list[str]:
 
 def render(records: list[dict], coverage: dict, settings: dict, *, app_id: str, scan_id: str,
            reachability: dict | None = None, uploaded: bool | None = None,
-           max_new: int = 20, inventory: dict | None = None) -> str:
+           max_new: int = 20, inventory: dict | None = None,
+           events_count: int | None = None) -> str:
     coverage = coverage or {}
     out = [f"# DAST scan — {_text(app_id)}", "", f"Scan `{scan_id}`", ""]
     out += "\n\n".join(_verdict(settings, coverage)).split("\n")   # one paragraph each
@@ -284,6 +285,9 @@ def render(records: list[dict], coverage: dict, settings: dict, *, app_id: str, 
     out += ["", "## Coverage", ""] + _coverage(coverage, reachability, inventory)
     out += _suppressions(records)
     out += _published(settings, uploaded)
+    if events_count:
+        out += [f"- Audit trail: {_plural(events_count, 'event')} in `events.jsonl` beside this "
+                f"scan's artifacts."]
     return "\n".join(out) + "\n"
 
 

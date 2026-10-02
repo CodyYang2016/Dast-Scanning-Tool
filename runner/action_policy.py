@@ -152,6 +152,10 @@ def validate_action(action: dict, scope: dict, deny_actions=None, safe_forms=Non
     if action.get("action") == "submit_form" and verb == "GET" and not submit_get_forms:
         return ActionDecision(False, "this application does not permit form submission")
 
+    # A login-only host (scope.traverse) is reached only by the login itself, never explored.
+    if target.startswith(("http://", "https://")) and in_scope(target, scope.get("traverse_list")):
+        return ActionDecision(False, "login-only host (scope.traverse): never explored or attacked")
+
     # Absolute targets must be in scope; relative paths inherit the (in-scope) base origin.
     allow = scope.get("fqdn_allow_list", [])
     if target.startswith("http://") or target.startswith("https://"):

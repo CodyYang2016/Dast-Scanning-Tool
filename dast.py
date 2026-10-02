@@ -414,6 +414,10 @@ def cmd_report(args) -> int:
         print(f"no scan to report on — run: dast scan {args.app}", file=sys.stderr)
         return 2
 
+    # W3-3: the report stage appends to the same audit trail as the scan it reports on.
+    from runner import events
+    events.start(app_id=args.app, scan_id=run_dir.name).attach(run_dir / "events.jsonl")
+
     labeled = run_dir / "labeled.json"
     rc = lifecycle_diff.main([str(run_dir / "records.json"), "--app-id", args.app,
                               "--state", str(paths.state),
@@ -443,6 +447,7 @@ def cmd_report(args) -> int:
     for rec in triaged:
         counts[rec["status"]] = counts.get(rec["status"], 0) + 1
     print("lifecycle: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
+    events.emit("lifecycle", **counts)
 
     # Did the scan reach what the application actually offers? A route can be covered and a
     # rule can run to completion while the parameter carrying the finding was never sent
@@ -504,6 +509,8 @@ def cmd_report(args) -> int:
     except ValueError as exc:
         print(f"report: {exc}", file=sys.stderr)
         return 2
+    events.emit("policy_gate", fail_on=fail_on, source=fail_on_src, passed=gate["passed"],
+                blocking=len(gate["blocking"]))
     if gate["passed"]:
         print(f"gate: passed — no new findings at or above {fail_on}"
               if fail_on != "none" else "gate: disabled (fail_on none)")
@@ -544,6 +551,7 @@ def cmd_report(args) -> int:
     if rc:
         return rc
     print(f"SARIF: {display(sarif)}  (category {category})")
+    events.emit("sarif_written", path=display(sarif), category=category)
 
     # Publishing stays an explicit act. Config states WHERE results would go; it never decides
     # THAT they go, because a Security tab is a one-way door.
@@ -563,6 +571,8 @@ def cmd_report(args) -> int:
             return 2
         rc = github_upload.main([str(sarif), "--owner", owner, "--repo", repo,
                                  "--ref", ref, "--commit", commit])
+        events.emit("upload", repository=f"{owner}/{repo}", ref=ref, commit=commit,
+                    outcome="ok" if rc == 0 else "failed")
         if rc:
             return rc
 
@@ -573,7 +583,9 @@ def cmd_report(args) -> int:
         triaged, json.loads(cov_file.read_text()) if cov_file.exists() else {},
         json.loads((run_dir / "settings.json").read_text()),
         app_id=args.app, scan_id=run_dir.name, reachability=summary,
-        uploaded=bool(args.upload), inventory=inv)
+        uploaded=bool(args.upload), inventory=inv,
+        events_count=sum(1 for _ in open(run_dir / "events.jsonl"))
+        if (run_dir / "events.jsonl").exists() else None)
     (run_dir / "summary.md").write_text(page)
     print(f"summary: {display(run_dir / 'summary.md')}")
     step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
@@ -586,20 +598,11 @@ def cmd_report(args) -> int:
 
 
 def _dismissed_alerts(owner: str, repo: str) -> list[dict]:
-    """Dismissed code-scanning alerts, read-only. Isolated so tests never reach GitHub."""
-    import subprocess
-    out = subprocess.run(["gh", "api", "--paginate",
-                          f"/repos/{owner}/{repo}/code-scanning/alerts?state=dismissed&per_page=100"],
-                         capture_output=True, check=True, text=True).stdout
-    # --paginate concatenates JSON arrays; decode them one after another.
-    decoder, pos, alerts = json.JSONDecoder(), 0, []
-    out = out.strip()
-    while pos < len(out):
-        chunk, pos = decoder.raw_decode(out, pos)
-        alerts.extend(chunk)
-        while pos < len(out) and out[pos].isspace():
-            pos += 1
-    return alerts
+    """Dismissed code-scanning alerts, read-only. Isolated so tests never reach GitHub. By token
+    over HTTP when one is set, else through `gh` (W3-5)."""
+    from detections import github_api
+    return github_api.paginate(
+        f"/repos/{owner}/{repo}/code-scanning/alerts?state=dismissed&per_page=100")
 
 
 def cmd_triage(args) -> int:

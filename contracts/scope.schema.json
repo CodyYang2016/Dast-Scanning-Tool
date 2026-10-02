@@ -70,6 +70,15 @@
       },
       "uniqueItems": true,
       "description": "Paths never to be touched, each with everything beneath it (W4-5); from app.yaml scope.exclude."
+    },
+    "traverse_list": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Login-only origins: reachable for authentication, never attacked (from app.yaml scope.traverse)."
     }
   }
 }

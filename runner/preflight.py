@@ -62,8 +62,27 @@ def check_scope(scope: dict, registry=None) -> None:
             "scope has no non-empty 'fqdn_allow_list' — refusing to scan an unbounded "
             "target (NFR-2)."
         )
+    check_traverse(scope)
     if registry is not None:
-        check_registry(scope, registry)
+        check_registry(scope, registry)   # attack targets only: a traverse host is never attacked
+
+
+def check_traverse(scope: dict) -> None:
+    """Login-only origins (scope.traverse): exact origins, and never also attack targets."""
+    from runner.scope_guard import entry_matches, is_origin, origin_of
+    traverse = scope.get("traverse_list") or []
+    bare = [t for t in traverse if not is_origin(t)]
+    if bare:
+        raise PreflightError(
+            f"scope.traverse must name exact origins (an identity provider is shared and usually "
+            f"production; every port of it is not ours to reach): {bare}. Write e.g. "
+            f"https://{bare[0]}")
+    for t in traverse:
+        if any(entry_matches(t + "/", a) or origin_of(a) == origin_of(t)
+               for a in scope.get("fqdn_allow_list") or []):
+            raise PreflightError(
+                f"{t} is in both scope.allow and scope.traverse — a host is either attacked or "
+                f"traversed, not both.")
 
 
 def check_registry(scope: dict, registry) -> None:

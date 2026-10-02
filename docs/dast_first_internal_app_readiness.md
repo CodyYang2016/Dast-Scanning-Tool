@@ -83,7 +83,7 @@ The PoC's safety model was designed for a disposable container on an isolated ne
 
 | Task | Why | Owner | Sessions |
 | --- | --- | --- | --- |
-| Split scope into "may traverse" and "may attack" | An SSO login must be reachable but must never be scanned; today `fqdn_allow_list` authorises both | Tool | 1 |
+| ✅ *Done 2026-10-01: `scope.traverse`.* Split scope into "may traverse" and "may attack" | An SSO login must be reachable but must never be scanned; today `fqdn_allow_list` authorises both | Tool | 1 |
 | ✅ *Done 2026-10-01 (W4-1).* Bound ZAP itself with a context and include/exclude regex | `/JSON/context/` is never called; the spider and active scan are bounded only by the seed URL, so the two documented safety layers cover browser-originated requests only | Tool | 1 |
 | ✅ *Done 2026-10-01 (W4-2), redirects excepted.* Extend scope matching to (scheme, host, port) and handle redirects | KI2: host-only matching authorises every port and scheme on an allow-listed host | Tool | 1 |
 | ✅ *Done 2026-10-01 (W4-3): `scan.throttle`, Ctrl-C stops ZAP, `dast stop`.* Add throttling and a kill switch | Rate limiting was explicitly descoped; there is no way to stop a scan today except Ctrl-C | Tool | 1 |

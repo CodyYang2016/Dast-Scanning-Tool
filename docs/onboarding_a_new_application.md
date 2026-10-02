@@ -224,6 +224,11 @@ A `dev` target can be scoped loosely. Anything with other users (`environment_cl
   `my-app.internal: test`. Preflight refuses an unregistered shared host, a host registered as a
   different class than `environment_class` says, and any host matching a production pattern
   (`*.prod.*`, `prod-*`, …) whatever the scope says. `dev` hosts need not be registered.
+- **SSO login through an identity provider.** List it as login-only:
+  `scope.traverse: [https://login.microsoftonline.com]`. The browser may reach it to log in; it
+  is never explored, spidered or attacked, and ZAP forwards its traffic without recording it, so
+  no finding can land on it. Exact origins only, never also in `allow`. It is exempt from the
+  environment registry, because it is not scanned and is usually production.
 - **Scope by origin.** `scope.allow: [https://my-app.internal:8443]` — scheme, host and port.
   A bare host (`my-app.internal`) means *every scheme and port on that machine*; preflight accepts
   it for `dev` and refuses it for `test`/`staging`, saying which origin to write instead. ZAP's
@@ -289,6 +294,14 @@ It never applies anything itself. GitHub does not expose fingerprints, so each a
 recomputing ours from its rule, location and the parameter its message names; an older alert that
 names no parameter is matched only when that is unambiguous, and listed otherwise.
 
+### What the scan did, on the record
+
+Every run writes `events.jsonl` beside its artifacts: one JSON line per event, each with a
+timestamp, the scan id and the app id. It covers preflight, login, every blocked or traversed
+request, scan progress, session losses, aborts with their reasons, and the report's gate and
+upload. It answers "what did you touch, what did you refuse, and when?" for an unattended run.
+Set `DAST_LOG_FORMAT=json` to mirror the events to stderr for a log shipper.
+
 ### Running it in CI
 
 Every push runs `ruff` and the test suite (`.github/workflows/tests.yml`). A weekly workflow,
@@ -299,7 +312,10 @@ request/response link points at that run. It publishes nothing unless run by han
 ticked. `dast report` appends the same summary to `$GITHUB_STEP_SUMMARY` whenever it runs inside
 GitHub Actions.
 For your own application, the natural home for `dast scan` and `dast report` is the app's deploy
-pipeline, which knows the deployed commit to pass as `DAST_TARGET_COMMIT`.
+pipeline, which knows the deployed commit to pass as `DAST_TARGET_COMMIT`. Publishing and
+`triage --from-github` use `$GITHUB_TOKEN` (or `$GH_TOKEN`) over HTTP, so the pipeline needs no
+`gh` CLI. On GitHub Enterprise Server, also set `$GITHUB_API_URL`. Locally, with no token, the
+`gh` CLI is used as before.
 
 Artifacts land under `out/<app>/` by default: `authoring/` (trace and bundle) and
 `scans/<scan_id>/` (records, coverage, labels, SARIF, redacted evidence).

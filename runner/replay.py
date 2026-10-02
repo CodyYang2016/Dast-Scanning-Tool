@@ -115,6 +115,14 @@ def classify_login_failure(exc: BaseException, base_url: str) -> AuthenticationE
     return AuthenticationError(f"{type(exc).__name__}: {first}")
 
 
+def scope_first(guard) -> None:
+    """If the flow failed after the guard blocked a request, the block is the cause and the
+    failure its symptom: report the scope violation. Measured: a login flow that navigated to an
+    off-scope host was reported as "authentication failed — net::ERR_FAILED" when the truth was
+    a safety event."""
+    guard.raise_if_violated()
+
+
 class SessionDeadError(Exception):
     """Raised when a seeded session is not authenticated (expired/invalid). Fail closed: the
     caller must fall back to a login flow, never scan an unauthenticated surface (Phase A)."""
@@ -244,6 +252,9 @@ def replay(scope: dict, flow_module, base_url: str, zap_proxy: str, headless: bo
                 result = flow_module.run(page, base_url, evidence_dir=evidence_dir)
             else:
                 result = flow_module.run(page, base_url)
+        except Exception:
+            scope_first(guard)
+            raise
         finally:
             if evidence_dir and "evidence_dir" not in inspect.signature(flow_module.run).parameters:
                 page.screenshot(path=str(Path(evidence_dir) / "screenshot.png"), full_page=True)
@@ -290,6 +301,11 @@ def replay_seeded(scope: dict, base_url: str, zap_proxy: str, storage_state: str
                 raise SessionDeadError(liveness["reason"])
             for route in seed_routes:
                 page.goto(base_url + route, wait_until="networkidle")
+        except SessionDeadError:
+            raise
+        except Exception:
+            scope_first(guard)
+            raise
         finally:
             if evidence_dir:
                 page.screenshot(path=str(Path(evidence_dir) / "screenshot.png"), full_page=True)

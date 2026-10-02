@@ -28,10 +28,10 @@ from runner.preflight import PreflightError, preflight
 from runner.replay import (AuthenticationError, SessionDeadError, classify_login_failure, load_flow,
                            replay, replay_seeded)
 from runner import zapapi
-from runner import session_refresh
+from runner import events, session_refresh
 from runner.reset import ResetError
 from runner.scan import (ScanScopeError, ZapUnavailableError, add_anti_csrf_tokens,
-                         dom_xss_pass, import_openapi, pause_all,
+                         dom_xss_pass, exclude_traverse, import_openapi, pause_all,
                          resume_all, load_policy, new_session,
                         exclusion_regexes as scan_exclusions,
                          resolved_policy, scan)
@@ -217,6 +217,16 @@ def declared_surface(source: str, zap_api: str, fetch_text=None) -> dict:
             "routes": sorted({route for _m, route in ops})}
 
 
+def drop_traverse_alerts(alerts, origins):
+    """Findings on a login-only origin are not ours to report: drop and count them. With the
+    origin excluded from ZAP's proxy there should be none; the count proves the boundary held."""
+    from runner.scope_guard import in_scope
+    if not origins:
+        return list(alerts), 0
+    kept = [a for a in alerts if not in_scope(a.get("url", ""), origins)]
+    return kept, len(alerts) - len(kept)
+
+
 def with_exclusions(scope: dict, app_cfg: dict | None) -> dict:
     """The scope with app.yaml's `scope.exclude` merged in, so a bundle generated before an
     exclusion was added still honours it in the browser (W4-5). app.yaml is the source of truth."""
@@ -225,7 +235,12 @@ def with_exclusions(scope: dict, app_cfg: dict | None) -> dict:
     from authoring import appconfig
     paths = list(scope.get("exclude_paths") or [])
     paths += [p for p in appconfig.exclude_paths(app_cfg) if p not in paths]
-    return {**scope, "exclude_paths": paths}
+    traverse = list(scope.get("traverse_list") or [])
+    traverse += [t for t in app_cfg.get("scope", {}).get("traverse", []) if t not in traverse]
+    merged = {**scope, "exclude_paths": paths, "traverse_list": traverse}
+    from runner.preflight import check_traverse
+    check_traverse(merged)            # the merged scope gets the same refusals as the file
+    return merged
 
 
 def _login(do_login, base_url: str):
@@ -269,6 +284,19 @@ def refuse_zap_port(base_url: str, zap_proxy: str) -> None:
             f"would never be reached. Move the application or ZAP to another port.")
 
 
+def _final_event(args, event: str, **fields) -> None:
+    """An abort can happen before the run directory exists (preflight runs first). Attach the
+    log to the evidence directory the caller named, so the reason is still on record."""
+    log = events.get()
+    if log.path is None and getattr(args, "evidence_dir", None):
+        try:
+            Path(args.evidence_dir).mkdir(parents=True, exist_ok=True)
+            log.attach(Path(args.evidence_dir) / "events.jsonl")
+        except Exception:
+            pass
+    log.emit(event, **fields)
+
+
 def _seed_ttl(scope_path) -> float:
     """The stored-session TTL from the bundle's app config, else the default (W5-3)."""
     cfg = bundle_app_config(scope_path)
@@ -287,6 +315,9 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
     If `storage_state` is given, replay a seeded session (Phase A) instead of the login flow,
     falling back to the hand-authored flow if the seeded session is dead (fail closed)."""
     scope = preflight(scope_path, schema)              # safety layer 1 (offline; fail fast)
+    events.get().bind(app_id=scope["app_id"])
+    events.emit("preflight", outcome="ok", environment_class=scope["environment_class"],
+                allow=scope["fqdn_allow_list"], traverse=scope.get("traverse_list") or [])
     refuse_zap_port(base_url, zap_proxy)               # W4-7: ZAP would answer as its API
     if wait:
         wait_ready(zap_api, base_url)                  # tolerate container startup ordering
@@ -300,8 +331,13 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
               "container only; start ZAP with -config api.key=<secret> and export ZAP_API_KEY.",
               file=sys.stderr)
     scan_id = _scan_id()
+    events.get().bind(scan_id=scan_id)
     ev_dir = resolve_evidence_dir(scope_path, evidence_dir, scan_id)   # FR-E1
     ev_dir.mkdir(parents=True, exist_ok=True)
+    # W3-3: one audit trail per run, at the top of the run directory — where `dast report`
+    # appends its own events and where an early abort writes its reason.
+    events.get().attach((Path(evidence_dir) if evidence_dir else ev_dir) / "events.jsonl")
+    events.emit("zap_api", open=zap_open)
 
     app_cfg = bundle_app_config(scope_path)
     require_credentials(app_cfg)                     # W5-4: before any traffic or browser
@@ -335,8 +371,12 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
                                  os.environ.get(env_names[1], "")),
             fetch=lambda url: coverage_capture.fetch_probe_full(
                 zap_api, url, None, allow=scope["fqdn_allow_list"]))
+        events.emit("reset", **reset_result)
     if fresh:
         new_session(zap_api)                           # clean per-scan session
+    traverse = list(scope.get("traverse_list") or [])
+    traverse_rx = exclude_traverse(zap_api, traverse) if traverse else []
+    exclusions = exclusions + [rx for rx in traverse_rx if rx not in exclusions]
 
     def first_login():
         if storage_state:
@@ -351,6 +391,7 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
                       evidence_dir=str(ev_dir), cookies=cookies,
                       on_session=live_session.update)
     result, guard = _login(first_login, base_url)
+    events.emit("auth", outcome="ok", seeded=bool(result.get("seeded")))
 
     # Redact the HAR immediately after capture — before it can be published (hard requirement).
     har = ev_dir / "active-scan.har"
@@ -453,6 +494,10 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
                       f"scan's results are kept", file=sys.stderr)
     finally:
         session_refresh.remove(zap_api)  # only present if a re-login installed it
+    events.emit("zap_context", **(report.get("context") or {}))
+    if dom is not None:
+        events.emit("dom_pass", **dom["record"])
+    report["alerts"], dropped = drop_traverse_alerts(report["alerts"], traverse)
     records = list(normalize(report["alerts"], scope["app_id"], scan_id))
     # Reference the scan's evidence from each record (FR-E1).
     prefix = evidence_prefix(evidence_dir, scan_id)
@@ -486,6 +531,10 @@ def run(scope_path, schema, flow_path, base_url, zap_api, zap_proxy,
         coverage["dom_xss"] = dom["record"]
     if reset_result is not None:
         coverage["reset"] = reset_result
+    if traverse:
+        coverage["traverse"] = {"origins": traverse, "dropped_findings": dropped,
+                                "requests": sum(1 for d in guard.decisions
+                                                if d.reason.startswith("traverse"))}
     return scope, result, guard, records, scan_id, coverage
 
 
@@ -515,6 +564,7 @@ def main(argv: list[str] | None = None) -> int:
                         "vulnerable targets, where finding nothing means the scanner is broken")
     args = p.parse_args(argv)
 
+    events.start()                                    # W3-3: bound to app and scan as they are known
     storage_state = seed_routes = None
     if args.seed:
         from authoring.seed import load_seed
@@ -549,15 +599,18 @@ def main(argv: list[str] | None = None) -> int:
     except (PreflightError, ScanScopeError, ScopeViolation, ZapUnavailableError,
             zapapi.ZapAuthError, SessionStoreError, ResetError) as exc:
         print(f"RUNNER ABORT: {exc}", file=sys.stderr)
+        _final_event(args, "abort", kind=type(exc).__name__, reason=str(exc))
         return 2
     except AuthenticationError as exc:
         print(f"RUNNER ABORT: authentication failed — {exc}"
               + (f"\n  next: {exc.hint}" if exc.hint else ""), file=sys.stderr)
+        _final_event(args, "abort", kind="authentication", reason=str(exc), hint=exc.hint)
         return 2
     except KeyboardInterrupt:
         # scan._poll has already told ZAP to stop; say so, so nobody wonders if it is still going.
         print("\nRUNNER STOPPED at operator request — ZAP's spider and active scan were told to "
               "stop. Nothing was recorded for this run.", file=sys.stderr)
+        _final_event(args, "stop", reason="operator interrupt; ZAP told to stop")
         return 130
 
     gate = evaluate_gate(result.get("authenticated"), guard.ok, records, coverage,
@@ -570,6 +623,8 @@ def main(argv: list[str] | None = None) -> int:
         with open(args.coverage_out, "w") as fh:
             json.dump(coverage, fh, indent=2)
 
+    events.emit("scan_done", records=len(records), routes=len(coverage.get("routes") or []),
+                blocked=len(guard.violations), health_gate=gate)
     print(json.dumps({
         "scan_id": scan_id,
         "app_id": scope["app_id"],

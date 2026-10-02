@@ -177,6 +177,22 @@ def import_openapi(zap_api: str, source: str, target: str, zap_spec_dir: str | N
     return {"imported": True}
 
 
+def traverse_regexes(origins) -> list[str]:
+    """Anchored patterns for login-only origins — the same form as the context includes."""
+    return context_regexes(origins)
+
+
+def exclude_traverse(zap_api: str, origins) -> list[str]:
+    """Let ZAP forward a login-only origin's traffic without recording it (scope.traverse).
+    Measured: excluded traffic loads normally and leaves nothing in ZAP's history or site tree,
+    so nothing there can be passively flagged or actively attacked. Session-scoped: call after
+    new_session."""
+    rxs = traverse_regexes(origins)
+    for rx in rxs:
+        _api(zap_api, "/JSON/core/action/excludeFromProxy/", {"regex": rx})
+    return rxs
+
+
 def pause_all(zap_api: str) -> None:
     """Hold every active scan while the session is re-established (W5-2)."""
     _api(zap_api, "/JSON/ascan/action/pauseAllScans/")
@@ -206,7 +222,9 @@ def _poll(zap_api: str, view_path: str, scan_id: str, poll_s: float, max_polls: 
 
 def _poll_until_done(zap_api: str, view_path: str, scan_id: str, poll_s: float,
                      max_polls: int, on_tick=None) -> None:
-    failures = 0
+    from runner import events
+    kind = view_path.split("/")[2]                          # ascan | spider
+    failures, last_progress = 0, 0.0
     for _ in range(max_polls):
         try:
             status = _api(zap_api, view_path, {"scanId": scan_id}).get("status")
@@ -228,12 +246,16 @@ def _poll_until_done(zap_api: str, view_path: str, scan_id: str, poll_s: float,
         # and could not be re-established (W5-2): everything from here on would attack a
         # logged-out application, so this scan is stopped rather than finished.
         if on_tick and on_tick() is True:
-            kind = view_path.split("/")[2]                  # ascan | spider
+            events.emit("scan_stopped_early", kind=kind, zap_scan_id=scan_id,
+                        reason="session lost and not re-established")
             try:
                 _api(zap_api, f"/JSON/{kind}/action/stop/", {"scanId": scan_id})
             except Exception:
                 stop_all(zap_api)
             return
+        if time.monotonic() - last_progress >= 60 or status == "100":
+            last_progress = time.monotonic()
+            events.emit("scan_progress", kind=kind, zap_scan_id=scan_id, percent=status)
         if status == "100":
             return
         time.sleep(poll_s)
