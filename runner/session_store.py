@@ -27,6 +27,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
+# Windows has no POSIX mode bits: st_mode reports 0o666 for every writable file, and the user's
+# profile and %TEMP% are private through ACLs instead.
+POSIX_PERMISSIONS = os.name != "nt"
+
 
 class SessionStoreError(RuntimeError):
     """The stored session cannot be used. `stale` errors can fall back to a fresh login;
@@ -56,7 +60,7 @@ def _check_file(path: Path, ttl_hours: float) -> None:
         raise SessionStoreError(f"stored session {path} does not exist — seed one: "
                                 f"`dast author <app> --explore`", stale=True)
     mode = stat.S_IMODE(path.stat().st_mode)
-    if mode & 0o077:
+    if POSIX_PERMISSIONS and mode & 0o077:
         raise SessionStoreError(
             f"stored session {path} is readable by other users (mode {oct(mode)}). It is a "
             f"working login: chmod 600 {path}")
@@ -103,7 +107,8 @@ def open_storage_state(ref: str | None, ttl_hours: float):
         text = _from_env(str(ref)[4:])
         fd, tmp = tempfile.mkstemp(prefix="dast-session-", suffix=".json")
         try:
-            os.fchmod(fd, 0o600)
+            if POSIX_PERMISSIONS:
+                os.fchmod(fd, 0o600)
             with os.fdopen(fd, "w") as fh:
                 fh.write(text)
             yield tmp

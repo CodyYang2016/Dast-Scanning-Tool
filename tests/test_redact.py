@@ -215,7 +215,7 @@ def test_a_secret_word_inside_another_word_is_not_a_field():
     "password=" + "x" * 200_000,
     ("&token=" * 30_000),
     ("Authorization:" * 15_000),
-])
+], ids=["cookie", "password", "token", "authorization"])
 def test_the_new_rules_are_linear_too(hostile):
     t = time.perf_counter()
     redact_text(hostile)

@@ -15,7 +15,9 @@ import time
 import pytest
 
 from runner import session_store
-from runner.session_store import SessionStoreError, open_storage_state
+from runner.session_store import POSIX_PERMISSIONS, SessionStoreError, open_storage_state
+
+posix_only = pytest.mark.skipif(not POSIX_PERMISSIONS, reason="Windows has no POSIX mode bits")
 
 STATE = {"cookies": [{"name": "PHPSESSID", "value": "abc", "domain": "dvwa", "path": "/"}],
          "origins": []}
@@ -51,12 +53,20 @@ def test_a_stale_file_is_refused_and_says_how_to_reseed(tmp_path):
     assert e.value.stale
 
 
+@posix_only
 def test_a_file_readable_by_others_is_refused(tmp_path):
     f = _file(tmp_path, mode=0o644)
     with pytest.raises(SessionStoreError, match="chmod 600") as e:
         with open_storage_state(str(f), ttl_hours=12):
             pass
     assert not e.value.stale
+
+
+def test_mode_bits_are_not_checked_where_the_os_has_none(tmp_path, monkeypatch):
+    monkeypatch.setattr(session_store, "POSIX_PERMISSIONS", False)
+    f = _file(tmp_path, mode=0o644)
+    with open_storage_state(str(f), ttl_hours=12) as path:
+        assert path == str(f)
 
 
 def test_a_file_in_the_repo_that_git_does_not_ignore_is_refused(tmp_path, monkeypatch):
@@ -72,7 +82,8 @@ def test_an_env_source_exists_on_disk_only_for_the_run(monkeypatch, encode):
     monkeypatch.setenv("DVWA_SESSION", encode(json.dumps(STATE)))
     with open_storage_state("env:DVWA_SESSION", ttl_hours=12) as path:
         assert json.loads(open(path).read()) == STATE
-        assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+        if POSIX_PERMISSIONS:
+            assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
     assert not os.path.exists(path)
 
 
@@ -106,6 +117,7 @@ def test_config_carries_the_ttl():
     assert appconfig.storage_state_ttl_hours({"auth": {"storage_state_ttl_hours": 2}}) == 2
 
 
+@posix_only
 def test_the_seed_writes_a_private_file(tmp_path):
     from authoring.seed import _make_private
     f = tmp_path / "s.json"; f.write_text("{}"); os.chmod(f, 0o644)
@@ -138,6 +150,7 @@ def test_the_runner_falls_back_to_a_login_when_the_stored_session_is_stale(tmp_p
     assert "state" in seen and seen["state"] is None
 
 
+@posix_only
 def test_the_runner_stops_on_a_mishandled_stored_session(tmp_path, monkeypatch, capsys):
     rc, seen = _runner(tmp_path, monkeypatch, _file(tmp_path, mode=0o644))
     assert rc == 2 and "state" not in seen
