@@ -125,7 +125,7 @@ def diff(current_records: Iterable[dict], previous_records: Iterable[dict],
 def _load_state(state_path: str) -> dict:
     if not os.path.exists(state_path):
         return {}
-    with open(state_path) as fh:
+    with open(state_path, encoding="utf-8") as fh:
         return json.load(fh)
 
 
@@ -142,7 +142,7 @@ def save_state(state_path: str, app_id: str, records: Iterable[dict], coverage=N
     if coverage is not None:
         entry["coverage"] = coverage
     state[app_id] = entry
-    with open(state_path, "w") as fh:
+    with open(state_path, "w", encoding="utf-8") as fh:
         json.dump(state, fh, indent=2)
 
 
@@ -164,7 +164,7 @@ def load_coverage(state_path: str, app_id: str):
 
 def _read_records(source: str | object) -> list[dict]:
     """Read detection records from a JSON array or NDJSON file/stream."""
-    fh = source if hasattr(source, "read") else open(source)
+    fh = source if hasattr(source, "read") else open(source, encoding="utf-8")
     try:
         text = fh.read()
     finally:
@@ -195,13 +195,13 @@ def main(argv: list[str] | None = None) -> int:
 
     current = _read_records(sys.stdin if args.records == "-" else args.records)
     previous = load_previous(args.state, args.app_id)
-    coverage = json.loads(open(args.coverage).read()) if args.coverage else None
+    coverage = json.loads(open(args.coverage, encoding="utf-8").read()) if args.coverage else None
     labeled = diff(current, previous, coverage)
 
     if args.out == "-":
         write_json_array(labeled, sys.stdout)
     else:
-        with open(args.out, "w") as fh:
+        with open(args.out, "w", encoding="utf-8") as fh:
             write_json_array(labeled, fh)
 
     if not args.no_save:

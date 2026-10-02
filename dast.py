@@ -292,7 +292,7 @@ def _discover(args, path) -> int:
     path.write_text(discover.render_config(
         app_id=args.app, base_url=args.base_url, login_url=args.login_url,
         steps=found["steps"], proof=found["proof"],
-        authenticated_routes=found.get("authenticated_routes", []), model=found["model"]))
+        authenticated_routes=found.get("authenticated_routes", []), model=found["model"]), encoding="utf-8")
     print(f"\nwrote {display(path)}")
     print(f"  login:  {len(found['steps'])} steps against {args.login_url}")
     print(f"  proof:  {json.dumps(found['proof'])}")
@@ -308,7 +308,7 @@ def _write_skeleton(args, path) -> int:
         app_id=args.app, base_url=args.base_url, host=host, mode=args.auth,
         environment_class=args.environment_class,
         app_env=args.app.replace("-", "_").upper(),
-    ))
+    ), encoding="utf-8")
     print(f"wrote {display(path)}")
     try:
         appconfig.load_app_config(args.app)
@@ -362,7 +362,7 @@ def cmd_author(args) -> int:
     if rc:
         return rc
 
-    trace = json.loads((traced / "trace.json").read_text())
+    trace = json.loads((traced / "trace.json").read_text(encoding="utf-8"))
     summary = generate_mod.generate(trace, str(bundle), config, use_llm=not args.no_llm)
     print(json.dumps(summary, indent=2))
 
@@ -436,8 +436,8 @@ def cmd_report(args) -> int:
     except Exception as exc:
         print(f"report: suppressions file is invalid — {exc}", file=sys.stderr)
         return 2
-    triaged = triage.apply(json.loads(labeled.read_text()), suppressions, date.today())
-    labeled.write_text(json.dumps(triaged, indent=2) + "\n")
+    triaged = triage.apply(json.loads(labeled.read_text(encoding="utf-8")), suppressions, date.today())
+    labeled.write_text(json.dumps(triaged, indent=2) + "\n", encoding="utf-8")
     for rec in triaged:
         if (rec.get("suppression") or {}).get("expired"):
             print(f"suppression expired {rec['suppression'].get('expires')}: "
@@ -458,8 +458,8 @@ def cmd_report(args) -> int:
     if trace_file.exists() and cov_file.exists():
         from detections import reachability
         summary = reachability.summarize(
-            reachability.exposed_params(json.loads(trace_file.read_text())),
-            json.loads(cov_file.read_text()))
+            reachability.exposed_params(json.loads(trace_file.read_text(encoding="utf-8"))),
+            json.loads(cov_file.read_text(encoding="utf-8")))
         if summary["exposed"]:
             line = (f"reachability: {summary['exercised']}/{summary['exposed']} exposed "
                     f"parameters exercised")
@@ -474,12 +474,12 @@ def cmd_report(args) -> int:
     inv = None
     if cov_file.exists():
         from detections import inventory
-        cov_data = json.loads(cov_file.read_text())
+        cov_data = json.loads(cov_file.read_text(encoding="utf-8"))
         declared = (cov_data.get("declared") or {}).get("routes")
         if declared:
             inv = inventory.summarize(declared, cov_data, "openapi")
         elif trace_file.exists():
-            inv = inventory.summarize(inventory.from_trace(json.loads(trace_file.read_text())),
+            inv = inventory.summarize(inventory.from_trace(json.loads(trace_file.read_text(encoding="utf-8"))),
                                       cov_data, "trace")
         if inv and inv["declared"]:
             label = "OpenAPI spec" if inv["source"] == "openapi" else "authoring walk"
@@ -505,7 +505,7 @@ def cmd_report(args) -> int:
     fail_on, fail_on_src = _first_set(args.fail_on, os.environ.get("DAST_FAIL_ON"),
                                       cfg_fail_on, "high")
     try:
-        gate = policy_gate(json.loads(labeled.read_text()), fail_on)
+        gate = policy_gate(json.loads(labeled.read_text(encoding="utf-8")), fail_on)
     except ValueError as exc:
         print(f"report: {exc}", file=sys.stderr)
         return 2
@@ -539,7 +539,7 @@ def cmd_report(args) -> int:
         "evidence_url": {"value": evidence_url, "source": evidence_src},
         "gate": {"fail_on": {"value": fail_on, "source": fail_on_src},
                  "passed": gate["passed"], "blocking": len(gate["blocking"])},
-    }, indent=2) + "\n")
+    }, indent=2) + "\n", encoding="utf-8")
 
     # Coverage-aware publishing: the export drops `resolved` and carries `not_scanned`
     # forward, so GitHub never closes a finding this scan did not look for.
@@ -580,17 +580,17 @@ def cmd_report(args) -> int:
     # to the run page, where the evidence artifact lives too.
     from detections import summary as scan_summary
     page = scan_summary.render(
-        triaged, json.loads(cov_file.read_text()) if cov_file.exists() else {},
-        json.loads((run_dir / "settings.json").read_text()),
+        triaged, json.loads(cov_file.read_text(encoding="utf-8")) if cov_file.exists() else {},
+        json.loads((run_dir / "settings.json").read_text(encoding="utf-8")),
         app_id=args.app, scan_id=run_dir.name, reachability=summary,
         uploaded=bool(args.upload), inventory=inv,
-        events_count=sum(1 for _ in open(run_dir / "events.jsonl"))
+        events_count=sum(1 for _ in open(run_dir / "events.jsonl", encoding="utf-8"))
         if (run_dir / "events.jsonl").exists() else None)
-    (run_dir / "summary.md").write_text(page)
+    (run_dir / "summary.md").write_text(page, encoding="utf-8")
     print(f"summary: {display(run_dir / 'summary.md')}")
     step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if step_summary:
-        with open(step_summary, "a") as fh:
+        with open(step_summary, "a", encoding="utf-8") as fh:
             fh.write(page + "\n")
     # SARIF is written and an explicit upload has run either way: a failing build still
     # publishes its evidence. The gate decides only the exit code.
@@ -639,7 +639,7 @@ def cmd_triage(args) -> int:
 
     real = appconfig.suppressions_path(args.app)
     existing = triage.load(real)
-    result = triage.from_github(_dismissed_alerts(owner, repo), json.loads(source.read_text()),
+    result = triage.from_github(_dismissed_alerts(owner, repo), json.loads(source.read_text(encoding="utf-8")),
                                 existing, date.today())
     proposed = real.with_name("suppressions.proposed.yaml")
     proposed.parent.mkdir(parents=True, exist_ok=True)
@@ -647,7 +647,7 @@ def cmd_triage(args) -> int:
               "# Review each entry, then move the ones you agree with into suppressions.yaml.\n"
               "# Nothing here takes effect until it is in that file.\n")
     proposed.write_text(header + yaml.safe_dump({"suppressions": result["proposed"]},
-                                                sort_keys=False))
+                                                sort_keys=False), encoding="utf-8")
     print(f"triage: {len(result['proposed'])} proposed, {len(result['ambiguous'])} ambiguous, "
           f"{len(result['unmatched'])} unmatched — written to {display(proposed)}")
     for a in result["ambiguous"]:
@@ -683,7 +683,7 @@ def cmd_explain(args) -> int:
 
     def _load(run, name):
         path = run / name
-        return json.loads(path.read_text()) if path.exists() else {}
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
     out = explain_mod.explain_disappearance(
         _load(prev, "records.json"), _load(cur, "records.json"),
@@ -726,7 +726,8 @@ def build_parser() -> argparse.ArgumentParser:
                         "verify it by logging in — needs <APP>_USER/<APP>_PASS and a model key")
     o.add_argument("--login-url", default="/login", help="Login page path (with --discover)")
     o.add_argument("--zap-proxy", default=None, help="Discover through ZAP (matches the scan)")
-    o.add_argument("--model", default="claude-opus-4-8")
+    o.add_argument("--model", default=None,
+                   help="model id (default depends on LLM_PROVIDER: anthropic or copilot)")
     o.add_argument("--headed", action="store_true", help="Watch the verification log in")
     o.set_defaults(func=cmd_onboard)
 

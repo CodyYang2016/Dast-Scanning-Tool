@@ -25,7 +25,7 @@ from pathlib import Path
 
 import jsonschema
 
-from authoring import appconfig
+from authoring import appconfig, llm_backend
 from authoring.record import build_trace, request_event, write_trace
 from authoring.seed import load_seed
 from runner.action_policy import validate_action
@@ -48,7 +48,7 @@ def validate_proposal(action: dict, scope: dict, deny_actions=None, safe_forms=N
     """Validate a proposed action against the action schema AND the action policy.
     Returns (ok: bool, reason: str). Fail-closed: any schema or policy failure -> not ok."""
     try:
-        jsonschema.validate(action, json.loads(_ACTION_SCHEMA.read_text()))
+        jsonschema.validate(action, json.loads(_ACTION_SCHEMA.read_text(encoding="utf-8")))
     except jsonschema.ValidationError as exc:
         return False, f"schema: {exc.message}"
     if action.get("action") == "stop":
@@ -326,12 +326,10 @@ def propose_fallback(observation: dict, visited, scope: dict, deny_actions=None,
 
 # ---- LLM proposer (primary) -------------------------------------------------------------
 
-def propose_llm(observation: dict, model: str, api_key: str) -> dict:
+def propose_llm(observation: dict, model: str, api_key: str | None = None) -> dict:
     """Ask the LLM for ONE constrained action given the (already redacted) observation. Raises on
     any failure so callers fall back (D9). Mirrors authoring/generate.plan_from_llm."""
-    import anthropic  # lazy
-
-    schema = _ACTION_SCHEMA.read_text()
+    schema = _ACTION_SCHEMA.read_text(encoding="utf-8")
     system = (
         "You drive an authenticated DAST exploration. Given a redacted observation of the current "
         "page (links, forms, observed API calls) you propose exactly ONE next action to widen "
@@ -347,12 +345,7 @@ def propose_llm(observation: dict, model: str, api_key: str) -> dict:
         "{\"action\":\"stop\"} when nothing useful remains."
     )
     user = "Redacted observation:\n" + json.dumps(observation, indent=2)
-    client = anthropic.Anthropic(api_key=api_key)
-    msg = client.messages.create(
-        model=model, max_tokens=1024, system=system,
-        messages=[{"role": "user", "content": user}],
-    )
-    text = "".join(getattr(b, "text", "") for b in msg.content)
+    text = llm_backend.complete(system, user, model, api_key=api_key, max_tokens=1024)
     return parse_action_text(text)
 
 
@@ -377,10 +370,10 @@ def parse_action_text(text: str) -> dict:
 
 def next_action(observation: dict, visited, scope: dict, *, deny_actions=None, safe_forms=None,
                 submit_get_forms: bool = True, allow_writes: bool = False, use_llm: bool = True,
-                model: str = _DEFAULT_MODEL, api_key: str | None = None):
+                model: str | None = None, api_key: str | None = None):
     """Return (action, source). LLM-primary; on any LLM/validation failure, deterministic fallback."""
-    api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-    if use_llm and api_key:
+    model = model or llm_backend.default_model()
+    if use_llm and llm_backend.available(api_key):
         try:
             action = _normalize_action(propose_llm(observation, model, api_key))
             ok, reason = validate_proposal(action, scope, deny_actions, safe_forms,
@@ -445,7 +438,7 @@ def _observe(page, base_url: str, api_events: list[dict]) -> dict:
 def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[str], scope: dict, *,
             config: dict | None = None,
             deny_actions=None, safe_forms=None, max_pages: int = 50, use_llm: bool = True,
-            model: str = _DEFAULT_MODEL, api_key: str | None = None, zap_proxy: str | None = None,
+            model: str | None = None, api_key: str | None = None, zap_proxy: str | None = None,
             headless: bool = True, slow_mo: int = 0,
             already_seen: set | None = None) -> tuple[dict, ScopeGuard]:
     """Run the seeded, LLM-driven exploration loop and return (trace, guard). The trace matches
@@ -640,7 +633,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--zap-proxy", default=None, help="Proxy through ZAP so hosts match the runner (D7)")
     p.add_argument("--out-dir", required=True, help="Directory for trace.json + index.json")
     p.add_argument("--app-id", default=None, help="Defaults to scope.app_id")
-    p.add_argument("--model", default=_DEFAULT_MODEL)
+    p.add_argument("--model", default=None,
+                   help="model id (default depends on LLM_PROVIDER: anthropic or copilot)")
     p.add_argument("--no-llm", action="store_true", help="Force the deterministic fallback proposer")
     p.add_argument("--max-pages", type=int, default=50)
     p.add_argument("--repeat", type=int, default=1, metavar="N",

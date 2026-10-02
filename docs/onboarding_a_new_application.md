@@ -305,7 +305,7 @@ Set `DAST_LOG_FORMAT=json` to mirror the events to stderr for a log shipper.
 ### Running it in CI
 
 Every push runs `ruff` and the test suite (`.github/workflows/tests.yml`). A weekly workflow,
-`dast-selftest.yml`, scans Juice Shop through compose with `--expect-findings` — a canary that goes
+`dast-selftest.yml` (planned; not yet in this tree), scans Juice Shop through compose with `--expect-findings` — a canary that goes
 red if the scanner ever stops finding vulnerabilities in an app that has them — and keeps the
 results as a downloadable artifact. Its run page shows the scan summary, and each alert's
 request/response link points at that run. It publishes nothing unless run by hand with `upload`

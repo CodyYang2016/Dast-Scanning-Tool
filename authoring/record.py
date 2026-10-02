@@ -199,8 +199,8 @@ def _dismiss(page, selectors) -> None:
 def write_trace(trace: dict, out_dir: str) -> None:
     d = Path(out_dir)
     d.mkdir(parents=True, exist_ok=True)
-    (d / "trace.json").write_text(json.dumps(trace, indent=2) + "\n")
-    (d / "index.json").write_text(json.dumps(trace["index"], indent=2) + "\n")
+    (d / "trace.json").write_text(json.dumps(trace, indent=2) + "\n", encoding="utf-8")
+    (d / "index.json").write_text(json.dumps(trace["index"], indent=2) + "\n", encoding="utf-8")
 
 
 def main(argv: list[str] | None = None) -> int:
