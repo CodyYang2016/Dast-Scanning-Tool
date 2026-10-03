@@ -576,6 +576,29 @@ def cmd_report(args) -> int:
         if rc:
             return rc
 
+    # Issues are the route for repositories without code scanning (no Advanced Security
+    # licence). Explicit, like the upload: a tracker other people read is also a one-way door.
+    if args.issues:
+        from detections import github_api, github_issues
+        owner, repo = target["owner"]["value"], target["repo"]["value"]
+        if not (owner and repo):
+            print("--issues needs a destination: --owner/--repo, $DAST_GH_OWNER/$DAST_GH_REPO, "
+                  "or publish.github in app.yaml", file=sys.stderr)
+            return 2
+        try:
+            actions = github_issues.sync(owner, repo, triaged, args.app,
+                                         args.issue_min_severity,
+                                         target["ref"]["value"], target["commit"]["value"])
+        except github_api.GitHubError as exc:
+            print(f"issues: {exc}", file=sys.stderr)
+            events.emit("issues", repository=f"{owner}/{repo}", outcome="failed")
+            return 1
+        print(github_issues.report(actions, owner, repo))
+        ops: dict[str, int] = {}
+        for a in actions:
+            ops[a["op"]] = ops.get(a["op"], 0) + 1
+        events.emit("issues", repository=f"{owner}/{repo}", outcome="ok", **ops)
+
     # One page answering what anyone asks first (W1-6). In GitHub Actions it is also appended
     # to the run page, where the evidence artifact lives too.
     from detections import summary as scan_summary
@@ -764,6 +787,12 @@ def build_parser() -> argparse.ArgumentParser:
     r = common(sub.add_parser("report", help="lifecycle diff -> SARIF -> (optionally) GitHub"))
     r.add_argument("--driver-version", default="ZAP 2.17.0")
     r.add_argument("--upload", action="store_true", help="publish to GitHub code scanning")
+    r.add_argument("--issues", action="store_true",
+                   help="publish as GitHub Issues, one per rule (for repositories without code "
+                        "scanning)")
+    r.add_argument("--issue-min-severity", default="low",
+                   choices=["critical", "high", "medium", "low", "info"],
+                   help="With --issues, ignore findings below this severity (default: low)")
     r.add_argument("--owner", default=None)
     r.add_argument("--repo", default=None)
     r.add_argument("--ref", default=None,

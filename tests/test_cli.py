@@ -504,3 +504,38 @@ def test_an_aborted_scan_does_not_hide_the_last_real_one(tmp_path):
     (real / "records.json").write_text("[]")
     (paths.scans / "20260102T000000Z" / "evidence").mkdir(parents=True)     # aborted
     assert paths.latest_scan() == real
+
+
+# ---- GitHub Issues: the publishing route without code scanning ---------------------------
+
+def test_report_publishes_issues_only_when_asked(tmp_path, monkeypatch, capsys):
+    from detections import github_issues
+    calls = []
+    monkeypatch.setattr(github_issues, "sync", lambda *a, **k: calls.append(a) or [])
+    for var in ("DAST_GH_OWNER", "DAST_GH_REPO", "DAST_FAIL_ON"):
+        monkeypatch.delenv(var, raising=False)
+    _scan_dir(tmp_path)
+    assert _report(tmp_path, "--fail-on", "none", "--owner", "o", "--repo", "r") == 0
+    assert calls == []
+    assert _report(tmp_path, "--fail-on", "none", "--owner", "o", "--repo", "r", "--issues") == 0
+    (owner, repo, records, app, min_sev, *_), = calls
+    assert (owner, repo, app, min_sev) == ("o", "r", "gateapp", "low")
+    assert records and all("status" in r for r in records)
+    assert "issues (o/r)" in capsys.readouterr().out
+
+
+def test_issues_need_a_destination(tmp_path, monkeypatch):
+    for var in ("DAST_GH_OWNER", "DAST_GH_REPO"):
+        monkeypatch.delenv(var, raising=False)
+    _scan_dir(tmp_path)
+    assert _report(tmp_path, "--fail-on", "none", "--issues") == 2
+
+
+def test_an_issues_api_failure_fails_the_report(tmp_path, monkeypatch):
+    from detections import github_api, github_issues
+
+    def fail(*a, **k):
+        raise github_api.GitHubError("403: Resource not accessible")
+    monkeypatch.setattr(github_issues, "sync", fail)
+    _scan_dir(tmp_path)
+    assert _report(tmp_path, "--fail-on", "none", "--owner", "o", "--repo", "r", "--issues") == 1

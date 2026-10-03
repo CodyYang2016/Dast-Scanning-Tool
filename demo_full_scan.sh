@@ -109,7 +109,10 @@ for record in records[:5]:
     print(f"- {record.get('severity')} | {record.get('rule_id')} | {record.get('title')} | {record.get('endpoint')}")
 PY
 
-echo "To publish, upload to a repository you own with code scanning enabled:"
+echo "To publish as GitHub Issues (no Advanced Security needed; drop --dry-run to write):"
+echo "  python -m detections.github_issues out/labeled.json --app-id juice-shop \\"
+echo "    --owner <owner> --repo <repo> --dry-run"
+echo "Or, to a repository with code scanning (needs GitHub Advanced Security):"
 echo "  python -m detections.github_upload out/results.sarif --owner <owner> --repo <repo> \\"
 echo "    --ref refs/heads/<branch> --commit <full SHA that exists in that repo>"
 echo "Browser URLs:"
