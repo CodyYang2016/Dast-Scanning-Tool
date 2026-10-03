@@ -89,7 +89,7 @@ ZAP_IMG=ntr.nwie.net/docker.io/zaproxy/zap-stable
 | Fact | Detail | Why it matters |
 |---|---|---|
 | Python | `$PY` = the repo venv (mac: 3.12.14; win: 3.11+) with playwright 1.62.0, anthropic, jsonschema, pytest | bare `python`/`python3` is the wrong interpreter on both machines (mac ships 3.9; Windows may pick the Store stub) — **always** use `$PY` |
-| Tests | `$PY -m pytest -q` → **213 passed** in <1s | your fallback evidence (§9) |
+| Tests | `$PY -m pytest -q` → **1,090 passed** in a few seconds | your fallback evidence (§9) |
 | Container tool (mac) | Docker Desktop is at `/Applications/Docker.app`, **but** `/usr/local/bin/docker` is a broken symlink (→ `/Volumes/Docker 1/…`), so `docker` is **not on PATH** in a fresh shell | fix once, see below |
 | Container tool (win) | Podman runs in a WSL VM; the VM may ship a dead `127.0.0.1:8888` proxy that breaks pulls | run `bash ./prepull_playwright_podman_nationwide.sh`; it repairs the VM, restarts it, and verifies cached Playwright/ZAP images |
 | Compose file | `compose.yaml` (project `ssd-dast-poc`) does **not publish ports** for `juice`/`zap` — it's for the all-in-container runner | for a host-side demo you need `localhost:3000` / `localhost:8080`, so start juice+zap with `$CT run -p …` (README "Option B"), not compose |
@@ -250,7 +250,7 @@ which is exactly what `wait_ready()` in `runner/main.py` checks before scanning.
 
 ```bash
 $PY -c "from playwright.sync_api import sync_playwright as s; b=s().start().chromium.launch(); b.close(); print('chromium ok')"
-$PY -m pytest -q          # SEE: 213 passed
+$PY -m pytest -q          # SEE: 1,090 passed
 ```
 
 ### 1.5 RUN — clean scratch dir + pick demo credentials
@@ -888,7 +888,7 @@ Q&A cheat-sheet: bottom of `docs/dast_poc_phase2_demo_script.md`.
 today, and the suite that backs every piece." Then:
 
 ```bash
-$PY -m pytest -q                          # 213 passed
+$PY -m pytest -q                          # 1,090 passed
 sed -n '/## Verification/,/## Out of scope/p' docs/authoring_clis_design.md
 ls out/phase2-demo/warmup/                             # the trace you recorded in §1.6
 ```

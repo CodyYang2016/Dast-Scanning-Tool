@@ -1,6 +1,6 @@
 # Status and roadmap
 
-*As of 2026-10-01, `main` at `ecfeae9`. The issue-by-issue history is in
+*As of 2026-10-03, `main` after PR #9 (`parallel-poc-branch` merged in). The issue-by-issue history is in
 [`dast_poc_remediation_plan.md`](dast_poc_remediation_plan.md); this page is the summary.*
 
 ## Where we are
@@ -12,13 +12,17 @@ one config file and is ready for a first scan of a real internal application in 
 non-production environment. **No code item blocks that scan; what remains on the critical path
 is decisions.**
 
-| | Start of 2026-09-30 | Now |
-|---|---|---|
-| Open register items | 43 | **15** (+ 1 effectively done) |
-| Tests | 559 | **948** |
-| Apps onboarded (config only) | Juice Shop + 2 | same three, all re-verified live |
-| DVWA high-severity findings | 7 | **17** (10 from the new DOM-XSS pass) |
-| Lifecycle "fix → re-scan → resolved" | never demonstrated | [demonstrated](proof/fix_rescan_resolved.md) |
+| | Start of 2026-09-30 | 2026-10-01 | Now (2026-10-03) |
+|---|---|---|---|
+| Open register items | 43 | 15 (+ 1 effectively done) | **14** (+ 1 effectively done) |
+| Tests | 559 | 948 | **1,090** |
+| Apps onboarded (config only) | Juice Shop + 2 | same three, all re-verified live | same three, plus the semgate lab |
+| DVWA high-severity findings | 7 | 17 (10 from the new DOM-XSS pass) | **19**¹ |
+| Lifecycle "fix → re-scan → resolved" | never demonstrated | [demonstrated](proof/fix_rescan_resolved.md) | same |
+
+¹ Hand-picked `record` path with the DOM-XSS pass, measured 2026-10-03. It was identical before
+and after the merge: 522 findings with the same fingerprints. The Juice Shop self-test also held
+steady: 1,351 findings over 359 routes, against 1,350 before.
 
 ### What it does now
 
@@ -32,6 +36,10 @@ is decisions.**
 | **Session integrity** | Session re-probed during the scan. A lost session is re-established by logging in again, with ZAP's attacks pointed at the new session. The stored login comes from a secret store or an owner-only, expiring file. Login failures are one line, never a traceback |
 | **Coverage that means something** | Script-driven API writes replayed into ZAP (disposable apps). Data reset before each scan. DOM-XSS in its own bounded pass. OpenAPI import, with "N of M declared routes" |
 | **Unattended operation** | Per-run `events.jsonl` audit trail. GitHub over HTTP by token (no `gh` needed). Lint and tests on every push, plus a weekly self-test |
+| **Model provider** | Anthropic or the GitHub Copilot CLI, chosen by `LLM_PROVIDER`. `--require-llm` fails loudly instead of quietly falling back, so a misconfigured provider cannot pass for a deliberate `--no-llm` run |
+| **Exploration that gets past forms** | Can answer a question a form asks (an arithmetic gate, say), but only with a value of the shape declared in `explore.inferred_fields`; anything else is refused before it is sent. Keeps a list of links it has not followed yet, returns to pages where it saw a form, and reports whether the app accepted each submit. The semgate lab shows the difference: 3 pages without the model, 6 with it |
+| **Publishing without Advanced Security** | `dast report --issues` files findings as GitHub Issues for repositories without code scanning |
+| **Runs inside Nationwide** | Podman path, Playwright image prepull, pip through Artifactory, and the corporate CA staged at build time from the operator's machine. Never committed. See [`nationwide_test_checklist.md`](nationwide_test_checklist.md) |
 
 ## Architecture
 
@@ -158,7 +166,7 @@ quadrantChart
     Target + operator choice: [0.35, 0.95]
     W8-1 commit evidence: [0.15, 0.45]
     W9-4 fingerprint wording: [0.08, 0.15]
-    W9-2 stray upstream files: [0.1, 0.12]
+    W9-1 port demo deck: [0.1, 0.12]
     W3-4 compact state: [0.45, 0.4]
     W7-5 requests not routes: [0.75, 0.55]
     W7-4 LLM experiment: [0.8, 0.6]
@@ -192,7 +200,7 @@ None of these can be closed by code. They have the longest lead time, so they sh
 | **W7-4** | Measure the LLM's increment over deterministic discovery, on three apps | 2 | Part of the funding case rests on this number |
 | **W3-4** | `state.json` is the database; compact it (fingerprints + coverage) or move to SQLite | 1 | Before app #3 runs on a schedule |
 | **W7-2** | Skip the model when the next step is obvious | 1 | Cost and speed of exploration |
-| **W7-3** | Exploration queue: backtracking, depth/time limits | 1 | Exploration stops at the first dead end today |
+| **W7-3** | **Partly done (PR #9).** The link frontier and form revisits landed; depth/time limits remain | 0.5 | Exploration no longer stops at the first dead end, but nothing yet bounds how deep or how long it goes |
 | **W6-2** | (effectively done: per-rule outcomes and truncation recorded) | — | Row needs closing |
 
 ### Evidence and demo
@@ -207,8 +215,8 @@ None of these can be closed by code. They have the longest lead time, so they sh
 
 | Item | What | Size |
 |---|---|---|
-| **W9-1** | Reconcile with the diverged upstream repository (it has a Copilot LLM backend) | 1 |
-| **W9-2** | Remove stray upstream files | 0.2 |
+| **W9-1** | Port the demo deck. The rest of the upstream reconciliation landed in PR #9: Copilot backend, helper scripts, Nationwide path | 0.2 |
+| ~~W9-2~~ | ✅ Stray upstream files: none remain on `main` (PR #9) | — |
 | **W9-4** | Restate the fingerprint formula honestly: three effective dimensions, not four | 0.2 |
 
 ### Smaller known gaps (not register rows)
@@ -238,7 +246,7 @@ flowchart LR
     subgraph later["Alongside the pilot"]
         C4["W7-4 LLM experiment · W7-2 · W7-3"]:::code
         C5["W8-3 · W8-5 demo"]:::code
-        C6["W9-1/2/4 housekeeping"]:::code
+        C6["W9-1/4 housekeeping"]:::code
     end
     D1 --> P
     C1 --> P
