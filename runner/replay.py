@@ -80,6 +80,27 @@ def wait_for_auth(page, base_url: str, proof: dict, timeout_ms: int = 15000) -> 
     raise AuthProofError(f"unknown auth.proof mode '{mode}'")
 
 
+class FlowError(Exception):
+    """Raised when a journey step cannot be executed as a browser step at all.
+
+    Distinct from a failed check: nothing about the application is wrong, the plan is. Carried as
+    its own type so the runner can name the offending step instead of reporting it as a failed
+    login or letting a Playwright traceback out of `dast scan`."""
+
+
+# What Chromium says when a navigation turns into a download instead of a page.
+_DOWNLOAD_MARKER = "Download is starting"
+
+
+def _as_flow_error(exc: BaseException) -> BaseException:
+    """Translate an unexecutable-journey failure into FlowError; leave everything else alone."""
+    if _DOWNLOAD_MARKER in str(exc):
+        return FlowError(
+            "a journey step navigated to a file download rather than a page, so the flow "
+            f"cannot be replayed: {exc}")
+    return exc
+
+
 class AuthenticationError(RuntimeError):
     """The scan could not log in. One line for the operator, plus what to do (W5-4)."""
 
@@ -252,9 +273,12 @@ def replay(scope: dict, flow_module, base_url: str, zap_proxy: str, headless: bo
                 result = flow_module.run(page, base_url, evidence_dir=evidence_dir)
             else:
                 result = flow_module.run(page, base_url)
-        except Exception:
+        except Exception as exc:
             scope_first(guard)
-            raise
+            flow_exc = _as_flow_error(exc)
+            if flow_exc is exc:
+                raise
+            raise flow_exc from exc
         finally:
             if evidence_dir and "evidence_dir" not in inspect.signature(flow_module.run).parameters:
                 page.screenshot(path=str(Path(evidence_dir) / "screenshot.png"), full_page=True)

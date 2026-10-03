@@ -25,8 +25,8 @@ from detections.normalizer import normalize, write_json_array
 from runner import coverage as coverage_capture
 from runner import evidence
 from runner.preflight import PreflightError, preflight
-from runner.replay import (AuthenticationError, SessionDeadError, classify_login_failure, load_flow,
-                           replay, replay_seeded)
+from runner.replay import (AuthenticationError, FlowError, SessionDeadError, classify_login_failure,
+                           load_flow, replay, replay_seeded)
 from runner import zapapi
 from runner import events, session_refresh
 from runner.reset import ResetError
@@ -249,7 +249,7 @@ def _login(do_login, base_url: str):
     problem, and must read as one."""
     try:
         return do_login()
-    except (ScopeViolation, AuthenticationError):
+    except (ScopeViolation, AuthenticationError, FlowError):
         raise
     except Exception as exc:
         raise classify_login_failure(exc, base_url) from exc
@@ -597,7 +597,7 @@ def main(argv: list[str] | None = None) -> int:
             if state_cm is not None:
                 state_cm.__exit__(None, None, None)
     except (PreflightError, ScanPolicyError, ScanScopeError, ScopeViolation, ZapUnavailableError,
-            zapapi.ZapAuthError, SessionStoreError, ResetError) as exc:
+            zapapi.ZapAuthError, SessionStoreError, ResetError, FlowError) as exc:
         print(f"RUNNER ABORT: {exc}", file=sys.stderr)
         _final_event(args, "abort", kind=type(exc).__name__, reason=str(exc))
         return 2

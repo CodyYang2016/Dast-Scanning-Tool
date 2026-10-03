@@ -541,3 +541,151 @@ def test_a_form_policy_allows_is_still_remembered():
 
 def test_no_predicate_remembers_everything_as_before():
     assert explore.unsubmitted_forms(OBS, set()) != {}
+
+
+# ---- page-relative hrefs, --require-llm, and policy context for the model ----
+
+def test_normalize_resolves_page_relative_against_the_page_it_was_seen_on():
+    # DVWA's file-inclusion module links "./?page=include.php" and "?page=file1.php"; read against
+    # the site root those address /index.php and lose the module entirely.
+    page = "http://dvwa/vulnerabilities/fi/"
+    assert normalize_href("./?page=include.php", page) == "/vulnerabilities/fi/?page=include.php"
+    assert normalize_href("?page=file1.php", page) == "/vulnerabilities/fi/?page=file1.php"
+    assert normalize_href("index.php", page) == "/vulnerabilities/fi/index.php"
+    assert normalize_href("../exec/", page) == "/vulnerabilities/exec/"
+
+
+def test_normalize_collapses_dot_segments_in_a_root_relative_href():
+    assert normalize_href("/../../vulnerabilities/captcha/",
+                          "http://dvwa/vulnerabilities/fi/") == "/vulnerabilities/captcha/"
+
+
+def test_normalize_keeps_a_hash_route_origin_relative_even_on_a_nested_page():
+    assert normalize_href("#/contact", "http://juice:3000/x/y") == "/#/contact"
+
+
+def test_normalize_keeps_cross_origin_hrefs_absolute_for_the_scope_guard():
+    page = "http://dvwa/vulnerabilities/fi/"
+    assert normalize_href("//evil.test/x", page) == "http://evil.test/x"
+    assert normalize_href("https://evil.test/x", page) == "https://evil.test/x"
+
+
+def test_next_action_normalizes_llm_path_against_the_observed_page(monkeypatch):
+    monkeypatch.setattr("authoring.explore.propose_llm",
+                        lambda obs, model, api_key: {"action": "follow_link",
+                                                     "target": {"method": "GET",
+                                                                "path": "./?page=include.php"}})
+    obs = {"url": "http://dvwa/vulnerabilities/fi/", "links": [], "forms": [], "api": []}
+    action, src = next_action(obs, set(), SCOPE, api_key="k")
+    assert src == "llm" and action["target"]["path"] == "/vulnerabilities/fi/?page=include.php"
+
+
+def test_strict_tolerates_a_flaky_reply_but_aborts_a_dead_provider(monkeypatch):
+    import pytest
+    from authoring import explore as explore_mod
+    from authoring.llm_backend import LLMRequiredError, StrictLLM
+
+    monkeypatch.setattr(explore_mod.llm_backend, "available", lambda api_key=None: True)
+    monkeypatch.setattr(explore_mod, "propose_llm",
+                        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("no JSON object")))
+    obs = {"url": "/#/", "links": ["/#/about"], "forms": [], "api": []}
+    strict = StrictLLM(max_consecutive=3)
+
+    for _ in range(2):  # a prose answer costs the step, not the run
+        action, source = next_action(obs, set(), SCOPE, strict=strict)
+        assert source == "fallback" and action["target"]["path"] == "/#/about"
+    with pytest.raises(LLMRequiredError):
+        next_action(obs, set(), SCOPE, strict=strict)
+
+
+def test_strict_forgets_failures_once_the_model_answers(monkeypatch):
+    from authoring import explore as explore_mod
+    from authoring.llm_backend import StrictLLM
+
+    good = {"action": "follow_link", "target": {"method": "GET", "path": "/#/about"}}
+    replies = [RuntimeError("no JSON object"), RuntimeError("no JSON object"), good]
+    monkeypatch.setattr(explore_mod.llm_backend, "available", lambda api_key=None: True)
+
+    def flaky(*_a, **_k):
+        reply = replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    monkeypatch.setattr(explore_mod, "propose_llm", flaky)
+    obs = {"url": "/#/", "links": ["/#/about"], "forms": [], "api": []}
+    strict = StrictLLM(max_consecutive=3)
+    for _ in range(3):
+        next_action(obs, set(), SCOPE, strict=strict)
+    assert strict.consecutive == 0 and strict.successes == 1
+    strict.finish()  # the model drove a step: not a broken provider
+
+
+def test_strict_finish_raises_when_the_model_never_drove_a_step():
+    import pytest
+    from authoring.llm_backend import LLMRequiredError, StrictLLM
+
+    strict = StrictLLM(max_consecutive=99)
+    strict.failure(RuntimeError("no JSON object"))
+    with pytest.raises(LLMRequiredError):
+        strict.finish()
+
+
+def test_strict_finish_is_silent_on_a_clean_run():
+    from authoring.llm_backend import StrictLLM
+
+    StrictLLM().finish()  # nothing attempted, nothing failed
+
+
+def test_strict_raises_immediately_when_the_provider_is_not_available(monkeypatch):
+    import pytest
+    from authoring import explore as explore_mod
+    from authoring.llm_backend import LLMRequiredError, StrictLLM
+
+    monkeypatch.setattr(explore_mod.llm_backend, "available", lambda api_key=None: False)
+    with pytest.raises(LLMRequiredError):
+        next_action({"url": "/#/", "links": [], "forms": [], "api": []}, set(), SCOPE,
+                    strict=StrictLLM())
+
+
+def test_strict_still_falls_back_on_a_policy_rejection(monkeypatch):
+    # A refused action is the safety layer working, not a broken provider: keep exploring.
+    from authoring import explore as explore_mod
+    from authoring.llm_backend import StrictLLM
+
+    monkeypatch.setattr(explore_mod.llm_backend, "available", lambda api_key=None: True)
+    monkeypatch.setattr(explore_mod, "propose_llm",
+                        lambda *_a, **_k: {"action": "follow_link", "target": {"path": "/#/logout"}})
+    obs = {"url": "/#/", "links": ["/#/about"], "forms": [], "api": []}
+    strict = StrictLLM()
+    action, source = next_action(obs, set(), SCOPE, strict=strict)
+    assert source == "fallback" and action["target"]["path"] == "/#/about"
+    strict.finish()
+
+
+def test_rejected_targets_are_collected_for_the_next_prompt(monkeypatch):
+    from authoring import explore as explore_mod
+
+    monkeypatch.setattr(explore_mod.llm_backend, "available", lambda api_key=None: True)
+    monkeypatch.setattr(explore_mod, "propose_llm",
+                        lambda *_a, **_k: {"action": "follow_link", "target": {"path": "/#/logout"}})
+    rejected: set[str] = set()
+    next_action({"url": "/#/", "links": [], "forms": [], "api": []}, set(), SCOPE,
+                rejected=rejected)
+    assert rejected == {"/#/logout"}
+
+
+def test_propose_llm_tells_the_model_what_policy_forbids(monkeypatch):
+    from authoring import explore as explore_mod
+
+    seen = {}
+
+    def fake_complete(system, user, model, **kwargs):
+        seen["system"], seen["user"] = system, user
+        return '{"action":"stop"}'
+
+    monkeypatch.setattr(explore_mod.llm_backend, "complete", fake_complete)
+    explore_mod.propose_llm({"url": "/", "forbidden": ["logout"], "rejected": ["/#/logout"]},
+                            "m", "k")
+    assert "forbidden" in seen["system"] and "rejected" in seen["system"]
+    assert "/#/logout" in seen["user"]

@@ -28,7 +28,7 @@ import jsonschema
 from authoring import appconfig, llm_backend
 from authoring.record import build_trace, request_event, write_trace
 from authoring.seed import load_seed
-from runner.action_policy import validate_action
+from runner.action_policy import deny_terms, validate_action
 from runner.preflight import check_scope, preflight
 from runner.replay import SessionDeadError, prove_auth_live
 from runner.redact import redact
@@ -90,7 +90,7 @@ def normalize_href(href: str | None, page_url: str | None = None) -> str | None:
         return h
     if h.startswith("#"):
         return "/" + h
-    if page_url and not h.startswith("/"):
+    if page_url:
         from urllib.parse import urljoin, urlsplit
         resolved = urlsplit(urljoin(page_url, h))
         base = urlsplit(page_url)
@@ -104,7 +104,7 @@ def normalize_href(href: str | None, page_url: str | None = None) -> str | None:
     return h if h.startswith("/") else "/" + h
 
 
-def _normalize_action(action: dict) -> dict:
+def _normalize_action(action: dict, page_url: str | None = None) -> dict:
     """Apply normalize_href to an LLM-proposed path so it gets the same treatment as scraped
     links. A non-navigable path is blanked so schema validation (minLength) rejects it."""
     if not isinstance(action, dict):
@@ -112,7 +112,7 @@ def _normalize_action(action: dict) -> dict:
     target = action.get("target")
     if isinstance(target, dict) and isinstance(target.get("path"), str):
         target = dict(target)
-        target["path"] = normalize_href(target["path"]) or ""
+        target["path"] = normalize_href(target["path"], page_url) or ""
         action = dict(action, target=target)
     return action
 
@@ -342,7 +342,10 @@ def propose_llm(observation: dict, model: str, api_key: str | None = None) -> di
         "reveals an endpoint's parameters, and an endpoint with no visible parameters cannot be "
         "tested. Only when every form here has been tried, follow_link / visit_api to a path in "
         "`links` / `api` that is not in `visited`. Use expand_nav when a menu hides routes. Emit "
-        "{\"action\":\"stop\"} when nothing useful remains."
+        "{\"action\":\"stop\"} when nothing useful remains.\n"
+        "The observation's `forbidden` lists path fragments the operator's policy refuses, and "
+        "`rejected` lists targets already refused on this run: proposing either wastes the step, "
+        "so never propose a path containing a `forbidden` fragment or appearing in `rejected`."
     )
     user = "Redacted observation:\n" + json.dumps(observation, indent=2)
     text = llm_backend.complete(system, user, model, api_key=api_key, max_tokens=1024)
@@ -368,24 +371,52 @@ def parse_action_text(text: str) -> dict:
     return obj
 
 
+def target_key(action: dict) -> str | None:
+    """The path or selector an action addresses — what identifies it as already-rejected."""
+    target = action.get("target") or {}
+    return target.get("path") or target.get("selector") or None
+
+
 def next_action(observation: dict, visited, scope: dict, *, deny_actions=None, safe_forms=None,
                 submit_get_forms: bool = True, allow_writes: bool = False, use_llm: bool = True,
-                model: str | None = None, api_key: str | None = None):
-    """Return (action, source). LLM-primary; on any LLM/validation failure, deterministic fallback."""
+                model: str | None = None, api_key: str | None = None,
+                strict: llm_backend.StrictLLM | None = None,
+                rejected: set[str] | None = None):
+    """Return (action, source). LLM-primary; on any LLM/validation failure, deterministic fallback.
+
+    A rejected target is recorded in `rejected` (when given) so the next observation can tell the
+    model not to propose it again.
+
+    strict is the --require-llm budget: an unavailable provider is fatal immediately (nothing about
+    the run can improve), while a failed call is reported to it and only becomes fatal once enough
+    of them accumulate to mean the provider is dead rather than flaky. A policy rejection is the
+    safety layer working, so it is not a failure at all and still falls back.
+    """
     model = model or llm_backend.default_model()
     if use_llm and llm_backend.available(api_key):
         try:
-            action = _normalize_action(propose_llm(observation, model, api_key))
+            action = _normalize_action(propose_llm(observation, model, api_key),
+                                       observation.get("url"))
             ok, reason = validate_proposal(action, scope, deny_actions, safe_forms,
                                            submit_get_forms, allow_writes)
             if ok:
+                if strict is not None:
+                    strict.success()
                 return action, "llm"
             t = action.get("target") or {}
+            if rejected is not None and target_key(action):
+                rejected.add(target_key(action))
             print(f"explore: LLM action rejected ({reason}): {action.get('action')} "
                   f"{t.get('method', '')} {t.get('path') or t.get('selector') or ''}; using fallback",
                   file=sys.stderr)
         except Exception as exc:
             print(f"explore: LLM path failed ({exc}); using fallback", file=sys.stderr)
+            if strict is not None:
+                strict.failure(exc)
+    elif strict is not None:
+        raise llm_backend.LLMRequiredError(
+            f"provider {llm_backend.provider()} is not available "
+            "(is the CLI installed / the token or key set?)")
     return propose_fallback(observation, visited, scope, deny_actions, safe_forms,
                             submit_get_forms, allow_writes), "fallback"
 
@@ -440,16 +471,24 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
             deny_actions=None, safe_forms=None, max_pages: int = 50, use_llm: bool = True,
             model: str | None = None, api_key: str | None = None, zap_proxy: str | None = None,
             headless: bool = True, slow_mo: int = 0,
-            already_seen: set | None = None) -> tuple[dict, ScopeGuard]:
+            already_seen: set | None = None, require_llm: bool = False,
+            stats: dict | None = None) -> tuple[dict, ScopeGuard]:
     """Run the seeded, LLM-driven exploration loop and return (trace, guard). The trace matches
     record's output (build_trace), so generate/validate/runner consume it unchanged.
 
     slow_mo (ms) delays each Playwright action so a headed run is watchable in a live demo (same
-    knob as record); 0 (default) is full speed and does not affect the captured trace."""
+    knob as record); 0 (default) is full speed and does not affect the captured trace.
+
+    stats, when given, is filled with per-step action source counts: "llm" and "fallback" for
+    steps the proposer chose, "deterministic" for a page's own forms and queued entry points,
+    which are taken without asking the model."""
     from playwright.sync_api import sync_playwright
 
     if not seed_routes:
         raise ValueError("explore requires at least one seed route")
+    if require_llm and not use_llm:
+        raise llm_backend.LLMRequiredError("require_llm contradicts use_llm=False (--no-llm)")
+    strict = llm_backend.StrictLLM() if require_llm else None
     launch_args = ["--no-sandbox", "--disable-dev-shm-usage"] if os.environ.get(
         "RUNNER_CHROMIUM_NO_SANDBOX") else []
     # App-specific knowledge (how auth is proven, what counts as an API call) comes from the
@@ -502,9 +541,13 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
         pending_forms: dict[str, str] = {}
 
         steps = stalled = 0
+        rejected: set[str] = set()
+        forbidden = deny_terms(scope, deny_actions)
         while steps < max_pages:
             observation = redact(_observe(page, base_url, api_events))  # redact BEFORE the LLM
             observation["visited"] = sorted(visited)  # coverage so far, so the model doesn't repeat
+            observation["forbidden"] = forbidden      # what policy will refuse, said up front
+            observation["rejected"] = sorted(rejected)
             # Remember this page's unsubmitted forms before we can be navigated away from it,
             # but only the ones policy would actually let us submit.
             def _permitted(form, _here=observation.get("url", "")):
@@ -522,6 +565,7 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
             # Deterministic first: try this page's own inputs before asking where to go next.
             action = untried_form(observation, visited, scope, deny_actions, safe_forms,
                                   allow_get_forms, allow_writes)
+            src = "deterministic"
             if action is None:
                 dest = next_destination(queue, pending_forms, visited)
                 if dest is not None:
@@ -536,11 +580,14 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
                     action = queued_action(
                         dest, "queued entry point, or a page left holding an unsubmitted form")
                 else:
-                    action, _src = next_action(observation, visited, scope,
-                                               deny_actions=deny_actions, safe_forms=safe_forms,
-                                               submit_get_forms=allow_get_forms,
-                                               allow_writes=allow_writes, use_llm=use_llm,
-                                               model=model, api_key=api_key)
+                    action, src = next_action(observation, visited, scope,
+                                              deny_actions=deny_actions, safe_forms=safe_forms,
+                                              submit_get_forms=allow_get_forms,
+                                              allow_writes=allow_writes, use_llm=use_llm,
+                                              model=model, api_key=api_key, strict=strict,
+                                              rejected=rejected)
+            if stats is not None:
+                stats[src] = stats.get(src, 0) + 1
             if action.get("action") == "stop":
                 # Before ending the run, spend what is left of the budget on forms we saw and
                 # never submitted — each one is an untested parameter.
@@ -616,6 +663,8 @@ def explore(app_id: str, base_url: str, storage_state: str, seed_routes: list[st
         browser.close()
 
     guard.finalize()  # discovery mode: block-and-continue, does not raise
+    if strict is not None:
+        strict.finish()  # a walk the model never drove is a broken provider, not a fallback run
     events.extend(api_events)  # fold observed API calls into the trace
     return build_trace(app_id, base_url, events), guard
 
@@ -636,6 +685,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--model", default=None,
                    help="model id (default depends on LLM_PROVIDER: anthropic or copilot)")
     p.add_argument("--no-llm", action="store_true", help="Force the deterministic fallback proposer")
+    p.add_argument("--require-llm", action="store_true",
+                   help="Fail instead of falling back when the LLM path cannot be taken")
     p.add_argument("--max-pages", type=int, default=50)
     p.add_argument("--repeat", type=int, default=1, metavar="N",
                    help="Explore N times and union the results. One run is a sample: the "
@@ -645,6 +696,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--slow-mo", type=int, default=0, metavar="MS",
                    help="Delay each browser action by MS milliseconds (for headed demos/recordings)")
     args = p.parse_args(argv)
+    if args.require_llm and args.no_llm:  # caught here so it costs no session seed and no traffic
+        p.error("--require-llm contradicts --no-llm")
 
     if not (args.app or (args.seed and args.scope)):
         p.error("give --app, or both --seed and --scope for a hand-written bundle")
@@ -663,6 +716,7 @@ def main(argv: list[str] | None = None) -> int:
     base_url = args.base_url or seed["target"]["base_url"]
     app_id = args.app_id or scope["app_id"]
     traces, guard = [], None
+    stats: dict[str, int] = {}
     from runner.session_store import SessionStoreError, open_storage_state
     ttl = appconfig.storage_state_ttl_hours(config) if config else 12
     try:
@@ -674,6 +728,7 @@ def main(argv: list[str] | None = None) -> int:
                     max_pages=args.max_pages, use_llm=not args.no_llm, model=args.model,
                     zap_proxy=args.zap_proxy, headless=not args.headed, slow_mo=args.slow_mo,
                     already_seen={u for t in traces for u in t.get("index", [])},
+                    require_llm=args.require_llm, stats=stats,
                 )
                 traces.append(trace)
             trace = merge_traces(traces)
@@ -683,6 +738,9 @@ def main(argv: list[str] | None = None) -> int:
     except SessionStoreError as exc:
         print(f"EXPLORE ABORT: {exc}", file=sys.stderr)
         return 2
+    except llm_backend.LLMRequiredError as exc:
+        print(f"EXPLORE ABORT: {exc}", file=sys.stderr)
+        return 3
 
     write_trace(trace, args.out_dir)
     print(json.dumps({
@@ -690,6 +748,9 @@ def main(argv: list[str] | None = None) -> int:
         "pages": len(trace["index"]), "api_calls": len(trace["api"]),
         "forms": len(trace["forms"]), "hosts": trace["hosts"],
         "requests_seen": len(guard.decisions), "blocked": len(guard.violations),
+        # How much of the walk the model actually drove: no "llm" steps with the LLM enabled
+        # means the provider is misconfigured, not that the tool chose to be deterministic.
+        "steps_by_source": stats,
         "out_dir": args.out_dir,
     }, indent=2))
     return 0

@@ -21,6 +21,7 @@ from pathlib import Path
 import jsonschema
 
 from authoring import appconfig, llm_backend
+from runner.action_policy import is_download
 from runner.scope_guard import host_of
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -119,7 +120,8 @@ def journey_from_trace(trace: dict, config: dict) -> dict:
     journey: list[dict] = []
     for route in trace.get("index", []):
         path = _relpath(route, base)
-        if path and "/login" not in path and path not in ("/#/", "/"):
+        if (path and "/login" not in path and path not in ("/#/", "/")
+                and not is_download(path)):
             journey.append({"action": "goto", "target": path})
     for a in trace.get("api", []):
         if a.get("method", "GET").upper() == "GET":
@@ -424,13 +426,18 @@ def plan_from_llm(trace: dict, model: str, api_key: str | None = None,
 
 
 def make_plan(trace: dict, config: dict, use_llm: bool = True, model: str | None = None,
-              api_key: str | None = None) -> tuple[dict, str]:
+              api_key: str | None = None, require_llm: bool = False) -> tuple[dict, str]:
     """Return (plan, source) where source is 'llm' or 'fallback'.
 
     Whatever the plan's origin, the login block is overwritten with the config-derived one: the
     model chooses routes, never how we authenticate.
+
+    require_llm turns every reason the LLM path could be skipped into an LLMRequiredError instead
+    of a quiet 'fallback', so a misconfigured provider cannot pass for a deliberate --no-llm run.
     """
     model = model or llm_backend.default_model()
+    if require_llm and not use_llm:
+        raise llm_backend.LLMRequiredError("--require-llm contradicts --no-llm")
     if use_llm and llm_backend.available(api_key):
         try:
             plan = plan_from_llm(trace, model, api_key, config=config)
@@ -438,18 +445,26 @@ def make_plan(trace: dict, config: dict, use_llm: bool = True, model: str | None
             validate_plan(plan)
             return plan, "llm"
         except Exception as exc:  # network/parse/validation — fall back deterministically
+            if require_llm:
+                raise llm_backend.LLMRequiredError(f"LLM plan unavailable: {exc}") from exc
             print(f"generate: LLM path failed ({exc}); using deterministic fallback",
                   file=sys.stderr)
+    elif require_llm:
+        raise llm_backend.LLMRequiredError(
+            f"provider {llm_backend.provider()} is not available "
+            "(is the CLI installed / the token or key set?)")
     plan = journey_from_trace(trace, config)
     validate_plan(plan)
     return plan, "fallback"
 
 
 def generate(trace: dict, out_dir: str, config: dict, use_llm: bool = True,
-             model: str | None = None, api_key: str | None = None) -> dict:
+             model: str | None = None, api_key: str | None = None,
+             require_llm: bool = False) -> dict:
     """Produce all authoring artifacts from a trace. Returns a summary dict."""
     model = model or llm_backend.default_model()
-    plan, source = make_plan(trace, config, use_llm=use_llm, model=model, api_key=api_key)
+    plan, source = make_plan(trace, config, use_llm=use_llm, model=model, api_key=api_key,
+                             require_llm=require_llm)
     # Record which path produced the plan, so the committed bundle is self-describing.
     flow_src = render_flow(plan, config)
     ast.parse(flow_src)  # guarantee the generated code compiles (FR-G1 pre-check)
@@ -477,11 +492,18 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--model", default=None,
                    help="model id (default depends on LLM_PROVIDER: anthropic or copilot)")
     p.add_argument("--no-llm", action="store_true", help="Force the deterministic fallback plan")
+    p.add_argument("--require-llm", action="store_true",
+                   help="Fail instead of falling back when the LLM path cannot be taken")
     args = p.parse_args(argv)
 
     config = appconfig.load_app_config(args.app)
     trace = json.loads(Path(args.trace).read_text(encoding="utf-8"))
-    summary = generate(trace, args.out_dir, config, use_llm=not args.no_llm, model=args.model)
+    try:
+        summary = generate(trace, args.out_dir, config, use_llm=not args.no_llm, model=args.model,
+                           require_llm=args.require_llm)
+    except llm_backend.LLMRequiredError as exc:
+        print(f"GENERATE ABORT: {exc}", file=sys.stderr)
+        return 3
     print(json.dumps(summary, indent=2))
     return 0
 

@@ -94,6 +94,13 @@ def test_journey_from_trace_is_schema_valid():
     Draft202012Validator(json.loads(JOURNEY_SCHEMA.read_text())).validate(plan)
 
 
+def test_journey_from_trace_leaves_out_a_document_the_crawl_walked_into():
+    """A goto step for a download cannot be replayed at all -- Chromium aborts the navigation."""
+    trace = dict(TRACE, index=["/#/basket", "/docs/DVWA_v1.3.pdf"])
+    targets = [s["target"] for s in journey_from_trace(trace, CONFIG)["journey"]]
+    assert "/#/basket" in targets and "/docs/DVWA_v1.3.pdf" not in targets
+
+
 def test_render_flow_is_deterministic():
     assert render_flow(PLAN, CONFIG) == render_flow(PLAN, CONFIG)
 
@@ -438,3 +445,44 @@ def test_generate_writes_the_provenance_it_used(tmp_path):
     assert summary["plan_source"] == "fallback"
     assert manifest["plan_source"] == "fallback"     # the file agrees with the CLI output
     assert manifest["trace_app_id"] == TRACE["app_id"]
+
+
+# ---- --require-llm on the plan ----
+
+def test_make_plan_requires_llm_raises_when_the_llm_plan_fails(monkeypatch):
+    import pytest
+    from authoring import generate as generate_mod
+    from authoring.llm_backend import LLMRequiredError
+
+    monkeypatch.setattr(generate_mod.llm_backend, "available", lambda api_key=None: True)
+    monkeypatch.setattr(generate_mod, "plan_from_llm",
+                        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("model unavailable")))
+    with pytest.raises(LLMRequiredError):
+        generate_mod.make_plan(TRACE, CONFIG, use_llm=True, require_llm=True)
+
+
+def test_make_plan_requires_llm_raises_when_no_provider_is_available(monkeypatch):
+    import pytest
+    from authoring import generate as generate_mod
+    from authoring.llm_backend import LLMRequiredError
+
+    monkeypatch.setattr(generate_mod.llm_backend, "available", lambda api_key=None: False)
+    with pytest.raises(LLMRequiredError):
+        generate_mod.make_plan(TRACE, CONFIG, use_llm=True, require_llm=True)
+
+
+def test_make_plan_requires_llm_rejects_the_contradictory_no_llm_combination():
+    import pytest
+    from authoring import generate as generate_mod
+    from authoring.llm_backend import LLMRequiredError
+
+    with pytest.raises(LLMRequiredError):
+        generate_mod.make_plan(TRACE, CONFIG, use_llm=False, require_llm=True)
+
+
+def test_make_plan_without_require_llm_still_falls_back(monkeypatch):
+    from authoring import generate as generate_mod
+
+    monkeypatch.setattr(generate_mod.llm_backend, "available", lambda api_key=None: False)
+    _plan, source = generate_mod.make_plan(TRACE, CONFIG, use_llm=True)
+    assert source == "fallback"
