@@ -92,6 +92,24 @@ services:
       WEBGOAT_HOST: "0.0.0.0"
       WEBGOAT_PORT: "8083"
 
+  # Not a vulnerable app: a lab whose /gate validates its input server-side, so the pages behind
+  # it are reachable only by answering the question it states (see labs/semgate/server.py). Built
+  # from Containerfile.lab, which has no pip step: the lab imports only the standard library, so
+  # it needs neither Artifactory nor the corporate CA, only the prepulled Playwright base image.
+  semgate:
+    profiles: [semgate]
+    build:
+      context: .
+      dockerfile: Containerfile.lab
+    command: ["-m", "labs.semgate.server", "--port", "8084"]
+    networks: [dast]
+    # Loopback only: semgate's app.yaml reaches the lab at localhost:8084 from the workstation.
+    ports: ["127.0.0.1:8084:8084"]
+    environment:
+      # No defaults: the lab refuses to start without the account the operator exports.
+      SEMGATE_USER: ${SEMGATE_USER:?export SEMGATE_USER}
+      SEMGATE_PASS: ${SEMGATE_PASS:?export SEMGATE_PASS}
+
   runner:
     build:
       context: .

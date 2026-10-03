@@ -244,6 +244,63 @@ python -m detections.github_upload out/results.sarif \
 **Pass:** `uploaded: id=...`. A few minutes later, the alerts appear under
 **Security → Code scanning** in the `dast/juice-shop` category.
 
+## 8. Optional: show where the LLM helps (semantic-gate lab)
+
+This compares exploration with and without the LLM on `labs/semgate`, a small lab app. Its
+`/gate` page asks a new arithmetic question on every load, and three `/vault/*` pages return 403
+until the question is answered. No value in `app.yaml` can pass it, so only an explorer that reads
+the question gets through. On ordinary apps such as Juice Shop the two runs tie or the
+deterministic run is ahead, because their forms accept any input.
+
+The lab is plain Python and runs on your workstation. This step needs no Podman, ZAP or image
+build. It does need the Playwright browser on the workstation and the Copilot CLI:
+
+```bash
+export NODE_EXTRA_CA_CERTS="$HOME/certs/nw-ca-all.pem"   # lets the Playwright download trust the proxy
+python -m playwright install chromium
+export LLM_PROVIDER=copilot
+read -rs COPILOT_GITHUB_TOKEN && export COPILOT_GITHUB_TOKEN   # paste the token; it is not echoed
+python -c "from authoring import llm_backend; print(llm_backend.provider(), llm_backend.available())"
+```
+
+**Pass:** the last command prints `copilot True`. If it prints `False`, `copilot` is not on `PATH`;
+see `docs/dast_poc_phase2_demo_runbook.md` §1.7.
+
+Pick any test account name and password for the lab. They exist only in the lab process:
+
+```bash
+export SEMGATE_USER=lab-user
+read -rs SEMGATE_PASS && export SEMGATE_PASS
+python -m labs.semgate.server --port 8084 &       # prints: semgate listening on http://0.0.0.0:8084
+```
+
+Run both arms. `--zap-proxy ""` explores directly, without ZAP, and `--no-replay` skips the replay
+check, which needs ZAP:
+
+```bash
+python -m dast author semgate --explore --no-llm --zap-proxy "" --no-replay
+python -m dast author semgate --explore --require-llm --zap-proxy "" --no-replay
+kill %1                                            # stop the lab
+```
+
+**Pass:** compare the first JSON block each run prints:
+
+| Field | `--no-llm` | `--require-llm` |
+|---|---|---|
+| `pages` | 3 | 6 |
+| `submits` / `inferred_submits` / `accepted_submits` | 0 / 0 / 0 | 1 / 1 / 1 |
+| `steps_by_source` | only `fallback` | mostly `llm` |
+
+The deterministic run reaches `/gate` and stops there. The LLM run reads the question, enters an
+answer, and the lab accepts it (`accepted_submits: 1`), so the three `/vault/*` pages are walked.
+The field the model may fill is declared in `security/dast/semgate/app.yaml` under
+`explore.inferred_fields` with the shape `^[0-9]{1,3}$`. A value outside that shape, or for any
+other field, is refused before anything is sent. `--require-llm` stops with an error if Copilot is
+unreachable, so a `--require-llm` run that completes did use the model.
+
+This is a lab result. It shows the capability, not a benefit on a Nationwide application; that
+depends on whether the application has forms a fixed test value cannot pass.
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
@@ -281,13 +338,15 @@ Send all of the following:
 
 Never include a token.
 
-## What steps 0–6 prove
+## What the steps prove
 
 - **Steps 1–5:** the scanner builds and runs inside Nationwide. That covers Podman, the proxy, NTR,
   the corporate CA, and Artifactory. ZAP enforces its API key, and the scan logs in, stays in
   scope, and produces findings and valid SARIF.
 - **Step 6:** developers can see and track the findings in GitHub without Advanced Security.
   Reruns update the same issues instead of duplicating them.
+- **Step 8:** the LLM is the only arm that gets past a form needing a reasoned answer, within the
+  bounds set in `app.yaml`. The scan itself never uses the model.
 - **Next:** onboarding a real lower-environment application. That needs the app's `app.yaml`, its
   host in `environments.yaml`, approvals, and a test account. See
   `docs/onboarding_a_new_application.md`.
