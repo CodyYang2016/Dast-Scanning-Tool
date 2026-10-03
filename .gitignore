@@ -21,3 +21,13 @@ zap-report.*
 
 # Runner output
 out/
+
+# Copilot prompt/response scratch dirs (deleted after each call; ignored if a run is killed)
+.dast-copilot-*/
+
+# Corporate CA bundle staged for the runner image build (scripts/stage_ca_bundle.sh)
+certs/*
+!certs/README.md
+
+# A stray archive once committed at the root by `tar ... -f -` going to a file named "-"
+/-

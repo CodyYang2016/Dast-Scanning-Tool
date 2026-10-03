@@ -19,7 +19,8 @@
         "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]},
         "path": {"type": "string", "description": "Route/URL for follow_link/goto/visit_api."},
         "selector": {"type": "string", "description": "CSS selector for submit_form/expand_nav."},
-        "field_bindings": {"type": "array", "items": {"type": "string"}, "description": "Form field names (no values)."}
+        "field_bindings": {"type": "array", "items": {"type": "string"}, "description": "Form field names (no values)."},
+        "values": {"type": "object", "additionalProperties": {"type": "string"}, "description": "submit_form only: field name -> value for fields the observation lists as `inferable`. Each value must match the operator's declared shape; any other field is refused.", "examples": [{"answer": "17"}]}
       }
     },
     "reason": {"type": "string", "description": "Why this action (e.g. 'unexplored authenticated branch off dashboard')."},

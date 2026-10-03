@@ -60,6 +60,6 @@ def load(path: str | os.PathLike | None = None) -> Registry:
         if explicit:
             raise FileNotFoundError(f"environment registry not found: {p}")
         return Registry(prod_host_patterns=list(_FALLBACK_PROD))
-    data = yaml.safe_load(p.read_text()) or {}
+    data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
     return Registry(prod_host_patterns=list(data.get("prod_host_patterns") or []),
                     hosts=dict(data.get("hosts") or {}))

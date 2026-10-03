@@ -45,6 +45,10 @@ class ScanScopeError(Exception):
     """Raised when the scan target is not covered by the scope allow-list (safety)."""
 
 
+class ScanPolicyError(Exception):
+    """Raised when the policy file declares something the runner cannot act on."""
+
+
 def _api(zap_api: str, path: str, params: dict | None = None, timeout: float = 30.0) -> dict:
     # Always through the keyed client (W4-4).
     return zapapi.call(zap_api, path, params, timeout)
@@ -66,8 +70,28 @@ def load_policy(path: str) -> dict | None:
     p = Path(path)
     if not p.is_file():
         return None
-    loaded = yaml.safe_load(p.read_text())
+    loaded = yaml.safe_load(p.read_text(encoding="utf-8"))
     return loaded if isinstance(loaded, dict) else None
+
+
+def disabled_scanners(policy: dict | None) -> list[str]:
+    """The scanners this run will disable: the application's list, or the slow-scanner default.
+
+    Single source for what `configure_policy()` sends ZAP and what `resolved_policy()` records.
+    An explicit empty list means "disable nothing" and is honoured.
+
+    A scalar where a list belongs (`disabled_scanners: 40026`) is rejected rather than iterated:
+    iterating `"40026"` would disable five scanners named after its digits and the run would look
+    configured.
+    """
+    requested = (policy or {}).get("disabled_scanners", [_SLOW_SCANNERS])
+    if not isinstance(requested, (list, tuple)):
+        raise ScanPolicyError(
+            f"zap-policy.yaml: disabled_scanners must be a list of rule ids, got "
+            f"{type(requested).__name__} {requested!r}; write a single scanner as "
+            f"disabled_scanners: [{requested}]"
+        )
+    return [str(scanner) for scanner in requested]
 
 
 def resolved_policy(policy: dict | None, max_scan_min: int, max_rule_min: int,
@@ -83,7 +107,7 @@ def resolved_policy(policy: dict | None, max_scan_min: int, max_rule_min: int,
         "write_mode": policy.get("write_mode", "deny"),
         "attack_strength": policy.get("attack_strength", "default"),
         "alert_threshold": policy.get("alert_threshold", "default"),
-        "disabled_scanners": list(policy.get("disabled_scanners", [_SLOW_SCANNERS])),
+        "disabled_scanners": disabled_scanners(policy),
         "max_scan_min": max_scan_min,
         "max_rule_min": max_rule_min,
         "throttle": dict(throttle) if throttle else "zap defaults",
@@ -133,9 +157,9 @@ def configure_policy(zap_api: str, max_scan_min: int = 4, max_rule_min: int | No
                  {"id": cid, "alertThreshold": threshold})
 
     _api(zap_api, "/JSON/ascan/action/enableAllScanners/")   # deterministic starting point
-    disabled = list(policy.get("disabled_scanners", [])) if policy else [_SLOW_SCANNERS]
+    disabled = disabled_scanners(policy)
     if disabled:
-        _api(zap_api, "/JSON/ascan/action/disableScanners/", {"ids": ",".join(map(str, disabled))})
+        _api(zap_api, "/JSON/ascan/action/disableScanners/", {"ids": ",".join(disabled)})
 
 
 _MAX_CONSECUTIVE_API_FAILURES = 3
@@ -535,7 +559,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.out == "-":
         print(payload)
     else:
-        with open(args.out, "w") as fh:
+        with open(args.out, "w", encoding="utf-8") as fh:
             fh.write(payload + "\n")
     print(f"scanned {args.target}: {len(report.get('alerts', []))} alerts", file=sys.stderr)
     return 0

@@ -16,6 +16,8 @@ never by the model's own "non-destructive" label. Three independent rules, all f
   3. Embedded off-scope URLs: an in-scope *path* whose query embeds an absolute URL to a host
      outside the allow-list (open-redirect style, e.g. `/redirect?to=https://github.com/...`) is
      rejected — following it would carry the browser off-scope on the app's 302.
+  5. Downloads: a page navigation to a file the browser saves instead of rendering is rejected.
+     Not a posture rule but a correctness one — see `is_download`.
 
 Scope (host allow-list) is still enforced independently at the request boundary by ScopeGuard
 (D2/D6) — this module is the *action* layer, kept separate so both must pass. See
@@ -26,7 +28,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
 from runner.scope_guard import host_of, in_scope, path_excluded
 
@@ -55,6 +57,27 @@ _CREDENTIAL_FIELDS = ("password_new", "password_conf", "new_password", "newpassw
 
 # Navigation actions are read-only by nature; visit_api/submit_form carry an explicit method.
 _GET_ACTIONS = {"follow_link", "goto", "expand_nav"}
+
+# Actions that drive the page itself, rather than issuing a request beside it.
+_NAVIGATES = {"follow_link", "goto"}
+
+# Suffixes whose response a browser saves rather than renders. Chromium aborts a navigation to
+# one with "Download is starting", which is an exception, not a page -- so a documentation link
+# picked up from a crawl takes the whole journey down with it when the flow is replayed.
+_DOWNLOAD_SUFFIXES = (
+    ".pdf", ".zip", ".tar", ".tgz", ".gz", ".bz2", ".xz", ".7z", ".rar",
+    ".exe", ".msi", ".dmg", ".pkg", ".deb", ".rpm", ".iso", ".jar", ".war",
+    ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".rtf", ".odt", ".ods",
+    ".csv", ".mp3", ".mp4", ".avi", ".mov", ".wav",
+)
+
+
+def is_download(target: str) -> bool:
+    """True when a target names a file the browser downloads instead of rendering as a page.
+
+    Judged on the path only, so a query string or fragment does not hide the extension.
+    """
+    return urlsplit(target or "").path.lower().endswith(_DOWNLOAD_SUFFIXES)
 
 
 @dataclass
@@ -89,6 +112,17 @@ def is_denied(action: dict, deny_actions) -> bool:
     """True if the action (kind + target) matches any deny term (case-insensitive substring)."""
     hay = f"{action.get('action', '')} {_target_str(action)}".lower()
     return any(term.strip().lower() in hay for term in (deny_actions or []) if term.strip())
+
+
+def deny_terms(scope: dict, deny_actions=None) -> list[str]:
+    """The terms an action's target must not contain, as this module will judge it.
+
+    Exposed so the explorer can tell the model what will be refused up front: a model that isn't
+    told spends a round trip per rejection re-proposing the same denied path.
+    """
+    configured = deny_actions if deny_actions is not None else scope.get("avoid_action_list", [])
+    terms = [t.strip().lower() for t in configured if str(t).strip()]
+    return sorted(set(terms) | set(_NEVER))
 
 
 def changes_a_credential(action: dict) -> bool:
@@ -151,6 +185,12 @@ def validate_action(action: dict, scope: dict, deny_actions=None, safe_forms=Non
             return ActionDecision(False, f"state-changing {verb} not on the safe-form allow-list")
     if action.get("action") == "submit_form" and verb == "GET" and not submit_get_forms:
         return ActionDecision(False, "this application does not permit form submission")
+
+    # A download is a dead end that also aborts the navigation: skip it here so it never enters
+    # a trace, rather than discovering at replay time that the journey cannot be executed. The
+    # bytes are still reachable to the scanner's own spider, which does not drive a browser.
+    if action.get("action") in _NAVIGATES and is_download(target):
+        return ActionDecision(False, "target is a file download, not a page")
 
     # A login-only host (scope.traverse) is reached only by the login itself, never explored.
     if target.startswith(("http://", "https://")) and in_scope(target, scope.get("traverse_list")):

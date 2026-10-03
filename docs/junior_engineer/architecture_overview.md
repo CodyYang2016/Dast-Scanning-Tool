@@ -498,7 +498,7 @@ docs/            current: requirements · onboarding · remediation plan · read
                  deterministic_vs_llm_discovery · phase-2 demo material  (docs/archive/ = superseded)
 docs/junior_engineer/   this file + all design/decision docs  (archive/ = superseded plans)
 .github/workflows/   tests.yml (ruff + suite on every push) · dast-selftest.yml (weekly canary)
-Containerfile · compose.yaml · versions.lock · requirements*.txt · pyproject.toml
+Containerfile · compose.yaml · compose.demo.yaml · versions.lock · requirements*.txt · pyproject.toml
 ```
 
 ## 11. Decisions & known gaps

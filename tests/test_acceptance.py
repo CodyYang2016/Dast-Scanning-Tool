@@ -178,3 +178,17 @@ def test_endpoint_pattern_is_idempotent(records):
     # Re-patterning an already-patterned endpoint must not change it.
     for rec in records:
         assert endpoint_pattern("http://h" + rec["endpoint"]) == rec["endpoint"]
+
+
+def test_the_lab_image_builds_on_the_locked_base_and_installs_nothing():
+    """The lab is standard-library only: one locked base, and no pip step that would need
+    PyPI or Artifactory behind TLS interception."""
+    lock = (ROOT / "versions.lock").read_text(encoding="utf-8")
+    base = next(line.split(":", 1)[1].strip() for line in lock.splitlines()
+                if line.startswith("runner_base_image:"))
+    lab = (ROOT / "Containerfile.lab").read_text(encoding="utf-8")
+    froms = [line.split(None, 1)[1].strip() for line in lab.splitlines()
+             if line.startswith("FROM ")]
+    assert froms == [base]
+    assert "pip" not in "\n".join(line for line in lab.splitlines()
+                                  if not line.lstrip().startswith("#"))

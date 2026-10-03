@@ -1,0 +1,13 @@
+# Optional live-demo overlay.
+# Exposes Juice Shop and ZAP to localhost so the audience can see the app and scanner API.
+# ZAP's API still needs the X-ZAP-API-Key header, and admits only the runner's address unless
+# compose is started with ZAP_API_ALLOW='.*'.
+
+services:
+  juice:
+    ports:
+      - "127.0.0.1:3000:3000"
+
+  zap:
+    ports:
+      - "127.0.0.1:8080:8080"
