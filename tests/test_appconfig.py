@@ -52,6 +52,18 @@ def test_missing_environment_class_is_rejected(tmp_path):
         appconfig.load_app_config(_write(tmp_path, bad))
 
 
+def test_an_inferred_field_pattern_that_is_not_a_regex_is_rejected_at_load(tmp_path):
+    bad = {**MINIMAL, "explore": {"inferred_fields": {"answer": {"pattern": "^[0-9"}}}}
+    with pytest.raises(ValueError, match="inferred_fields.answer.pattern"):
+        appconfig.load_app_config(_write(tmp_path, bad))
+
+
+def test_a_valid_inferred_field_pattern_loads(tmp_path):
+    ok = {**MINIMAL, "explore": {"inferred_fields": {"answer": {"pattern": "^[0-9]{1,3}$"}}}}
+    assert appconfig.inferred_fields(appconfig.load_app_config(_write(tmp_path, ok))) == {
+        "answer": {"pattern": "^[0-9]{1,3}$"}}
+
+
 def test_prod_environment_class_is_rejected_by_the_schema(tmp_path):
     # Defence in depth: preflight refuses prod too (D3), but it must not even be expressible.
     bad = {**MINIMAL, "environment_class": "prod"}

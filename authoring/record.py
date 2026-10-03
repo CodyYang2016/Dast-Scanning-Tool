@@ -72,7 +72,7 @@ def build_trace(app_id: str, base_url: str, events: list[dict]) -> dict:
             interactions.append({"type": "goto", "url": url})
             if url and url not in index:
                 index.append(url)
-        elif etype in ("fill", "click", "login"):
+        elif etype in ("fill", "click", "login", "submit"):
             interactions.append(dict(ev))
         elif etype == "form":
             # `method` decides whether this form's parameters can ever appear in a URL, and
