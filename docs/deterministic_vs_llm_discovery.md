@@ -108,6 +108,12 @@ All figures from DVWA, one application, same ZAP, same policy unless stated.
 | LLM `explore`, earlier best run | **0** | 27–29 | 8 (but only **3 of the human's 5**) |
 | LLM `explore`, after W6-11 + W6-12 | **0** | 23 | **7 — including all 5 of the human's** |
 
+*Re-measured 2026-10-03:* the hand-picked `record` path now finds **19** high-severity findings
+on DVWA. The result was identical before and after the `parallel-poc-branch` merge. The increase
+comes from the DOM-XSS pass and the later scan fixes (see
+[`status_and_roadmap.md`](status_and_roadmap.md)). The LLM rows were not re-run, so the comparison
+above stands as measured at the time.
+
 **Autonomous discovery now contains the hand-picked result.** With zero routes supplied by a
 person, the run finds every finding the hand-picked list produced, plus two more:
 

@@ -248,7 +248,7 @@ python -m detections.lifecycle_diff out/records.json --app-id juice-shop \
 
 ```bash
 pip install -r requirements-dev.txt
-pytest -q          # 300 tests
+pytest -q          # 1,090 tests
 ```
 
 Testing philosophy is **objective / test-first**: expectations are anchored to independent
