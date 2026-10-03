@@ -461,6 +461,26 @@ call fails, so check the field rather than assuming. If you expected `llm` and g
 rerun `python -m authoring.generate --app my-app --trace … --out-dir /tmp/x` and read stderr:
 it names the reason.
 
+For a scheduled or CI run, add `--require-llm` to `dast author` (or to `authoring.explore` /
+`authoring.generate` directly). It exits non-zero instead of falling back, so an expired token,
+a model id the account is not entitled to, or a missing CLI fails the run rather than quietly
+producing a deterministic bundle that looks like a configuration choice.
+
+Exploration makes one model call per step, so the flag distinguishes a flaky provider from a dead
+one rather than failing on the first bad answer:
+
+| during exploration with `--require-llm` | outcome |
+|---|---|
+| provider unavailable (no CLI, no token) | abort immediately — nothing in the run can improve it |
+| an occasional unparseable or off-schema reply | that step falls back; the run continues |
+| three such failures in a row | abort |
+| the walk finishes and the model drove no step | abort |
+| policy refused the proposed action | falls back — the safety layer working, not a broken provider |
+
+`--require-llm` with `--no-llm` is rejected before a session is seeded. Exploration prints
+`steps_by_source`: `llm` and `fallback` count the steps the proposer chose, `deterministic` the
+page's own forms and queued entry points, which are taken without asking the model.
+
 ## 5. Make the scan worth running
 
 A passing gate is not the same as a useful scan. Each knob below is configuration; any you leave
@@ -632,6 +652,9 @@ install command.
 | `refusing to scan a test environment: ZAP's API is open` | ZAP was started with `api.disablekey=true` | Restart it with `-config api.key=…` |
 | `… is a shared environment, so scope must name exact origins` | A bare host in `scope.allow` for `test`/`staging` | Write it as an origin, e.g. `https://my-app.internal:8443` |
 | Health gate fails with `session_alive: false` | The session died mid-scan and logging in again did not bring it back, or `scan.reauth.max` was reached | `coverage.json` → `session.losses` says when and why; add the action that logs out to `scope.avoid_actions`, check `scan.anti_csrf_tokens`, or raise `scan.reauth.max` |
+| `RUNNER ABORT: a journey step navigated to a file download rather than a page` | The plan contains a target the browser saves instead of rendering (a PDF, an export, an installer). Chromium aborts that navigation, so the flow cannot be replayed past it | Nothing to configure: the action policy refuses a page navigation to a download, so re-authoring the bundle drops the step. Only a hand-edited plan can still contain one |
+| `SEED ABORT: login page did not render the configured selector(s)` | The login page loaded but holds no login form: the app redirected to a setup or error page, or `auth.steps` does not match the page | Compare `requested` with `landed on` in the message. If they differ, fix the app (initialise its database, finish its setup); if not, fix the selectors |
+| `SEED ABORT: authentication not proven …` with `landed on:` the login page | The credentials were rejected: most apps re-render the form rather than showing an error | Check the account and password; if `landed on` is past the login page, `auth.proof` is what does not match |
 | `ZapUnavailableError: ZAP stopped responding` | The daemon died — usually OOM (exit 137) from a browser-driven rule | `docker logs zap`; disable `40026` or give the daemon more memory |
 
 ---

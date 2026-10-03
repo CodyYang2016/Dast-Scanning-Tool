@@ -506,6 +506,23 @@ def test_an_aborted_scan_does_not_hide_the_last_real_one(tmp_path):
     assert paths.latest_scan() == real
 
 
+# ---- --require-llm on the CLI ----
+
+def test_author_rejects_require_llm_with_no_llm_before_doing_any_work(capsys):
+    args = dast.build_parser().parse_args(["author", "dvwa", "--no-llm", "--require-llm"])
+    rc = dast.cmd_author(args)
+    assert rc == 2 and "contradicts" in capsys.readouterr().err
+
+
+def test_explore_cli_rejects_require_llm_with_no_llm_at_parse_time():
+    from authoring import explore as explore_mod
+
+    with pytest.raises(SystemExit) as exc:
+        explore_mod.main(["--seed", "x", "--scope", "y", "--out-dir", "z",
+                          "--no-llm", "--require-llm"])
+    assert exc.value.code == 2
+
+
 # ---- GitHub Issues: the publishing route without code scanning ---------------------------
 
 def test_report_publishes_issues_only_when_asked(tmp_path, monkeypatch, capsys):

@@ -34,7 +34,7 @@ from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 
-from authoring import appconfig
+from authoring import appconfig, llm_backend
 
 ROOT = Path(__file__).resolve().parent
 
@@ -336,6 +336,10 @@ def cmd_author(args) -> int:
     from authoring import record as record_mod
     from authoring import validate as validate_mod
 
+    if args.require_llm and args.no_llm:  # before seeding a session or sending any traffic
+        print("--require-llm contradicts --no-llm", file=sys.stderr)
+        return 2
+
     config = appconfig.load_app_config(args.app)
     base_url = appconfig.base_url(config)
     paths = paths_for(args)
@@ -354,6 +358,7 @@ def cmd_author(args) -> int:
                                "--zap-proxy", args.zap_proxy, "--out-dir", str(traced),
                                "--max-pages", str(appconfig.max_pages(config, 30)),
                                *(["--no-llm"] if args.no_llm else []),
+                               *(["--require-llm"] if args.require_llm else []),
                                *(["--headed"] if args.headed else [])])
     else:
         rc = record_mod.main(["--app", args.app, "--zap-proxy", args.zap_proxy,
@@ -363,7 +368,12 @@ def cmd_author(args) -> int:
         return rc
 
     trace = json.loads((traced / "trace.json").read_text(encoding="utf-8"))
-    summary = generate_mod.generate(trace, str(bundle), config, use_llm=not args.no_llm)
+    try:
+        summary = generate_mod.generate(trace, str(bundle), config, use_llm=not args.no_llm,
+                                        require_llm=args.require_llm)
+    except llm_backend.LLMRequiredError as exc:
+        print(f"AUTHOR ABORT: {exc}", file=sys.stderr)
+        return 3
     print(json.dumps(summary, indent=2))
 
     rc = validate_mod.main([
@@ -761,6 +771,8 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--zap-proxy", default=_DEFAULT_ZAP)
     a.add_argument("--headed", action="store_true")
     a.add_argument("--no-llm", action="store_true", help="force the deterministic path")
+    a.add_argument("--require-llm", action="store_true",
+                   help="fail loudly instead of falling back when the LLM path is unavailable")
     a.add_argument("--no-replay", action="store_true", help="skip validate's live auth replay")
     a.set_defaults(func=cmd_author)
 
