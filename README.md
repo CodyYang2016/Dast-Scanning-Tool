@@ -150,7 +150,30 @@ bash ./cleanup_demo_ports.sh    # free ports 3000/8080 and remove demo container
 The scripts start the runner on the address ZAP admits (`172.28.0.10`) with the same
 `ZAP_API_KEY`. `JUICE_IMAGE`/`ZAP_IMAGE` default to the digests in `versions.lock`. Upload the
 SARIF with `python -m detections.github_upload out/results.sarif --owner <o> --repo <r> --ref
-refs/heads/<branch> --commit <sha>`. Full walkthrough: `docs/dast_poc_phase2_demo_runbook.md`.
+refs/heads/<branch> --commit <sha>`. Step-by-step checklist with expected output and
+troubleshooting: `docs/nationwide_test_checklist.md`. Full demo walkthrough:
+`docs/dast_poc_phase2_demo_runbook.md`.
+
+#### Publishing without GitHub Advanced Security: GitHub Issues
+
+Code scanning on a private or internal repository needs GitHub Advanced Security; the upload
+above returns `403: Advanced Security must be enabled` without it. Issues need nothing beyond the
+repository:
+
+```bash
+export SSL_CERT_FILE="$HOME/certs/nw-ca-all.pem"   # host Python behind the Nationwide proxy
+read -rs GITHUB_TOKEN && export GITHUB_TOKEN        # fine-grained: Issues read/write on the repo
+python -m detections.github_issues out/labeled.json --app-id juice-shop \
+  --owner <o> --repo <r> --dry-run                  # prints the plan; drop --dry-run to write
+# or, through the CLI: dast report <app> --issues --owner <o> --repo <r>
+```
+
+One issue per (application, rule), labelled `dast`, listing every affected location, and found
+again on the next scan by a marker in its body, so rescans update it instead of duplicating it.
+A finding that comes back reopens its issue unless someone closed it as "not planned". An issue
+is closed only when the lifecycle diff marks every location `resolved`, i.e. re-tested and not
+found; `not_scanned` locations keep it open. Bodies carry the fix guidance, not attack payloads
+or response excerpts, which stay in the scan artifacts. `--min-severity medium` skips low/info.
 
 ### Option B — local dev loop
 
