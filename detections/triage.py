@@ -32,7 +32,7 @@ _PARAM_IN_MESSAGE = re.compile(r"\bin parameter `([^`]*)`")
 
 
 def validate(doc: dict) -> None:
-    jsonschema.validate(doc, json.loads(_SCHEMA.read_text()))
+    jsonschema.validate(doc, json.loads(_SCHEMA.read_text(encoding="utf-8")))
 
 
 def load(path) -> list[dict]:
@@ -40,7 +40,7 @@ def load(path) -> list[dict]:
     p = Path(path)
     if not p.exists():
         return []
-    doc = yaml.safe_load(p.read_text()) or {"suppressions": []}
+    doc = yaml.safe_load(p.read_text(encoding="utf-8")) or {"suppressions": []}
     validate(doc)
     return doc["suppressions"]
 

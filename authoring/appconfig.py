@@ -18,6 +18,7 @@ plain dict. Pure and unit-tested; no browser, no network.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 import jsonschema
@@ -48,14 +49,20 @@ def load_app_config(path_or_app_id: str) -> dict:
     if not path.is_file():
         raise FileNotFoundError(f"no app config at {path}")
     try:
-        cfg = yaml.safe_load(path.read_text())
+        cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
     except yaml.YAMLError as exc:
         raise ValueError(f"app config {path} is not valid YAML: {exc}") from exc
     if not isinstance(cfg, dict):
         raise ValueError(f"app config {path} must be a mapping, got {type(cfg).__name__}")
 
     import json  # local: only needed to read the committed schema
-    jsonschema.validate(cfg, json.loads(_APP_SCHEMA.read_text()))
+    jsonschema.validate(cfg, json.loads(_APP_SCHEMA.read_text(encoding="utf-8")))
+    for name, field in cfg.get("explore", {}).get("inferred_fields", {}).items():
+        try:
+            re.compile(field.get("pattern", ""))
+        except re.error as exc:
+            raise ValueError(f"app config {path}: explore.inferred_fields.{name}.pattern is "
+                             f"not a valid regular expression: {exc}") from exc
     return cfg
 
 
@@ -225,6 +232,11 @@ def writes_allowed(cfg: dict) -> bool:
 def test_data(cfg: dict) -> dict:
     """Field name -> value to type when filling a form. Empty by default."""
     return dict(cfg.get("explore", {}).get("test_data", {}))
+
+
+def inferred_fields(cfg: dict) -> dict:
+    """Field name -> {pattern, max_length} the planner may supply a value for. Empty by default."""
+    return dict(cfg.get("explore", {}).get("inferred_fields", {}))
 
 
 def exclude_paths(cfg: dict) -> list[str]:

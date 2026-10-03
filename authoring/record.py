@@ -72,7 +72,7 @@ def build_trace(app_id: str, base_url: str, events: list[dict]) -> dict:
             interactions.append({"type": "goto", "url": url})
             if url and url not in index:
                 index.append(url)
-        elif etype in ("fill", "click", "login"):
+        elif etype in ("fill", "click", "login", "submit"):
             interactions.append(dict(ev))
         elif etype == "form":
             # `method` decides whether this form's parameters can ever appear in a URL, and
@@ -199,8 +199,8 @@ def _dismiss(page, selectors) -> None:
 def write_trace(trace: dict, out_dir: str) -> None:
     d = Path(out_dir)
     d.mkdir(parents=True, exist_ok=True)
-    (d / "trace.json").write_text(json.dumps(trace, indent=2) + "\n")
-    (d / "index.json").write_text(json.dumps(trace["index"], indent=2) + "\n")
+    (d / "trace.json").write_text(json.dumps(trace, indent=2) + "\n", encoding="utf-8")
+    (d / "index.json").write_text(json.dumps(trace["index"], indent=2) + "\n", encoding="utf-8")
 
 
 def main(argv: list[str] | None = None) -> int:

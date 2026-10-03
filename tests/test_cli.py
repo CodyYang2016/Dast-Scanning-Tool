@@ -182,8 +182,8 @@ def test_a_path_inside_the_repo_prints_relative():
 def test_a_path_outside_the_repo_prints_absolute_instead_of_raising():
     # Path.relative_to raises ValueError outside its base; every command ended with such a
     # print, so a redirected run would have died after doing all the work.
-    shown = dast.display(Path("/tmp/dast-artifacts/x"))
-    assert shown == "/tmp/dast-artifacts/x"
+    outside = Path("/tmp/dast-artifacts/x")
+    assert dast.display(outside) == str(outside)
 
 
 # ---- publish destination ------------------------------------------------------------------
@@ -437,18 +437,18 @@ def test_report_writes_a_summary_beside_the_sarif(tmp_path, monkeypatch):
     monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
     d = _scan_dir(tmp_path)
     _report(tmp_path)
-    md = (d / "summary.md").read_text()
+    md = (d / "summary.md").read_text(encoding="utf-8")
     assert md.startswith("# DAST scan — gateapp") and "FAILED" in md
 
 
 def test_in_actions_the_summary_is_appended_to_the_run_page(tmp_path, monkeypatch):
     monkeypatch.delenv("DAST_FAIL_ON", raising=False)
     page = tmp_path / "step_summary.md"
-    page.write_text("earlier step\n")
+    page.write_text("earlier step\n", encoding="utf-8")
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(page))
     _scan_dir(tmp_path)
     _report(tmp_path)
-    text = page.read_text()
+    text = page.read_text(encoding="utf-8")
     assert text.startswith("earlier step\n") and "# DAST scan — gateapp" in text
 
 
@@ -504,3 +504,55 @@ def test_an_aborted_scan_does_not_hide_the_last_real_one(tmp_path):
     (real / "records.json").write_text("[]")
     (paths.scans / "20260102T000000Z" / "evidence").mkdir(parents=True)     # aborted
     assert paths.latest_scan() == real
+
+
+# ---- --require-llm on the CLI ----
+
+def test_author_rejects_require_llm_with_no_llm_before_doing_any_work(capsys):
+    args = dast.build_parser().parse_args(["author", "dvwa", "--no-llm", "--require-llm"])
+    rc = dast.cmd_author(args)
+    assert rc == 2 and "contradicts" in capsys.readouterr().err
+
+
+def test_explore_cli_rejects_require_llm_with_no_llm_at_parse_time():
+    from authoring import explore as explore_mod
+
+    with pytest.raises(SystemExit) as exc:
+        explore_mod.main(["--seed", "x", "--scope", "y", "--out-dir", "z",
+                          "--no-llm", "--require-llm"])
+    assert exc.value.code == 2
+
+
+# ---- GitHub Issues: the publishing route without code scanning ---------------------------
+
+def test_report_publishes_issues_only_when_asked(tmp_path, monkeypatch, capsys):
+    from detections import github_issues
+    calls = []
+    monkeypatch.setattr(github_issues, "sync", lambda *a, **k: calls.append(a) or [])
+    for var in ("DAST_GH_OWNER", "DAST_GH_REPO", "DAST_FAIL_ON"):
+        monkeypatch.delenv(var, raising=False)
+    _scan_dir(tmp_path)
+    assert _report(tmp_path, "--fail-on", "none", "--owner", "o", "--repo", "r") == 0
+    assert calls == []
+    assert _report(tmp_path, "--fail-on", "none", "--owner", "o", "--repo", "r", "--issues") == 0
+    (owner, repo, records, app, min_sev, *_), = calls
+    assert (owner, repo, app, min_sev) == ("o", "r", "gateapp", "low")
+    assert records and all("status" in r for r in records)
+    assert "issues (o/r)" in capsys.readouterr().out
+
+
+def test_issues_need_a_destination(tmp_path, monkeypatch):
+    for var in ("DAST_GH_OWNER", "DAST_GH_REPO"):
+        monkeypatch.delenv(var, raising=False)
+    _scan_dir(tmp_path)
+    assert _report(tmp_path, "--fail-on", "none", "--issues") == 2
+
+
+def test_an_issues_api_failure_fails_the_report(tmp_path, monkeypatch):
+    from detections import github_api, github_issues
+
+    def fail(*a, **k):
+        raise github_api.GitHubError("403: Resource not accessible")
+    monkeypatch.setattr(github_issues, "sync", fail)
+    _scan_dir(tmp_path)
+    assert _report(tmp_path, "--fail-on", "none", "--owner", "o", "--repo", "r", "--issues") == 1

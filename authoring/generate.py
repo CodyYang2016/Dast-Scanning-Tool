@@ -14,14 +14,14 @@ from __future__ import annotations
 import argparse
 import ast
 import json
-import os
 import re
 import sys
 from pathlib import Path
 
 import jsonschema
 
-from authoring import appconfig
+from authoring import appconfig, llm_backend
+from runner.action_policy import is_download
 from runner.scope_guard import host_of
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -120,7 +120,8 @@ def journey_from_trace(trace: dict, config: dict) -> dict:
     journey: list[dict] = []
     for route in trace.get("index", []):
         path = _relpath(route, base)
-        if path and "/login" not in path and path not in ("/#/", "/"):
+        if (path and "/login" not in path and path not in ("/#/", "/")
+                and not is_download(path)):
             journey.append({"action": "goto", "target": path})
     for a in trace.get("api", []):
         if a.get("method", "GET").upper() == "GET":
@@ -162,7 +163,7 @@ def login_block(config: dict) -> dict:
 
 def validate_plan(plan: dict) -> None:
     """Raise jsonschema.ValidationError if the plan is not a valid journey."""
-    jsonschema.validate(plan, json.loads(_JOURNEY_SCHEMA.read_text()))
+    jsonschema.validate(plan, json.loads(_JOURNEY_SCHEMA.read_text(encoding="utf-8")))
 
 
 def parse_plan_text(text: str) -> dict:
@@ -369,7 +370,7 @@ def emit_manifest(trace: dict, plan_source: str = "unknown", model: str | None =
 def emit_lock() -> dict:
     lock: dict[str, str] = {}
     if _VERSIONS_LOCK.exists():
-        for line in _VERSIONS_LOCK.read_text().splitlines():
+        for line in _VERSIONS_LOCK.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if not line or line.startswith("#") or ":" not in line:
                 continue
@@ -388,7 +389,8 @@ def emit_auth(config: dict) -> dict:
 
 # ---- Step A (primary): LLM plan ---------------------------------------------------------
 
-def plan_from_llm(trace: dict, model: str, api_key: str, config: dict | None = None) -> dict:
+def plan_from_llm(trace: dict, model: str, api_key: str | None = None,
+                  config: dict | None = None) -> dict:
     """Ask the LLM for a journey plan. Raises on any failure so callers can fall back.
 
     The model's job is the JOURNEY — which authenticated routes are worth visiting, in what
@@ -398,11 +400,10 @@ def plan_from_llm(trace: dict, model: str, api_key: str, config: dict | None = N
     schema documenting both login forms, the model returned both at once, and `oneOf` rejected
     the combination — killing the LLM path over a block that was about to be discarded.)
 
-    anthropic is imported lazily so the fallback and the tests don't need it.
+    The call goes through llm_backend, so LLM_PROVIDER selects Anthropic or the Copilot CLI.
     """
-    import anthropic  # lazy
 
-    schema = _JOURNEY_SCHEMA.read_text()
+    schema = _JOURNEY_SCHEMA.read_text(encoding="utf-8")
     system = (
         "You convert a web-app crawl trace into a STRICT JSON 'journey plan' for an "
         "authenticated DAST scan. Output ONLY the JSON object — no prose, no code fences. "
@@ -416,13 +417,7 @@ def plan_from_llm(trace: dict, model: str, api_key: str, config: dict | None = N
         "real login block is supplied from the application's configuration and whatever you "
         "put there is discarded. Never include credentials."
     )
-    client = anthropic.Anthropic(api_key=api_key)
-    # Latest models (Opus 4.8, Sonnet 5, ...) reject temperature/top_p/top_k; omit them.
-    msg = client.messages.create(
-        model=model, max_tokens=4096,
-        system=system, messages=[{"role": "user", "content": user}],
-    )
-    text = "".join(getattr(b, "text", "") for b in msg.content)
+    text = llm_backend.complete(system, user, model, api_key=api_key, max_tokens=4096)
     plan = parse_plan_text(text)
     if config is not None:
         plan["login"] = login_block(config)   # operator config wins, before validation
@@ -430,47 +425,61 @@ def plan_from_llm(trace: dict, model: str, api_key: str, config: dict | None = N
     return plan
 
 
-def make_plan(trace: dict, config: dict, use_llm: bool = True, model: str = _DEFAULT_MODEL,
-              api_key: str | None = None) -> tuple[dict, str]:
+def make_plan(trace: dict, config: dict, use_llm: bool = True, model: str | None = None,
+              api_key: str | None = None, require_llm: bool = False) -> tuple[dict, str]:
     """Return (plan, source) where source is 'llm' or 'fallback'.
 
     Whatever the plan's origin, the login block is overwritten with the config-derived one: the
     model chooses routes, never how we authenticate.
+
+    require_llm turns every reason the LLM path could be skipped into an LLMRequiredError instead
+    of a quiet 'fallback', so a misconfigured provider cannot pass for a deliberate --no-llm run.
     """
-    api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-    if use_llm and api_key:
+    model = model or llm_backend.default_model()
+    if require_llm and not use_llm:
+        raise llm_backend.LLMRequiredError("--require-llm contradicts --no-llm")
+    if use_llm and llm_backend.available(api_key):
         try:
             plan = plan_from_llm(trace, model, api_key, config=config)
             plan["login"] = login_block(config)   # belt and braces for any other caller
             validate_plan(plan)
             return plan, "llm"
         except Exception as exc:  # network/parse/validation — fall back deterministically
+            if require_llm:
+                raise llm_backend.LLMRequiredError(f"LLM plan unavailable: {exc}") from exc
             print(f"generate: LLM path failed ({exc}); using deterministic fallback",
                   file=sys.stderr)
+    elif require_llm:
+        raise llm_backend.LLMRequiredError(
+            f"provider {llm_backend.provider()} is not available "
+            "(is the CLI installed / the token or key set?)")
     plan = journey_from_trace(trace, config)
     validate_plan(plan)
     return plan, "fallback"
 
 
 def generate(trace: dict, out_dir: str, config: dict, use_llm: bool = True,
-             model: str = _DEFAULT_MODEL, api_key: str | None = None) -> dict:
+             model: str | None = None, api_key: str | None = None,
+             require_llm: bool = False) -> dict:
     """Produce all authoring artifacts from a trace. Returns a summary dict."""
-    plan, source = make_plan(trace, config, use_llm=use_llm, model=model, api_key=api_key)
+    model = model or llm_backend.default_model()
+    plan, source = make_plan(trace, config, use_llm=use_llm, model=model, api_key=api_key,
+                             require_llm=require_llm)
     # Record which path produced the plan, so the committed bundle is self-describing.
     flow_src = render_flow(plan, config)
     ast.parse(flow_src)  # guarantee the generated code compiles (FR-G1 pre-check)
 
     d = Path(out_dir)
     d.mkdir(parents=True, exist_ok=True)
-    (d / "journey.json").write_text(json.dumps(plan, indent=2) + "\n")
-    (d / "flow.py").write_text(flow_src)
-    (d / "scope.json").write_text(json.dumps(emit_scope(trace, config), indent=2) + "\n")
-    (d / "auth.json").write_text(json.dumps(emit_auth(config), indent=2) + "\n")
+    (d / "journey.json").write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
+    (d / "flow.py").write_text(flow_src, encoding="utf-8")
+    (d / "scope.json").write_text(json.dumps(emit_scope(trace, config), indent=2) + "\n", encoding="utf-8")
+    (d / "auth.json").write_text(json.dumps(emit_auth(config), indent=2) + "\n", encoding="utf-8")
     # json.dumps is valid YAML, so no PyYAML dependency is needed for the .yaml file.
-    (d / "zap-policy.yaml").write_text(json.dumps(emit_zap_policy(config), indent=2) + "\n")
+    (d / "zap-policy.yaml").write_text(json.dumps(emit_zap_policy(config), indent=2) + "\n", encoding="utf-8")
     (d / "manifest.json").write_text(
-        json.dumps(emit_manifest(trace, plan_source=source, model=model), indent=2) + "\n")
-    (d / "lock").write_text(json.dumps(emit_lock(), indent=2) + "\n")
+        json.dumps(emit_manifest(trace, plan_source=source, model=model), indent=2) + "\n", encoding="utf-8")
+    (d / "lock").write_text(json.dumps(emit_lock(), indent=2) + "\n", encoding="utf-8")
     return {"plan_source": source, "journey_steps": len(plan["journey"]), "out_dir": str(d)}
 
 
@@ -480,13 +489,21 @@ def main(argv: list[str] | None = None) -> int:
                    help="App id or path to security/dast/<app>/app.yaml")
     p.add_argument("--trace", required=True, help="Path to trace.json from record")
     p.add_argument("--out-dir", required=True)
-    p.add_argument("--model", default=_DEFAULT_MODEL)
+    p.add_argument("--model", default=None,
+                   help="model id (default depends on LLM_PROVIDER: anthropic or copilot)")
     p.add_argument("--no-llm", action="store_true", help="Force the deterministic fallback plan")
+    p.add_argument("--require-llm", action="store_true",
+                   help="Fail instead of falling back when the LLM path cannot be taken")
     args = p.parse_args(argv)
 
     config = appconfig.load_app_config(args.app)
-    trace = json.loads(Path(args.trace).read_text())
-    summary = generate(trace, args.out_dir, config, use_llm=not args.no_llm, model=args.model)
+    trace = json.loads(Path(args.trace).read_text(encoding="utf-8"))
+    try:
+        summary = generate(trace, args.out_dir, config, use_llm=not args.no_llm, model=args.model,
+                           require_llm=args.require_llm)
+    except llm_backend.LLMRequiredError as exc:
+        print(f"GENERATE ABORT: {exc}", file=sys.stderr)
+        return 3
     print(json.dumps(summary, indent=2))
     return 0
 

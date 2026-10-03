@@ -408,6 +408,30 @@
             "type": "string"
           },
           "description": "Field name -> value to type when filling a form, e.g. {email: dast@example.test, search: test}. Posting empty strings mostly yields validation errors rather than coverage, so approved test data is what makes write mode worth enabling."
+        },
+        "inferred_fields": {
+          "type": "object",
+          "description": "Fields the planner may supply a value for, because no fixed value would be accepted: a challenge generated per page load, a reference the application computes. The operator grants the permission and states the shape; the planner supplies the content, and a value outside the shape is refused deterministically. A field in neither test_data nor here is never filled, and the deterministic proposer never fills one of these.",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "pattern": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Regular expression the whole value must match, e.g. ^[0-9]{1,3}$."
+              },
+              "max_length": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Longest value accepted; 64 if omitted."
+              },
+              "note": {
+                "type": "string",
+                "description": "Why this field is left to inference; for the reviewer, not the planner."
+              }
+            }
+          }
         }
       }
     },
