@@ -1,10 +1,12 @@
 # DAST tool UI — requirements (draft)
 
 *Draft, 2026-10-09. Built from the personas in
-[`dast_poc_remediation_plan.md`](dast_poc_remediation_plan.md) §1 and §3, and from an inventory of
+[`dast_poc_remediation_plan.md`](../dast_poc_remediation_plan.md) §1 and §3, and from an inventory of
 everything the tool exposes today: 4 commands with about 30 flags, about 60 `app.yaml` fields, and
 about 30 environment variables. The open questions in §8 change parts of this, so read them first
 if you are deciding scope.*
+
+*Mockups of these screens, in three visual styles, are in [`README.md`](README.md).*
 
 ## 1. Purpose
 
@@ -215,5 +217,5 @@ These change the tiers above, so they should be settled before design starts.
 4. **Does DEV use the UI at all,** or only follow links from GitHub? Recommended: GitHub stays
    DEV's home; the UI serves the finding detail and triage those links open.
 5. **Pending decisions set the tier-C list.** W4-8 (which write endpoints ZAP stays off) and scan
-   postures SP-1…SP-7 are not decided yet ([`status_and_roadmap.md`](status_and_roadmap.md)). Until
+   postures SP-1…SP-7 are not decided yet ([`status_and_roadmap.md`](../status_and_roadmap.md)). Until
    they are, the UI can't know which of those settings are fixed and which are approvals.

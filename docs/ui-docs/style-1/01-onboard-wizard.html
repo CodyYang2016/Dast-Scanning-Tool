@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DAST Console — Onboard an app</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<aside class="side">
+  <div class="brand">dast<small>operator console · style 1</small></div>
+  <div><h6>Workflow</h6><nav>
+    <a href="index.html">Overview <kbd>g o</kbd></a>
+    <a class="on" href="01-onboard-wizard.html">Onboard an app <kbd>n</kbd></a>
+    <a href="02-app-settings.html">App settings <kbd>g s</kbd></a>
+    <a href="03-run-progress.html">Runs <kbd>g r</kbd></a>
+    <a href="04-results-and-finding.html">Results &amp; triage <kbd>g f</kbd></a>
+    <a href="05-governance.html">Governance <kbd>g g</kbd></a>
+    <a href="06-export-to-ci.html">Export to CI <kbd>g e</kbd></a>
+  </nav></div>
+  <div class="apps"><h6>Apps</h6><nav>
+    <a href="02-app-settings.html">dvwa <span class="pill bad">19 high</span></a>
+    <a href="#">juice-shop <span class="pill warn">2 high</span></a>
+    <a href="#">webgoat <span class="pill ok">ok</span></a>
+    <a href="#">semgate <span class="pill ok">lab</span></a>
+    <a class="on" href="01-onboard-wizard.html">orders-portal <span class="pill run">new</span></a>
+  </nav></div>
+  <div class="foot">ZAP 2.17.0 · listening on 127.0.0.1 only</div>
+</aside>
+
+<main>
+  <div class="topbar">
+    <span class="crumb">Onboard / <b>orders-portal</b></span>
+    <span class="spacer"></span>
+    <span class="hint">Only <i class="tier a">MUST</i> questions are asked here. Everything else has a default — see App settings after saving.</span>
+  </div>
+
+  <nav class="steps">
+    <a class="done" href="#">1 · App</a>
+    <a class="done" href="#">2 · Environment &amp; scope</a>
+    <a class="on" href="#">3 · Login</a>
+    <a href="#">4 · Pages to test</a>
+    <a href="#">5 · Review &amp; save</a>
+  </nav>
+
+  <div class="content">
+    <div class="split">
+      <div style="display:grid; gap:16px">
+
+        <section class="panel">
+          <header><h2>Answered</h2><span class="right hint">click a row to change it</span></header>
+          <div class="field-row"><span class="k">app_id</span><span class="v">orders-portal</span><i class="tier a">MUST</i></div>
+          <div class="field-row"><span class="k">base_url</span><span class="v">https://orders.test.example.internal <span class="pill ok">reachable · 212 ms</span></span><i class="tier a">MUST</i></div>
+          <div class="field-row"><span class="k">environment_class</span><span class="v">test <span class="pill ok">matches environment registry</span></span><i class="tier a">MUST</i></div>
+          <div class="field-row"><span class="k">scope.allow</span><span class="v">orders.test.example.internal</span><i class="tier a">MUST</i></div>
+          <div class="field-row"><span class="k">scope.exclude</span><span class="v">/api/notify/email, /api/payments/*</span><i class="tier a">MUST</i></div>
+          <div class="field-row"><span class="k">data_policy</span><span class="v locked">durable — not attested disposable</span><i class="tier c">APPROVAL</i></div>
+        </section>
+
+        <section class="panel">
+          <header><h2>3 · How do people log in?</h2></header>
+          <div class="body" style="display:grid; gap:14px">
+            <div class="grid-2">
+              <label class="panel" style="padding:10px 12px; border-color:var(--accent)">
+                <span><input type="radio" name="m" checked style="width:auto"> <b style="color:var(--text)">A username and password form</b></span>
+                <span class="hint">The tool fills the form itself. <code>auth.mode: form</code></span>
+              </label>
+              <label class="panel" style="padding:10px 12px">
+                <span><input type="radio" name="m" style="width:auto"> <b style="color:var(--text)">SSO or MFA — I'll log in myself once</b></span>
+                <span class="hint">A browser opens; the session is saved and reused. <code>auth.mode: seeded</code></span>
+              </label>
+            </div>
+            <label><span>Login page <i class="tier a">MUST</i></span><input value="/login"></label>
+            <div class="grid-2">
+              <label><span>Username comes from secret <i class="tier a">MUST</i></span>
+                <select><option>ORDERS_PORTAL_USER  (environment)</option><option>vault://dast/orders-portal/user</option></select></label>
+              <label><span>Password comes from secret <i class="tier a">MUST</i></span>
+                <select><option>ORDERS_PORTAL_PASS  (environment)</option><option>vault://dast/orders-portal/pass</option></select></label>
+            </div>
+            <p class="hint">Values are never shown, logged or written to <code>app.yaml</code> — only the name of the secret.</p>
+          </div>
+        </section>
+
+        <section class="panel">
+          <header><h2>Equivalent command</h2><span class="right hint">UI-2</span></header>
+          <pre><span class="cm">$</span> python -m dast onboard orders-portal \
+    --base-url https://orders.test.example.internal \
+    --environment-class test --auth form \
+    --discover --login-url /login</pre>
+        </section>
+      </div>
+
+      <aside style="display:grid; gap:16px">
+        <section class="panel">
+          <header><h2>Login found</h2><span class="pill ok right">verified</span></header>
+          <div class="body" style="display:grid; gap:10px">
+            <p class="muted">The tool read <code>/login</code>, proposed these steps and logged in with them.
+              You don't need to edit selectors.</p>
+            <table>
+              <tr><td class="mono">fill</td><td class="mono">input#username</td><td class="mono muted">identifier</td></tr>
+              <tr><td class="mono">fill</td><td class="mono">input#password</td><td class="mono muted">secret</td></tr>
+              <tr><td class="mono">click</td><td class="mono">button[type=submit]</td><td></td></tr>
+            </table>
+            <p class="hint"><i class="tier d">FIXED</i> derived by discovery · editable under Advanced</p>
+          </div>
+        </section>
+
+        <section class="panel">
+          <header><h2>Confirm one thing</h2></header>
+          <div class="body" style="display:grid; gap:10px">
+            <p>After logging in we landed on <code>/account/orders</code> and saw <code>#signed-in-as</code>.</p>
+            <p><b>Does this page only show when someone is logged in?</b></p>
+            <div class="row"><button class="btn primary">Yes, use it as proof</button><button class="btn">No — pick another</button></div>
+            <p class="hint">This becomes <code>auth.proof</code>. A scan that loses this page stops instead of reporting nothing.</p>
+          </div>
+        </section>
+
+        <div class="callout info"><b>Next: pages to test</b>Pick from the 14 pages the login walk saw, or add your own.</div>
+        <div class="row"><button class="btn">Back</button><button class="btn primary right">Continue <span class="kbd">enter</span></button></div>
+      </aside>
+    </div>
+  </div>
+</main>
+</body>
+</html>

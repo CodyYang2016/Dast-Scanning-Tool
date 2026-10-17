@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DAST Console — Export to CI</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<aside class="side">
+  <div class="brand">dast<small>operator console · style 1</small></div>
+  <div><h6>Workflow</h6><nav>
+    <a href="index.html">Overview <kbd>g o</kbd></a>
+    <a href="01-onboard-wizard.html">Onboard an app <kbd>n</kbd></a>
+    <a href="02-app-settings.html">App settings <kbd>g s</kbd></a>
+    <a href="03-run-progress.html">Runs <kbd>g r</kbd></a>
+    <a href="04-results-and-finding.html">Results &amp; triage <kbd>g f</kbd></a>
+    <a href="05-governance.html">Governance <kbd>g g</kbd></a>
+    <a class="on" href="06-export-to-ci.html">Export to CI <kbd>g e</kbd></a>
+  </nav></div>
+  <div class="apps"><h6>Apps</h6><nav>
+    <a class="on" href="02-app-settings.html">dvwa <span class="pill bad">19 high</span></a>
+    <a href="#">juice-shop <span class="pill warn">2 high</span></a>
+    <a href="#">webgoat <span class="pill ok">ok</span></a>
+    <a href="#">semgate <span class="pill ok">lab</span></a>
+    <a href="01-onboard-wizard.html">orders-portal <span class="pill run">new</span></a>
+  </nav></div>
+  <div class="foot">ZAP 2.17.0 · listening on 127.0.0.1 only</div>
+</aside>
+
+<main>
+  <div class="topbar">
+    <span class="crumb">Apps / dvwa / <b>Export to CI</b></span>
+    <span class="spacer"></span>
+    <button class="btn">Copy</button><button class="btn primary">Download dast-dvwa.yml</button>
+  </div>
+
+  <div class="content">
+    <p class="lede">The UI doesn't schedule anything. It writes a workflow for the app's own repository that runs
+      the same commands you ran here, so CI is the system of record for unattended scans.</p>
+
+    <div class="split">
+      <section class="panel">
+        <header><h2>.github/workflows/dast-dvwa.yml</h2><span class="right pill ok">validated</span></header>
+        <pre><span class="k">name</span>: dast-dvwa
+<span class="k">on</span>:
+  <span class="k">schedule</span>: [{ <span class="k">cron</span>: <span class="s">"0 6 * * 1"</span> }]   <span class="cm"># Mondays 06:00 UTC</span>
+  <span class="k">workflow_dispatch</span>:
+<span class="k">permissions</span>: { <span class="k">contents</span>: read, <span class="k">security-events</span>: write }
+<span class="k">jobs</span>:
+  <span class="k">scan</span>:
+    <span class="k">runs-on</span>: ubuntu-latest
+    <span class="k">timeout-minutes</span>: 45
+    <span class="k">steps</span>:
+      - <span class="k">uses</span>: actions/checkout@v4
+      - <span class="k">name</span>: ZAP key for this run
+        <span class="k">run</span>: echo "ZAP_API_KEY=$(openssl rand -hex 24)" &gt;&gt; "$GITHUB_ENV"
+      - <span class="k">name</span>: start ZAP
+        <span class="k">run</span>: docker compose up -d zap
+      - <span class="k">name</span>: author, scan
+        <span class="k">env</span>: { <span class="k">DVWA_USER</span>: ${{ secrets.DVWA_USER }}, <span class="k">DVWA_PASS</span>: ${{ secrets.DVWA_PASS }} }
+        <span class="k">run</span>: |
+          python -m dast author dvwa --no-llm
+          python -m dast scan   dvwa
+      - <span class="k">name</span>: report and publish
+        <span class="k">run</span>: |
+          python -m dast report dvwa --upload \
+            --ref "$DEPLOYED_REF" --commit "$DEPLOYED_SHA"   <span class="cm"># from your deploy job</span></pre>
+      </section>
+
+      <aside style="display:grid; gap:16px">
+        <section class="panel">
+          <header><h2>Exit codes</h2><i class="tier d right">FIXED</i></header>
+          <table>
+            <tr><td class="mono">0</td><td>healthy scan, gate passed</td></tr>
+            <tr><td class="mono">1</td><td>gate failed (new finding ≥ <code>gate.fail_on</code>) or unhealthy scan</td></tr>
+            <tr><td class="mono">2</td><td>refused or misconfigured</td></tr>
+            <tr><td class="mono">3</td><td>AI required but unavailable</td></tr>
+          </table>
+        </section>
+
+        <section class="panel">
+          <header><h2>Installation settings</h2><span class="right hint">OPS · set once</span></header>
+          <div class="field-row" style="grid-template-columns:150px 1fr"><span class="k">PIP_INDEX_URL</span><span class="v">art.nwie.net/…/simple</span></div>
+          <div class="field-row" style="grid-template-columns:150px 1fr"><span class="k">DAST_CA_BUNDLE</span><span class="v">~/certs/nw-ca.pem</span></div>
+          <div class="field-row" style="grid-template-columns:150px 1fr"><span class="k">ZAP_IMAGE</span><span class="v">zap-stable@781a…</span></div>
+          <div class="field-row" style="grid-template-columns:150px 1fr"><span class="k">COPILOT_CLI</span><span class="v">copilot</span></div>
+          <div class="field-row" style="grid-template-columns:150px 1fr"><span class="k">DAST_LOG_FORMAT</span><span class="v">json</span></div>
+          <div class="body hint">These never appear in the run flow. <i class="tier d">FIXED</i> for operators.</div>
+        </section>
+      </aside>
+    </div>
+  </div>
+</main>
+</body>
+</html>

@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DAST Console — Run progress</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<aside class="side">
+  <div class="brand">dast<small>operator console · style 1</small></div>
+  <div><h6>Workflow</h6><nav>
+    <a href="index.html">Overview <kbd>g o</kbd></a>
+    <a href="01-onboard-wizard.html">Onboard an app <kbd>n</kbd></a>
+    <a href="02-app-settings.html">App settings <kbd>g s</kbd></a>
+    <a class="on" href="03-run-progress.html">Runs <kbd>g r</kbd></a>
+    <a href="04-results-and-finding.html">Results &amp; triage <kbd>g f</kbd></a>
+    <a href="05-governance.html">Governance <kbd>g g</kbd></a>
+    <a href="06-export-to-ci.html">Export to CI <kbd>g e</kbd></a>
+  </nav></div>
+  <div class="apps"><h6>Apps</h6><nav>
+    <a class="on" href="02-app-settings.html">dvwa <span class="pill run">running</span></a>
+    <a href="#">juice-shop <span class="pill warn">2 high</span></a>
+    <a href="#">webgoat <span class="pill ok">ok</span></a>
+    <a href="#">semgate <span class="pill ok">lab</span></a>
+    <a href="01-onboard-wizard.html">orders-portal <span class="pill warn">refused</span></a>
+  </nav></div>
+  <div class="foot">ZAP 2.17.0 · listening on 127.0.0.1 only</div>
+</aside>
+
+<main>
+  <div class="topbar">
+    <span class="crumb">Runs / dvwa / <b>20261016T101204Z</b></span>
+    <span class="pill run">scanning · 6m 12s</span>
+    <span class="spacer"></span>
+    <button class="btn danger">■ Stop scan <span class="kbd">s</span></button>
+  </div>
+
+  <div class="content">
+    <section class="panel">
+      <div class="stages">
+        <div class="stage done"><div class="n">1</div><div class="t">Preflight</div><div class="s">scope ok · registry: dvwa=dev<br>not prod · ZAP keyed</div></div>
+        <div class="stage done"><div class="n">2</div><div class="t">Login replay</div><div class="s">proof /index.php ✓<br>session held · 1.8 s</div></div>
+        <div class="stage now"><div class="n">3</div><div class="t">Scan</div><div class="s">active scan 58% · rule 40018<br>3 of 6 routes attacked</div><div class="bar" style="margin-top:8px"><i style="width:58%"></i></div></div>
+        <div class="stage todo"><div class="n">4</div><div class="t">Normalize</div><div class="s">fingerprint · redact<br>evidence pairs</div></div>
+        <div class="stage todo"><div class="n">5</div><div class="t">Coverage</div><div class="s">routes · parameters<br>not_scanned kept</div></div>
+      </div>
+    </section>
+
+    <div class="grid-3">
+      <div class="panel stat"><div class="l">Time budget</div><div class="v">6:12 <span class="muted" style="font-size:13px">/ 10:00</span></div><div class="bar" style="margin-top:6px"><i style="width:62%"></i></div></div>
+      <div class="panel stat"><div class="l">Session</div><div class="v" style="color:var(--ok)">held</div><div class="hint">liveness every 60 s · re-logins 1 of 3</div></div>
+      <div class="panel stat"><div class="l">Alerts so far</div><div class="v"><span class="sev high">11</span> · <span class="sev medium">40</span> · <span class="sev low">71</span></div><div class="hint">high · medium · low — not yet final</div></div>
+    </div>
+
+    <div class="split">
+      <section class="panel">
+        <header><h2>Audit log</h2><span class="right hint mono">out/dvwa/scans/20261016T101204Z/events.jsonl</span></header>
+        <pre><span class="ts">10:12:04</span> run.start        app=dvwa by=cyang path=recorded
+<span class="ts">10:12:04</span> preflight.scope  <span class="ok">ok</span> allow=[dvwa] deny=[] exclude=[]
+<span class="ts">10:12:04</span> preflight.env    <span class="ok">ok</span> dvwa → dev (registry)
+<span class="ts">10:12:05</span> reset            <span class="ok">ok</span> /setup.php → verify /login.php contains "Username"
+<span class="ts">10:12:07</span> auth.replay      <span class="ok">ok</span> proof route /index.php (no redirect to login.php)
+<span class="ts">10:12:09</span> scan.spider      <span class="ok">ok</span> 31 urls in scope · 0 refused
+<span class="ts">10:14:40</span> session.lost     <span class="warn">warn</span> liveness probe redirected to login.php
+<span class="ts">10:14:42</span> session.relogin  <span class="ok">ok</span> 1 of 3 · ZAP pointed at new session
+<span class="ts">10:18:16</span> scan.rule        40018 SQL Injection · 286 requests · 3 alerts
+<span class="ts">10:18:16</span> scan.rule        40012 Reflected XSS · running…</pre>
+      </section>
+
+      <aside style="display:grid; gap:16px">
+        <div class="callout bad">
+          <b>Earlier today · orders-portal was refused</b>
+          <span><code>orders.test.example.internal</code> isn't in the environment registry, so the tool can't confirm it's a test host.</span>
+          <div class="hint" style="margin-top:8px">Fix: ask GOV to add it as <code>test</code> in <code>security/dast/environments.yaml</code>. No traffic was sent.</div>
+        </div>
+        <section class="panel">
+          <header><h2>If you stop now</h2></header>
+          <div class="body muted" style="display:grid; gap:6px">
+            <p>The run is marked <b style="color:var(--text)">stopped</b>, not failed.</p>
+            <p>Nothing is marked resolved — routes not reached stay <code>not_scanned</code>.</p>
+            <p>Alerts gathered so far are kept, labelled partial.</p>
+          </div>
+        </section>
+      </aside>
+    </div>
+  </div>
+</main>
+</body>
+</html>
