@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DAST Guided — dvwa settings</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <span class="name"><i></i>Security scanning <small>guided · style 3</small></span>
+  <span class="help">Stuck? Ask security engineering.</span>
+</header>
+<nav class="journey">
+  <a class="done" href="01-onboard-wizard.html"><span class="n">1</span>Set up</a><span class="sep"></span>
+  <a class="on" href="02-app-settings.html"><span class="n">2</span>Check settings</a><span class="sep"></span>
+  <a href="03-run-progress.html"><span class="n">3</span>Run</a><span class="sep"></span>
+  <a href="04-results-and-finding.html"><span class="n">4</span>Review results</a>
+  <span class="side"><a href="05-governance.html">Approvals</a><a href="06-export-to-ci.html">Automate</a></span>
+</nav>
+
+<main class="wrap">
+  <div>
+    <div class="eyebrow">dvwa</div>
+    <h1>Here's how dvwa will be scanned</h1>
+    <p class="lead">Most of this you can leave alone. We've put the things that need your attention first.</p>
+  </div>
+
+  <section class="card">
+    <div class="says a"><span class="mark">!</span><span><b>We need this from you</b>Already answered when dvwa was set up. Change them here if something's moved.</span></div>
+    <div class="answers">
+      <div><span class="k">Where it runs</span><span class="v">http://dvwa</span></div>
+      <div><span class="k">What kind of system</span><span class="v">Development</span></div>
+      <div><span class="k">Login page</span><span class="v">/login.php</span></div>
+      <div><span class="k">Test account kept in</span><span class="v">DVWA_USER / DVWA_PASS</span></div>
+      <div><span class="k">Pages to test</span><span class="v">5 pages</span></div>
+    </div>
+    <div class="actions"><button class="btn">Change an answer</button></div>
+  </section>
+
+  <section class="card">
+    <div class="says b"><span class="mark">~</span><span><b>You can leave these as they are</b>Two have been changed from the defaults. Here's what that costs.</span></div>
+    <div class="answers">
+      <div><span class="k">How hard to test</span><span class="v">High <span class="faint">(usually medium — finds more, sends more)</span></span></div>
+      <div><span class="k">Time limit</span><span class="v">10 minutes <span class="faint">(usually 4)</span></span></div>
+      <div><span class="k">Extra check for page-script attacks</span><span class="v">On, 15 minutes <span class="faint">(needs a lot of memory)</span></span></div>
+    </div>
+    <details><summary>Show all 14 optional settings</summary></details>
+  </section>
+
+  <section class="card">
+    <div class="says c"><span class="mark">?</span><span><b>Someone else decides these</b>They change what a scan may do to a shared system, so Governance signs them off. You can't change them here — ask through a pull request.</span></div>
+    <div class="answers">
+      <div><span class="k">The app's data can be thrown away</span><span class="v">Yes <span class="faint">— app owner, 28 Sep</span></span></div>
+      <div><span class="k">Scans may submit forms that change data</span><span class="v">No <span class="faint">— Governance, 29 Sep</span></span></div>
+      <div><span class="k">Fail the build when we find</span><span class="v">High or worse <span class="faint">— Governance, 30 Sep</span></span></div>
+      <div><span class="k">AI helper</span><span class="v">GitHub Copilot <span class="faint">— Governance, 27 Sep</span></span></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="says d"><span class="mark">=</span><span><b>These are always on</b>Nobody can switch them off.</span></div>
+    <p class="muted">We never scan production. We block any request outside the hosts you listed before it's sent. We remove secrets before an AI sees anything. And a page we didn't get to is reported as "not tested" — never as "fixed".</p>
+  </section>
+
+  <section class="card tight">
+    <h3>You changed 2 things</h3>
+    <p class="muted">We'll save them to dvwa's settings file (<code>app.yaml</code>) and check it's valid.</p>
+    <div class="actions"><button class="btn">Undo</button><button class="btn primary push">Save and continue to Run</button></div>
+  </section>
+</main>
+</body>
+</html>

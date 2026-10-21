@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DAST Workspace — dvwa settings</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="appbar">
+  <div class="logo"><i></i>DAST Workspace <small>style 2</small></div>
+  <nav>
+    <a href="index.html">Overview</a>
+    <a href="01-onboard-wizard.html">Onboard</a>
+    <a class="on" href="02-app-settings.html">Apps</a>
+    <a href="03-run-progress.html">Runs</a>
+    <a href="04-results-and-finding.html">Findings</a>
+    <a href="05-governance.html">Governance</a>
+    <a href="06-export-to-ci.html">Automation</a>
+  </nav>
+  <div class="me">cyang · Security engineering <span class="avatar">CY</span></div>
+</header>
+
+<div class="page">
+  <div class="crumbs"><a href="index.html">Overview</a> / <a href="#">Apps</a> / dvwa</div>
+  <div class="titlebar">
+    <div><h1>dvwa — settings</h1><p class="sub">Saved in <code>security/dast/dvwa/app.yaml</code> · last changed 2 days ago by cyang</p></div>
+    <div class="actions"><a class="btn" href="06-export-to-ci.html">Automate</a><a class="btn primary" href="03-run-progress.html">Run a scan</a></div>
+  </div>
+
+  <div class="layout">
+    <div class="stack">
+      <section class="card">
+        <div class="band a"><span class="dot"></span>Required <small>— no safe default; the scan won't start without these</small></div>
+        <div class="fields">
+          <div class="field"><div class="label"><b>Application address</b><span>base_url</span></div><div class="value"><input value="http://dvwa"><div class="help">As the scanner reaches it, inside the scan network.</div></div></div>
+          <div class="field"><div class="label"><b>Environment</b><span>environment_class</span></div><div class="value"><select><option>Development (dev)</option><option>Test</option><option>Staging</option></select><div class="help">Production is never allowed. Test and staging hosts must be in the environment registry.</div></div></div>
+          <div class="field"><div class="label"><b>Hosts in scope</b><span>scope.allow</span></div><div class="value"><input value="dvwa"></div></div>
+          <div class="field"><div class="label"><b>Login page</b><span>auth.login_url</span></div><div class="value"><input value="/login.php"></div></div>
+          <div class="field"><div class="label"><b>Test account</b><span>auth.credentials</span></div><div class="value"><input value="DVWA_USER and DVWA_PASS (environment variables)" readonly><div class="help">Only the names are stored — never the values.</div></div></div>
+          <div class="field"><div class="label"><b>Pages to test</b><span>record.authenticated_routes</span></div><div class="value">5 pages · <a href="#">Review list</a></div></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="band b"><span class="dot"></span>Optional <small>— sensible defaults; each shows what changing it costs</small></div>
+        <details open>
+          <summary>Scanning</summary>
+          <div class="fields">
+            <div class="field"><div class="label"><b>Attack strength</b><span>scan.policy.attack_strength</span></div><div class="value"><select><option>High (changed from Medium)</option><option>Medium — default</option><option>Low</option></select><div class="help">Higher finds more but sends more requests.</div></div></div>
+            <div class="field"><div class="label"><b>Time limit</b><span>scan.budgets.max_scan_min</span></div><div class="value"><input value="10 minutes"><div class="help">Default 4 minutes.</div></div></div>
+            <div class="field"><div class="label"><b>DOM-XSS pass</b><span>scan.dom_xss</span></div><div class="value">On, up to 15 minutes <span class="tag warn">Needs about 5 GiB of memory for the scanner</span></div></div>
+            <div class="field"><div class="label"><b>API description</b><span>scan.openapi</span></div><div class="value muted">None. <a href="#">Add an OpenAPI file</a> — the best single way to cover an API.</div></div>
+          </div>
+        </details>
+        <details><summary>Exploration · 6 settings</summary></details>
+        <details><summary>Login details · 1 setting (cookie: security=low)</summary></details>
+      </section>
+
+      <section class="card">
+        <div class="band c"><span class="dot"></span>Needs approval <small>— changes what a scan may do to a shared environment</small></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Setting</th><th>Current</th><th>Decided by</th><th>Date</th></tr></thead>
+          <tbody>
+            <tr><td><b>Data can be thrown away</b><div class="faint mono">data_policy</div></td><td>Yes — disposable</td><td>App owner</td><td>28 Sep 2026</td></tr>
+            <tr><td><b>Exploration may submit forms that change data</b><div class="faint mono">explore.write_mode</div></td><td>No</td><td>Governance</td><td>29 Sep 2026</td></tr>
+            <tr><td><b>Scanner rules switched off</b><div class="faint mono">scan.policy.disabled_rules</div></td><td>40026 DOM-XSS (runs in its own pass)</td><td>Governance</td><td>30 Sep 2026</td></tr>
+            <tr><td><b>Fail the build at</b><div class="faint mono">gate.fail_on</div></td><td>High and above</td><td>Governance</td><td>30 Sep 2026</td></tr>
+            <tr><td><b>AI provider</b><div class="faint mono">LLM_PROVIDER</div></td><td>GitHub Copilot</td><td>Governance</td><td>27 Sep 2026</td></tr>
+          </tbody>
+        </table></div>
+        <div class="foot">To change one of these, open a pull request on <code>app.yaml</code> — Governance reviews it there.</div>
+      </section>
+
+      <section class="card">
+        <div class="band d"><span class="dot"></span>Always on <small>— safety rules, and things we work out for you</small></div>
+        <div class="body cols-2">
+          <div><h3 style="margin-bottom:8px">Safety rules</h3><p class="muted">Production is refused · out-of-scope requests are blocked before they're sent · the scanner's controls need a key · data is redacted before any AI sees it · "not tested" is never reported as "fixed".</p></div>
+          <div><h3 style="margin-bottom:8px">Worked out for you</h3><p class="muted">Login steps and the "signed-in" check (you can review them) · a fresh scanner key every run · where results are filed in GitHub (<code>dast/dvwa</code>).</p></div>
+        </div>
+      </section>
+    </div>
+
+    <aside class="help-panel">
+      <section class="card">
+        <div class="head"><h3>Unsaved changes</h3><span class="tag warn" style="margin-left:auto">2</span></div>
+        <pre style="border-top:0"><span class="c"># app.yaml</span>
+scan:
+  budgets:
+<span class="del">-   max_scan_min: 6</span><span class="add">+   max_scan_min: 10</span>  dom_xss:
+<span class="del">-   max_min: 5</span><span class="add">+   max_min: 15</span></pre>
+        <div class="foot row"><button class="btn">Discard</button><span class="spacer"></span><button class="btn primary">Save</button></div>
+      </section>
+      <section class="card">
+        <div class="head"><h3>What this means</h3></div>
+        <div class="body"><p>Saving writes <code>app.yaml</code> and checks it against the schema. Anything under <b style="color:var(--ink)">Needs approval</b> can't be changed here.</p>
+          <p>Command-line equivalent: <code>python -m dast scan dvwa</code></p></div>
+      </section>
+    </aside>
+  </div>
+</div>
+</body>
+</html>

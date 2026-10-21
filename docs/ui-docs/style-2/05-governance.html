@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DAST Workspace — Governance</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="appbar">
+  <div class="logo"><i></i>DAST Workspace <small>style 2</small></div>
+  <nav>
+    <a href="index.html">Overview</a>
+    <a href="01-onboard-wizard.html">Onboard</a>
+    <a href="02-app-settings.html">Apps</a>
+    <a href="03-run-progress.html">Runs</a>
+    <a href="04-results-and-finding.html">Findings</a>
+    <a class="on" href="05-governance.html">Governance</a>
+    <a href="06-export-to-ci.html">Automation</a>
+  </nav>
+  <div class="me">mlopez · Governance <span class="avatar">ML</span></div>
+</header>
+
+<div class="page">
+  <div class="crumbs"><a href="index.html">Overview</a> / Governance</div>
+  <div class="titlebar">
+    <div><h1>Governance</h1><p class="sub">What scans are allowed to do, what they deliberately don't test, and who did what.</p></div>
+    <div class="actions"><button class="btn">Export audit trail</button></div>
+  </div>
+
+  <div class="cols-3" style="margin-bottom:20px">
+    <div class="card metric"><div class="label">Waiting for your decision</div><div class="value" style="color:var(--tier-c)">2</div><div class="faint">Oldest: 5 days</div></div>
+    <div class="card metric"><div class="label">Known gaps in testing</div><div class="value">5</div><div class="faint">3 app-specific · 2 everywhere</div></div>
+    <div class="card metric"><div class="label">Scans this month</div><div class="value">23</div><div class="faint">None reached production · 1 refused</div></div>
+  </div>
+
+  <div class="layout">
+    <div class="stack">
+      <section class="card">
+        <div class="band c"><span class="dot"></span>Waiting for your decision</div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Application</th><th>Request</th><th>Why they need it</th><th>Requested</th><th></th></tr></thead>
+          <tbody>
+            <tr><td><b>orders-portal</b></td><td>Register <span class="mono">orders.test.example.internal</span> as a <b>test</b> system</td><td>First scan of an internal application</td><td style="white-space:nowrap">cyang, 16 Oct</td><td><a class="btn" href="#">Review PR #14</a></td></tr>
+            <tr><td><b>juice-shop</b></td><td>Let exploration submit forms that change data</td><td>Reach the basket and checkout flows</td><td style="white-space:nowrap">cyang, 16 Oct</td><td><a class="btn" href="#">Review PR #15</a></td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section class="card">
+        <div class="head"><h2>What scans deliberately don't test</h2><span class="note">Each one has an owner and a date</span></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Where</th><th>Gap</th><th>Decided</th></tr></thead>
+          <tbody>
+            <tr><td>dvwa</td><td>DOM-XSS rule off in the main scan; it runs in its own time-limited pass instead</td><td>Governance, 30 Sep</td></tr>
+            <tr><td>dvwa</td><td>Setup, phpinfo and captcha pages left out of exploration</td><td>Security, 28 Sep</td></tr>
+            <tr><td>orders-portal</td><td>Payments and email-notification endpoints never touched</td><td>Security, 16 Oct</td></tr>
+            <tr><td>All apps</td><td>No out-of-band (callback) testing</td><td><span class="tag warn">Not decided</span></td></tr>
+            <tr><td>All apps</td><td>No testing of one user reaching another user's data</td><td><span class="tag warn">Not decided</span></td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section class="card">
+        <div class="head"><h2>Audit trail</h2><span class="note">Every scan, refusal and decision</span></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>When</th><th>Who</th><th>What</th></tr></thead>
+          <tbody>
+            <tr><td>Today 10:12</td><td>cyang</td><td>Started a scan of <b>dvwa</b> (recorded walk, no AI)</td></tr>
+            <tr><td>Today 09:58</td><td>jdoe</td><td>Proposed setting aside a <b>dvwa</b> SQL injection as accepted risk until 31 Dec</td></tr>
+            <tr><td>Today 08:55</td><td>cyang</td><td><span class="tag warn">Refused</span> <b>orders-portal</b>: host not registered — nothing was sent</td></tr>
+            <tr><td>Mon 06:00</td><td>Schedule</td><td><b>juice-shop</b> self-test passed (2 high, 359 pages)</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+    </div>
+
+    <aside class="help-panel">
+      <section class="card">
+        <div class="head"><h3>Environment registry</h3></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Host</th><th>Type</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">juice</td><td>dev</td></tr>
+            <tr><td class="mono">dvwa</td><td>dev</td></tr>
+            <tr><td class="mono">webgoat</td><td>dev</td></tr>
+            <tr><td class="mono faint">orders.test…</td><td><span class="tag c">Pending</span></td></tr>
+          </tbody>
+        </table></div>
+        <div class="foot"><span class="tag d">Always on</span> Anything that looks like production is refused.</div>
+      </section>
+      <section class="card">
+        <div class="head"><h3>Where decisions are made</h3></div>
+        <div class="body"><p>Approvals are pull requests on each app's settings file, with Governance as required reviewers. This page shows them; it doesn't replace them.</p></div>
+      </section>
+    </aside>
+  </div>
+</div>
+</body>
+</html>

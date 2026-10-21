@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DAST Guided — Make dvwa scans run on their own</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <span class="name"><i></i>Security scanning <small>guided · style 3</small></span>
+  <span class="help">Signed in as pkim · Platform</span>
+</header>
+<nav class="journey">
+  <a href="01-onboard-wizard.html"><span class="n">1</span>Set up</a><span class="sep"></span>
+  <a href="02-app-settings.html"><span class="n">2</span>Check settings</a><span class="sep"></span>
+  <a href="03-run-progress.html"><span class="n">3</span>Run</a><span class="sep"></span>
+  <a href="04-results-and-finding.html"><span class="n">4</span>Review results</a>
+  <span class="side"><a href="05-governance.html">Approvals</a><a class="on" href="06-export-to-ci.html">Automate</a></span>
+</nav>
+
+<main class="wrap">
+  <div>
+    <div class="eyebrow">For platform teams · dvwa</div>
+    <h1>Make dvwa scans run on their own</h1>
+    <p class="lead">Three steps. We don't run anything on a schedule ourselves — your repository does, using a file we give you.</p>
+  </div>
+
+  <section class="card">
+    <div class="eyebrow">Step 1 of 3</div>
+    <h2>When should it run?</h2>
+    <div class="choices">
+      <label class="choice on"><input type="radio" name="w" checked><span><b>Every Monday morning</b><small>06:00 UTC — a good default.</small></span></label>
+      <label class="choice"><input type="radio" name="w"><span><b>After every deploy</b><small>Your deploy job starts it and tells it which version went out.</small></span></label>
+      <label class="choice"><input type="radio" name="w"><span><b>Only when someone starts it</b><small>From the repository's Actions tab.</small></span></label>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="eyebrow">Step 2 of 3</div>
+    <h2>Add the test account as secrets</h2>
+    <p class="muted">In the repository's settings, add two secrets: <code>DVWA_USER</code> and <code>DVWA_PASS</code>. We never see their values.</p>
+  </section>
+
+  <section class="card">
+    <div class="eyebrow">Step 3 of 3</div>
+    <h2>Add this file to the repository</h2>
+    <p class="muted">Save it as <code>.github/workflows/dast-dvwa.yml</code>.</p>
+    <pre>name: dast-dvwa
+on:
+  schedule: [{ cron: "0 6 * * 1" }]
+  workflow_dispatch:
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "ZAP_API_KEY=$(openssl rand -hex 24)" &gt;&gt; "$GITHUB_ENV"
+      - run: docker compose up -d zap
+      - env: { DVWA_USER: ${{ secrets.DVWA_USER }}, DVWA_PASS: ${{ secrets.DVWA_PASS }} }
+        run: |
+          python -m dast author dvwa --no-llm
+          python -m dast scan   dvwa
+      - run: python -m dast report dvwa --upload --ref "$DEPLOYED_REF" --commit "$DEPLOYED_SHA"</pre>
+    <div class="actions"><button class="btn">Copy</button><button class="btn primary">Download the file</button></div>
+  </section>
+
+  <section class="card tight">
+    <h3>What a red or green run means</h3>
+    <div class="answers">
+      <div><span class="k">Green</span><span class="v">The scan was healthy and found nothing new that's serious</span></div>
+      <div><span class="k">Red, "gate failed"</span><span class="v">Something new and serious was found, or the scan wasn't healthy</span></div>
+      <div><span class="k">Red, "refused"</span><span class="v">A safety check stopped it before anything was sent</span></div>
+    </div>
+  </section>
+
+  <div class="says d"><span class="mark">=</span><span><b>Set once by the platform team, never asked here</b>The package mirror, the company's certificate file and the exact scanner version are part of the installation, not part of a scan.</span></div>
+</main>
+</body>
+</html>

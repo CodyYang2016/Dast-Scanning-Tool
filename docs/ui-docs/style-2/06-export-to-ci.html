@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DAST Workspace — Automate dvwa</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="appbar">
+  <div class="logo"><i></i>DAST Workspace <small>style 2</small></div>
+  <nav>
+    <a href="index.html">Overview</a>
+    <a href="01-onboard-wizard.html">Onboard</a>
+    <a href="02-app-settings.html">Apps</a>
+    <a href="03-run-progress.html">Runs</a>
+    <a href="04-results-and-finding.html">Findings</a>
+    <a href="05-governance.html">Governance</a>
+    <a class="on" href="06-export-to-ci.html">Automation</a>
+  </nav>
+  <div class="me">pkim · Platform <span class="avatar">PK</span></div>
+</header>
+
+<div class="page">
+  <div class="crumbs"><a href="index.html">Overview</a> / Automation / dvwa</div>
+  <div class="titlebar">
+    <div><h1>Run dvwa scans automatically</h1><p class="sub">We don't schedule scans ourselves — we give you a workflow for the app's own repository.</p></div>
+    <div class="actions"><button class="btn">Copy</button><button class="btn primary">Download workflow</button></div>
+  </div>
+
+  <div class="layout">
+    <div class="stack">
+      <section class="card">
+        <div class="head"><h2>Choose when it runs</h2></div>
+        <div class="body cols-3">
+          <label class="choice on"><b><input type="radio" name="w" checked> Weekly</b><span class="muted">Mondays, 06:00 UTC</span></label>
+          <label class="choice"><b><input type="radio" name="w"> After each deploy</b><span class="muted">Triggered by your deploy job</span></label>
+          <label class="choice"><b><input type="radio" name="w"> Only when started by hand</b><span class="muted">From the Actions tab</span></label>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="head"><h2>.github/workflows/dast-dvwa.yml</h2><span class="tag ok">Checked</span></div>
+        <pre style="border-top:0"><span class="k">name</span>: dast-dvwa
+<span class="k">on</span>:
+  <span class="k">schedule</span>: [{ <span class="k">cron</span>: <span class="s">"0 6 * * 1"</span> }]
+  <span class="k">workflow_dispatch</span>:
+<span class="k">permissions</span>: { <span class="k">contents</span>: read, <span class="k">security-events</span>: write }
+<span class="k">jobs</span>:
+  <span class="k">scan</span>:
+    <span class="k">runs-on</span>: ubuntu-latest
+    <span class="k">timeout-minutes</span>: 45
+    <span class="k">steps</span>:
+      - <span class="k">uses</span>: actions/checkout@v4
+      - <span class="k">run</span>: echo "ZAP_API_KEY=$(openssl rand -hex 24)" &gt;&gt; "$GITHUB_ENV"
+      - <span class="k">run</span>: docker compose up -d zap
+      - <span class="k">env</span>: { <span class="k">DVWA_USER</span>: ${{ secrets.DVWA_USER }}, <span class="k">DVWA_PASS</span>: ${{ secrets.DVWA_PASS }} }
+        <span class="k">run</span>: |
+          python -m dast author dvwa --no-llm
+          python -m dast scan   dvwa
+      - <span class="k">run</span>: python -m dast report dvwa --upload --ref "$DEPLOYED_REF" --commit "$DEPLOYED_SHA"</pre>
+        <div class="foot">Add <code>DVWA_USER</code> and <code>DVWA_PASS</code> as repository secrets before the first run.</div>
+      </section>
+    </div>
+
+    <aside class="help-panel">
+      <section class="card">
+        <div class="head"><h3>What the result means</h3></div>
+        <div class="table-wrap"><table>
+          <tbody>
+            <tr><td><span class="tag ok">0</span></td><td>Scan was healthy and the gate passed</td></tr>
+            <tr><td><span class="tag bad">1</span></td><td>New finding at or above the gate, or the scan wasn't healthy</td></tr>
+            <tr><td><span class="tag warn">2</span></td><td>Refused or misconfigured</td></tr>
+            <tr><td><span class="tag warn">3</span></td><td>AI was required but unavailable</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+      <section class="card">
+        <div class="band d"><span class="dot"></span>Installation settings</div>
+        <div class="table-wrap"><table>
+          <tbody>
+            <tr><td class="mono">PIP_INDEX_URL</td><td class="faint">Artifactory mirror</td></tr>
+            <tr><td class="mono">DAST_CA_BUNDLE</td><td class="faint">corporate CA file</td></tr>
+            <tr><td class="mono">ZAP_IMAGE</td><td class="faint">pinned scanner image</td></tr>
+            <tr><td class="mono">COPILOT_CLI</td><td class="faint">path to Copilot</td></tr>
+          </tbody>
+        </table></div>
+        <div class="foot">Set once by Platform. These never appear while someone is running a scan.</div>
+      </section>
+    </aside>
+  </div>
+</div>
+</body>
+</html>

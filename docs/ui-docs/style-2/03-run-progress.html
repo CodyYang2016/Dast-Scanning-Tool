@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DAST Workspace — dvwa scan in progress</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="appbar">
+  <div class="logo"><i></i>DAST Workspace <small>style 2</small></div>
+  <nav>
+    <a href="index.html">Overview</a>
+    <a href="01-onboard-wizard.html">Onboard</a>
+    <a href="02-app-settings.html">Apps</a>
+    <a class="on" href="03-run-progress.html">Runs</a>
+    <a href="04-results-and-finding.html">Findings</a>
+    <a href="05-governance.html">Governance</a>
+    <a href="06-export-to-ci.html">Automation</a>
+  </nav>
+  <div class="me">cyang · Security engineering <span class="avatar">CY</span></div>
+</header>
+
+<div class="page">
+  <div class="crumbs"><a href="index.html">Overview</a> / <a href="#">Runs</a> / dvwa · today 10:12</div>
+  <div class="titlebar">
+    <div><h1>Scanning dvwa <span class="tag run" style="vertical-align:middle">In progress</span></h1><p class="sub">Started 6 minutes ago by cyang · recorded walk · no AI</p></div>
+    <div class="actions"><button class="btn danger">Stop scan</button></div>
+  </div>
+
+  <div class="layout">
+    <div class="stack">
+      <section class="card">
+        <div class="body">
+          <div class="timeline">
+            <div class="tl done"><div class="n">✓</div><b>Safety checks</b><p>In scope · registered as dev · not production</p></div>
+            <div class="tl done"><div class="n">✓</div><b>Sign in</b><p>Signed in and verified in 1.8 s</p></div>
+            <div class="tl now"><div class="n">3</div><b>Scan</b><p>3 of 6 pages attacked</p><div class="meter" style="margin-top:8px"><i style="width:58%"></i></div></div>
+            <div class="tl todo"><div class="n">4</div><b>Organise results</b><p>Remove secrets, group duplicates</p></div>
+            <div class="tl todo"><div class="n">5</div><b>Check coverage</b><p>What was and wasn't tested</p></div>
+          </div>
+        </div>
+      </section>
+
+      <div class="cols-3">
+        <div class="card metric"><div class="label">Time used</div><div class="value">6:12 <small>of 10:00</small></div><div class="meter"><i style="width:62%"></i></div></div>
+        <div class="card metric"><div class="label">Still signed in?</div><div class="value" style="color:var(--ok)">Yes</div><div class="faint">Checked every minute · signed in again once</div></div>
+        <div class="card metric"><div class="label">Found so far</div><div class="value"><span class="sev-high">11</span> <small>high</small></div><div class="faint">40 medium · 71 low · not final yet</div></div>
+      </div>
+
+      <section class="card">
+        <div class="head"><h2>Activity</h2><span class="note">From the run's audit log</span></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Time</th><th>What happened</th><th></th></tr></thead>
+          <tbody>
+            <tr><td>10:18</td><td>Testing for cross-site scripting (rule 40012)</td><td><span class="tag run">Running</span></td></tr>
+            <tr><td>10:18</td><td>SQL injection test finished — 286 requests, 3 alerts (rule 40018)</td><td><span class="tag ok">Done</span></td></tr>
+            <tr><td>10:14</td><td>Session was lost; signed in again automatically (1 of 3 allowed)</td><td><span class="tag warn">Recovered</span></td></tr>
+            <tr><td>10:12</td><td>Found 31 pages in scope, none refused</td><td><span class="tag ok">Done</span></td></tr>
+            <tr><td>10:12</td><td>Reset the application's data, then signed in</td><td><span class="tag ok">Done</span></td></tr>
+            <tr><td>10:12</td><td>Safety checks passed: host <b>dvwa</b> is registered as <b>dev</b></td><td><span class="tag ok">Done</span></td></tr>
+          </tbody>
+        </table></div>
+      </section>
+    </div>
+
+    <aside class="help-panel">
+      <div class="alert bad">
+        <b>orders-portal couldn't be scanned this morning</b>
+        <span><span class="mono">orders.test.example.internal</span> isn't in the environment registry, so we can't confirm it's a test system. No requests were sent.</span>
+        <a href="05-governance.html" style="margin-top:6px">Ask Governance to register it →</a>
+      </div>
+      <section class="card">
+        <div class="head"><h3>If you stop the scan</h3></div>
+        <div class="body">
+          <p>It's recorded as <b style="color:var(--ink)">stopped</b>, not failed.</p>
+          <p>Pages we didn't reach are marked <b style="color:var(--ink)">not tested</b> — never "fixed".</p>
+          <p>What we found so far is kept and labelled partial.</p>
+        </div>
+      </section>
+    </aside>
+  </div>
+</div>
+</body>
+</html>
