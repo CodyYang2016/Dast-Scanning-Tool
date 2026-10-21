@@ -19,7 +19,8 @@ source.
 | **How tiers show** | Badges: MUST · OPT · APPROVAL · FIXED | Labelled card bands: Required · Optional · Needs approval · Always on | Sentences: "We need this from you" · "Someone else decides this" |
 | **Fits best if** | Security engineers run scans for app teams | Many teams use it occasionally; approvers and developers read it as much as engineers run it | App teams run scans themselves |
 
-Which style fits depends mostly on open question Q1 in the requirements: who the primary user is.
+**Chosen direction: style 2, Enterprise workspace** (2026-10-21). One shared UI that every persona uses; see
+§8 Q1 in the requirements. Styles 1 and 3 are kept for reference.
 
 ## Pages
 
