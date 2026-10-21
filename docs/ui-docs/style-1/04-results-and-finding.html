@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DAST Console — Results &amp; triage</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<aside class="side">
+  <div class="brand">dast<small>operator console · style 1</small></div>
+  <div><h6>Workflow</h6><nav>
+    <a href="index.html">Overview <kbd>g o</kbd></a>
+    <a href="01-onboard-wizard.html">Onboard an app <kbd>n</kbd></a>
+    <a href="02-app-settings.html">App settings <kbd>g s</kbd></a>
+    <a href="03-run-progress.html">Runs <kbd>g r</kbd></a>
+    <a class="on" href="04-results-and-finding.html">Results &amp; triage <kbd>g f</kbd></a>
+    <a href="05-governance.html">Governance <kbd>g g</kbd></a>
+    <a href="06-export-to-ci.html">Export to CI <kbd>g e</kbd></a>
+  </nav></div>
+  <div class="apps"><h6>Apps</h6><nav>
+    <a class="on" href="02-app-settings.html">dvwa <span class="pill bad">19 high</span></a>
+    <a href="#">juice-shop <span class="pill warn">2 high</span></a>
+    <a href="#">webgoat <span class="pill ok">ok</span></a>
+    <a href="#">semgate <span class="pill ok">lab</span></a>
+    <a href="01-onboard-wizard.html">orders-portal <span class="pill run">new</span></a>
+  </nav></div>
+  <div class="foot">ZAP 2.17.0 · listening on 127.0.0.1 only</div>
+</aside>
+
+<main>
+  <div class="topbar">
+    <span class="crumb">Runs / dvwa / 20261016T094120Z / <b>Results</b></span>
+    <span class="pill bad">gate failed · 19 new ≥ high</span>
+    <span class="spacer"></span>
+    <span class="hint">AI: not used — recorded walk</span>
+  </div>
+
+  <div class="content">
+    <div class="grid-3">
+      <div class="panel stat"><div class="l">Findings</div><div class="v">522</div><div class="hint"><span class="sev high">19 high</span> · <span class="sev medium">85 med</span> · <span class="sev low">132 low</span> · <span class="sev info">286 info</span></div></div>
+      <div class="panel stat"><div class="l">Coverage</div><div class="v">6 <span class="muted" style="font-size:13px">of 6 routes</span></div><div class="hint">2 of 2 exposed parameters exercised · source: authoring walk</div></div>
+      <div class="panel stat"><div class="l">Lifecycle</div><div class="v">522 <span class="muted" style="font-size:13px">new</span></div><div class="hint">0 resolved · 0 not_scanned · 0 suppressed</div></div>
+    </div>
+
+    <div class="split">
+      <div style="display:grid; gap:16px">
+        <section class="panel">
+          <header><h2>High findings</h2><span class="right hint">grouped by rule × route · 19 records</span></header>
+          <table>
+            <thead><tr><th>Sev</th><th>Rule</th><th>Route</th><th>Param</th><th>State</th><th class="num">#</th></tr></thead>
+            <tbody>
+              <tr class="sel"><td class="sev high">high</td><td>SQL Injection - MySQL</td><td class="mono">/vulnerabilities/sqli</td><td class="mono">id</td><td><span class="pill">new</span></td><td class="num">3</td></tr>
+              <tr><td class="sev high">high</td><td>Cross Site Scripting (Reflected)</td><td class="mono">/vulnerabilities/xss_r</td><td class="mono">name</td><td><span class="pill">new</span></td><td class="num">4</td></tr>
+              <tr><td class="sev high">high</td><td>SQL Injection - MySQL</td><td class="mono">/vulnerabilities/brute</td><td class="mono">username</td><td><span class="pill">new</span></td><td class="num">2</td></tr>
+              <tr><td class="sev high">high</td><td>Cross Site Scripting (Reflected)</td><td class="mono">/vulnerabilities/sqli</td><td class="mono">id</td><td><span class="pill">new</span></td><td class="num">2</td></tr>
+              <tr><td class="sev high">high</td><td>Cross Site Scripting (DOM Based)</td><td class="mono">/vulnerabilities/xss_d</td><td class="mono">default</td><td><span class="pill">new</span></td><td class="num">8</td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section class="panel">
+          <header><span class="sev high">HIGH</span><h2 style="color:var(--text); text-transform:none; letter-spacing:0; font-size:14px">SQL Injection - MySQL · <span class="mono">/vulnerabilities/sqli</span></h2><span class="right hint mono">rule 40018 · CWE-89 · confidence medium</span></header>
+          <div class="body" style="display:grid; gap:12px">
+            <div class="grid-2">
+              <div><div class="hint">Parameter</div><div class="mono">id</div></div>
+              <div><div class="hint">Payload</div><div class="mono">1' OR '1'='1' -- </div></div>
+            </div>
+            <div><div class="hint">Evidence in the response</div><div class="mono" style="color:var(--warn)">You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version</div></div>
+            <div class="callout info"><b>How to fix</b>Use parameterized queries (prepared statements) for every value that reaches SQL. Don't build queries by concatenating request input; validate <code>id</code> as an integer.</div>
+            <div><div class="hint">Reproduce</div></div>
+          </div>
+          <pre><span class="cm"># replay line — exact request ZAP sent</span>
+curl -s -b 'PHPSESSID=…; security=low' \
+  'http://dvwa/vulnerabilities/sqli/?id=1%27+OR+%271%27%3D%271%27+--+&amp;Submit=Submit'
+<span class="cm"># full request/response: evidence/20261016T094120Z/40018-sqli-id.http</span></pre>
+        </section>
+      </div>
+
+      <aside style="display:grid; gap:16px">
+        <section class="panel">
+          <header><h2>Triage</h2><span class="pill warn right">proposed</span></header>
+          <div class="body" style="display:grid; gap:10px">
+            <p><b>jdoe (DEV)</b> proposes <code>accepted_risk</code></p>
+            <label><span>Reason <i class="tier a">MUST</i></span><textarea rows="3">Training target; deliberately vulnerable. Not deployed beyond the lab network.</textarea></label>
+            <label><span>Expires <i class="tier a">MUST</i></span><input value="2026-12-31"></label>
+            <p class="hint">Accepted risk always expires. An expired suppression shows as expired — it never silently disappears.</p>
+            <div class="row"><button class="btn">Reject</button><button class="btn primary right">Approve (SEC)</button></div>
+            <p class="hint">Writes <code>security/dast/dvwa/suppressions.yaml</code>, keyed by fingerprint <code>a3f9…c21</code>.</p>
+          </div>
+        </section>
+
+        <section class="panel">
+          <header><h2>Publish</h2><span class="hint right">preview</span></header>
+          <div class="body" style="display:grid; gap:10px">
+            <label><span>Destination <i class="tier a">MUST</i></span><select><option>GitHub code scanning</option><option>GitHub Issues (no Advanced Security)</option><option>Don't publish</option></select></label>
+            <label><span>Repository <i class="tier a">MUST</i></span><input value="example-org/dvwa"></label>
+            <label><span>Deployed ref <i class="tier a">MUST</i></span><input value="refs/heads/main"></label>
+            <label><span>Deployed commit <i class="tier a">MUST</i></span><input placeholder="full SHA of the build that was scanned" style="border-color:var(--bad)"></label>
+            <p class="hint" style="color:var(--bad)">Needed: this tool's own checkout is not the app that was scanned.</p>
+            <p class="hint">Will send 522 results as category <code>dast/dvwa</code> <i class="tier d">FIXED</i>. Suppressed findings are still sent.</p>
+            <button class="btn primary" disabled>Publish 522 results</button>
+          </div>
+        </section>
+      </aside>
+    </div>
+  </div>
+</main>
+</body>
+</html>

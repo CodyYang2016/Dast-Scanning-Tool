@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DAST Guided — Start</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <span class="name"><i></i>Security scanning <small>guided · style 3</small></span>
+  <span class="help">Stuck? Ask security engineering.</span>
+</header>
+<nav class="journey">
+  <a href="01-onboard-wizard.html"><span class="n">1</span>Set up</a><span class="sep"></span>
+  <a href="02-app-settings.html"><span class="n">2</span>Check settings</a><span class="sep"></span>
+  <a href="03-run-progress.html"><span class="n">3</span>Run</a><span class="sep"></span>
+  <a href="04-results-and-finding.html"><span class="n">4</span>Review results</a>
+  <span class="side"><a href="05-governance.html">Approvals</a><a href="06-export-to-ci.html">Automate</a></span>
+</nav>
+
+<main class="wrap">
+  <div>
+    <div class="eyebrow">Mockup set 3 of 3 · Guided flow</div>
+    <h1>What would you like to do today?</h1>
+    <p class="lead">Pick one. We'll take you through it a step at a time, and only ask what we can't work out ourselves.</p>
+  </div>
+
+  <div class="choices">
+    <a class="choice on" href="01-onboard-wizard.html"><input type="radio" name="t" checked><span><b>Set up scanning for an application</b><small>About 10 minutes. You'll need the app's address and a test account.</small></span></a>
+    <a class="choice" href="03-run-progress.html"><input type="radio" name="t"><span><b>Scan an application that's already set up</b><small>4 are ready: dvwa, juice-shop, webgoat, semgate.</small></span></a>
+    <a class="choice" href="04-results-and-finding.html"><input type="radio" name="t"><span><b>Understand something a scan found</b><small>What's wrong, how to see it yourself, and how to fix it.</small></span></a>
+    <a class="choice" href="05-governance.html"><input type="radio" name="t"><span><b>Make a decision you've been asked for</b><small>2 requests are waiting for Governance.</small></span></a>
+    <a class="choice" href="06-export-to-ci.html"><input type="radio" name="t"><span><b>Make scans run on their own</b><small>Get a ready-made workflow for your repository.</small></span></a>
+  </div>
+  <div class="actions"><a class="btn primary" href="01-onboard-wizard.html">Start</a></div>
+
+  <section class="card">
+    <h2>How we talk about settings</h2>
+    <p class="muted">Every setting falls into one of four groups. You'll see these notes throughout.</p>
+    <div class="says a"><span class="mark">!</span><span><b>We need this from you</b>There's no safe guess, so we can't scan without it.</span></div>
+    <div class="says b"><span class="mark">~</span><span><b>You can leave this as it is</b>It has a sensible default. Change it only if you have a reason.</span></div>
+    <div class="says c"><span class="mark">?</span><span><b>Someone else decides this</b>It changes what a scan is allowed to do, so an approver signs it off.</span></div>
+    <div class="says d"><span class="mark">=</span><span><b>This is always on</b>A safety rule, or something we work out for you.</span></div>
+    <p class="faint">Based on <a href="../ui_requirements.md">ui_requirements.md</a>. Totals in these mockups are real; people, dates and the per-rule split are illustrative.</p>
+  </section>
+</main>
+</body>
+</html>

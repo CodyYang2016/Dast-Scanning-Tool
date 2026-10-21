@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DAST Guided — Set up orders-portal</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <span class="name"><i></i>Security scanning <small>guided · style 3</small></span>
+  <span class="help">Stuck? Ask security engineering.</span>
+</header>
+<nav class="journey">
+  <a class="on" href="01-onboard-wizard.html"><span class="n">1</span>Set up</a><span class="sep"></span>
+  <a href="02-app-settings.html"><span class="n">2</span>Check settings</a><span class="sep"></span>
+  <a href="03-run-progress.html"><span class="n">3</span>Run</a><span class="sep"></span>
+  <a href="04-results-and-finding.html"><span class="n">4</span>Review results</a>
+  <span class="side"><a href="05-governance.html">Approvals</a><a href="06-export-to-ci.html">Automate</a></span>
+</nav>
+
+<main class="wrap">
+  <div>
+    <div class="eyebrow">Setting up orders-portal · question 7 of 9</div>
+    <h1>We signed in. Is this page only for signed-in people?</h1>
+    <p class="lead">We used your test account and landed on the page below. During every scan we'll keep checking it's still there — that's how we know we haven't been signed out.</p>
+  </div>
+
+  <div class="preview">
+    <div class="bar"><i></i><i></i><i></i>&nbsp;orders.test.example.internal/account/orders</div>
+    <div class="page">
+      <div class="hl">Signed in as <b>dast-test-user</b></div>
+      <h3>My orders</h3>
+      <div class="ph" style="width:90%"></div><div class="ph" style="width:75%"></div><div class="ph" style="width:82%"></div>
+    </div>
+  </div>
+
+  <div class="choices">
+    <label class="choice on"><input type="radio" name="p" checked><span><b>Yes — only signed-in people can see it</b><small>We'll use "My orders" and the "Signed in as" line to check you're still signed in.</small></span></label>
+    <label class="choice"><input type="radio" name="p"><span><b>No — anyone can see it</b><small>We'll show you other pages we found so you can choose a better one.</small></span></label>
+    <label class="choice"><input type="radio" name="p"><span><b>I'm not sure</b><small>We'll save your progress so you can check with the app's owner.</small></span></label>
+  </div>
+
+  <div class="actions"><a class="btn link" href="index.html">← Back</a><button class="btn primary push">Continue</button></div>
+
+  <div class="says d"><span class="mark">=</span><span><b>This is always on: you don't need to fill in any login steps.</b>We read the login page and worked out what to type where. You can look at the steps if you're curious, but you don't have to.</span></div>
+
+  <section class="card tight">
+    <h3>Your answers so far</h3>
+    <div class="answers">
+      <div><span class="k">Application</span><span class="v">orders-portal</span></div>
+      <div><span class="k">Where it runs</span><span class="v">orders.test.example.internal</span></div>
+      <div><span class="k">What kind of system</span><span class="v">A test system ✓ registered</span></div>
+      <div><span class="k">Never touch</span><span class="v">Payments, email notifications</span></div>
+      <div><span class="k">How people sign in</span><span class="v">Username and password</span></div>
+      <div><span class="k">Test account</span><span class="v">Kept in ORDERS_PORTAL_USER / _PASS</span></div>
+    </div>
+    <p class="faint">We never see or store the password — only the name of where it's kept.</p>
+  </section>
+</main>
+</body>
+</html>

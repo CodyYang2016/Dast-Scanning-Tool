@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DAST Console — Overview</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<aside class="side">
+  <div class="brand">dast<small>operator console · style 1</small></div>
+  <div><h6>Workflow</h6><nav>
+    <a class="on" href="index.html">Overview <kbd>g o</kbd></a>
+    <a href="01-onboard-wizard.html">Onboard an app <kbd>n</kbd></a>
+    <a href="02-app-settings.html">App settings <kbd>g s</kbd></a>
+    <a href="03-run-progress.html">Runs <kbd>g r</kbd></a>
+    <a href="04-results-and-finding.html">Results &amp; triage <kbd>g f</kbd></a>
+    <a href="05-governance.html">Governance <kbd>g g</kbd></a>
+    <a href="06-export-to-ci.html">Export to CI <kbd>g e</kbd></a>
+  </nav></div>
+  <div class="apps"><h6>Apps</h6><nav>
+    <a href="02-app-settings.html">dvwa <span class="pill bad">19 high</span></a>
+    <a href="#">juice-shop <span class="pill warn">2 high</span></a>
+    <a href="#">webgoat <span class="pill ok">ok</span></a>
+    <a href="#">semgate <span class="pill ok">lab</span></a>
+    <a href="01-onboard-wizard.html">orders-portal <span class="pill run">new</span></a>
+  </nav></div>
+  <div class="foot">ZAP 2.17.0 · listening on 127.0.0.1 only</div>
+</aside>
+
+<main>
+  <div class="topbar">
+    <span class="crumb"><b>Overview</b></span>
+    <span class="spacer"></span>
+    <span class="legend">
+      <span><i class="tier a">MUST</i> must ask</span>
+      <span><i class="tier b">OPT</i> offer, with default</span>
+      <span><i class="tier c">APPROVAL</i> approval, not a setting</span>
+      <span><i class="tier d">FIXED</i> never an option</span>
+    </span>
+  </div>
+
+  <div class="content">
+    <div>
+      <h1>Mockup set — Operator console</h1>
+      <p class="lede">Dense and keyboard-driven, for a security engineer who runs scans for app teams all
+        day. Every control carries its tier from <a href="../ui_requirements.md">ui_requirements.md</a>.
+        Data is real: DVWA's last run, Juice Shop's self-test, and a new internal app being onboarded.</p>
+    </div>
+
+    <div class="grid-3">
+      <div class="panel stat"><div class="l">Apps onboarded</div><div class="v">4 + 1</div><div class="hint">one in onboarding</div></div>
+      <div class="panel stat"><div class="l">Last run · dvwa</div><div class="v"><span class="sev high">19</span> high</div><div class="hint">522 findings · 6 of 6 routes</div></div>
+      <div class="panel stat"><div class="l">Pending approvals</div><div class="v">2</div><div class="hint">waiting on GOV</div></div>
+    </div>
+
+    <section class="panel">
+      <header><h2>Screens</h2></header>
+      <table>
+        <thead><tr><th>#</th><th>Screen</th><th>Persona</th><th>What it shows</th><th>Requirements</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">01</td><td><a href="01-onboard-wizard.html">Onboard an app</a></td><td>SEC</td><td>Only the must-ask questions; the tool finds the login itself and asks you to confirm it</td><td class="mono">UI-3 4 5</td></tr>
+          <tr><td class="mono">02</td><td><a href="02-app-settings.html">App settings</a></td><td>SEC</td><td>All four tiers on one page, a diff before saving, and the equivalent command</td><td class="mono">UI-1 2 6 15</td></tr>
+          <tr><td class="mono">03</td><td><a href="03-run-progress.html">Run progress</a></td><td>SEC</td><td>Live stages, stop, the audit log, and a refusal in plain words</td><td class="mono">UI-7 8</td></tr>
+          <tr><td class="mono">04</td><td><a href="04-results-and-finding.html">Results &amp; triage</a></td><td>SEC · DEV</td><td>Coverage with a denominator, one finding end to end, triage and publish preview</td><td class="mono">UI-9 10 11 12</td></tr>
+          <tr><td class="mono">05</td><td><a href="05-governance.html">Governance</a></td><td>GOV</td><td>Approvals, disclosed gaps, audit trail, environment registry</td><td class="mono">UI-13</td></tr>
+          <tr><td class="mono">06</td><td><a href="06-export-to-ci.html">Export to CI</a></td><td>OPS</td><td>A working workflow, and installation settings kept out of the run flow</td><td class="mono">UI-14</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel">
+      <header><h2>Recent runs</h2><span class="right hint">from events.jsonl</span></header>
+      <table>
+        <thead><tr><th>App</th><th>Started</th><th>By</th><th>Path</th><th>Result</th><th class="num">High</th><th class="num">Coverage</th></tr></thead>
+        <tbody>
+          <tr><td class="mono"><a href="04-results-and-finding.html">dvwa</a></td><td class="mono">10-16 09:41</td><td>cyang</td><td>recorded walk</td><td><span class="pill bad">gate failed</span></td><td class="num">19</td><td class="num">6/6</td></tr>
+          <tr><td class="mono"><a href="03-run-progress.html">dvwa</a></td><td class="mono">10-16 10:12</td><td>cyang</td><td>recorded walk</td><td><span class="pill run">scanning</span></td><td class="num">—</td><td class="num">—</td></tr>
+          <tr><td class="mono">juice-shop</td><td class="mono">10-13 06:00</td><td>schedule</td><td>self-test</td><td><span class="pill ok">passed</span></td><td class="num">2</td><td class="num">359</td></tr>
+          <tr><td class="mono">orders-portal</td><td class="mono">10-16 08:55</td><td>cyang</td><td>—</td><td><span class="pill warn">refused</span></td><td class="num">—</td><td class="num">—</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </div>
+</main>
+</body>
+</html>

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DAST Guided — What we found in dvwa</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <span class="name"><i></i>Security scanning <small>guided · style 3</small></span>
+  <span class="help">Stuck? Ask security engineering.</span>
+</header>
+<nav class="journey">
+  <a class="done" href="01-onboard-wizard.html"><span class="n">1</span>Set up</a><span class="sep"></span>
+  <a class="done" href="02-app-settings.html"><span class="n">2</span>Check settings</a><span class="sep"></span>
+  <a class="done" href="03-run-progress.html"><span class="n">3</span>Run</a><span class="sep"></span>
+  <a class="on" href="04-results-and-finding.html"><span class="n">4</span>Review results</a>
+  <span class="side"><a href="05-governance.html">Approvals</a><a href="06-export-to-ci.html">Automate</a></span>
+</nav>
+
+<main class="wrap">
+  <div>
+    <div class="eyebrow">dvwa · scanned today at 09:41</div>
+    <h1>19 serious problems need attention</h1>
+    <p class="lead">We tested all 6 pages you chose. Because some problems are serious, this scan would stop a release. Here's the first one, explained.</p>
+  </div>
+
+  <div class="numbers">
+    <div class="number"><div class="v sev-high">19</div><div class="l">serious</div></div>
+    <div class="number"><div class="v">6 of 6</div><div class="l">pages tested</div></div>
+    <div class="number"><div class="v">522</div><div class="l">findings in total</div></div>
+  </div>
+
+  <section class="card">
+    <div class="eyebrow">Problem 1 of 19 · serious</div>
+    <h2>Someone could read or change your database through the "User ID" box</h2>
+    <p class="muted">This is called <b>SQL injection</b>. On <code>/vulnerabilities/sqli</code>, whatever is typed into <code>id</code> goes straight into a database query.</p>
+
+    <h3>How we know</h3>
+    <p class="muted">We typed <code>1' OR '1'='1' -- </code> and the page replied with a database error:</p>
+    <pre>You have an error in your SQL syntax; check the manual that
+corresponds to your MySQL server version</pre>
+
+    <h3>How to fix it</h3>
+    <p>Use parameterized queries (prepared statements) for every value that reaches the database, and check that <code>id</code> is a whole number before using it.</p>
+
+    <details><summary>See it for yourself</summary></details>
+    <div class="actions"><button class="btn">Previous</button><button class="btn primary push">Next problem</button></div>
+  </section>
+
+  <section class="card">
+    <h2>Not a real problem here?</h2>
+    <p class="muted">You can ask for it to be set aside. A security engineer approves it first.</p>
+    <div class="choices">
+      <label class="choice on"><input type="radio" name="r" checked><span><b>We accept the risk for now</b><small>For example, it's a training system that's never deployed.</small></span></label>
+      <label class="choice"><input type="radio" name="r"><span><b>It's a false alarm</b><small>The scanner got it wrong.</small></span></label>
+    </div>
+    <div class="says a"><span class="mark">!</span><span><b>We need this from you</b>A reason, and a date to look at it again. Accepted risks always expire.</span></div>
+    <label class="q">Why<textarea rows="2">Training target; deliberately vulnerable. Not deployed beyond the lab network.</textarea></label>
+    <label class="q">Look at it again by<input value="31 December 2026"></label>
+    <div class="actions"><button class="btn primary">Send to security for approval</button></div>
+  </section>
+
+  <section class="card tight">
+    <h3>Share these results on GitHub</h3>
+    <div class="says a"><span class="mark">!</span><span><b>We need one more thing first</b>Which version of dvwa was running when we scanned it? Ask whoever deploys it for the commit ID — this tool's own code isn't the app.</span></div>
+    <div class="actions"><button class="btn" disabled>Share 522 results</button></div>
+  </section>
+</main>
+</body>
+</html>

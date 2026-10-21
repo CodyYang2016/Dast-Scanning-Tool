@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DAST Workspace — dvwa findings</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="appbar">
+  <div class="logo"><i></i>DAST Workspace <small>style 2</small></div>
+  <nav>
+    <a href="index.html">Overview</a>
+    <a href="01-onboard-wizard.html">Onboard</a>
+    <a href="02-app-settings.html">Apps</a>
+    <a href="03-run-progress.html">Runs</a>
+    <a class="on" href="04-results-and-finding.html">Findings</a>
+    <a href="05-governance.html">Governance</a>
+    <a href="06-export-to-ci.html">Automation</a>
+  </nav>
+  <div class="me">jdoe · Orders team <span class="avatar">JD</span></div>
+</header>
+
+<div class="page">
+  <div class="crumbs"><a href="index.html">Overview</a> / <a href="#">Findings</a> / dvwa · today 09:41</div>
+  <div class="titlebar">
+    <div><h1>dvwa — scan results</h1><p class="sub">The build gate failed: 19 new findings are high severity or above.</p></div>
+    <div class="actions"><button class="btn">Download report</button><button class="btn primary">Publish to GitHub…</button></div>
+  </div>
+
+  <div class="cols-3" style="margin-bottom:20px">
+    <div class="card metric"><div class="label">Findings</div><div class="value">522</div>
+      <div class="stacked-bar"><i style="width:3.6%;background:var(--bad)"></i><i style="width:16.3%;background:#d98a1c"></i><i style="width:25.3%;background:var(--primary)"></i><i style="width:54.8%;background:#c4ccd6"></i></div>
+      <div class="faint"><span class="sev-high">19 high</span> · 85 medium · 132 low · 286 info</div></div>
+    <div class="card metric"><div class="label">How much was tested</div><div class="value">6 <small>of 6 pages</small></div><div class="meter"><i style="width:100%; background:var(--ok)"></i></div><div class="faint" style="margin-top:6px">Both input fields we know about were tested</div></div>
+    <div class="card metric"><div class="label">Compared with last time</div><div class="value">522 <small>new</small></div><div class="faint">0 fixed · 0 not tested · 0 set aside</div></div>
+  </div>
+
+  <div class="layout">
+    <div class="stack">
+      <section class="card">
+        <div class="head"><h2>High-severity findings</h2><span class="note">Grouped by problem and page</span></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Problem</th><th>Page</th><th>Input</th><th>Status</th><th class="num">Count</th></tr></thead>
+          <tbody>
+            <tr class="sel"><td><b>SQL injection</b></td><td class="mono">/vulnerabilities/sqli</td><td class="mono">id</td><td><span class="tag warn">Set-aside proposed</span></td><td class="num">3</td></tr>
+            <tr><td><b>Cross-site scripting (reflected)</b></td><td class="mono">/vulnerabilities/xss_r</td><td class="mono">name</td><td><span class="tag bad">New</span></td><td class="num">4</td></tr>
+            <tr><td><b>SQL injection</b></td><td class="mono">/vulnerabilities/brute</td><td class="mono">username</td><td><span class="tag bad">New</span></td><td class="num">2</td></tr>
+            <tr><td><b>Cross-site scripting (reflected)</b></td><td class="mono">/vulnerabilities/sqli</td><td class="mono">id</td><td><span class="tag bad">New</span></td><td class="num">2</td></tr>
+            <tr><td><b>Cross-site scripting (DOM)</b></td><td class="mono">/vulnerabilities/xss_d</td><td class="mono">default</td><td><span class="tag bad">New</span></td><td class="num">8</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section class="card">
+        <div class="head"><span class="tag bad">High</span><h2>SQL injection on /vulnerabilities/sqli</h2><span class="note">Rule 40018 · CWE-89 · medium confidence</span></div>
+        <div class="body stack" style="gap:16px">
+          <div class="cols-2">
+            <div><div class="faint">Input that's vulnerable</div><div class="mono">id</div></div>
+            <div><div class="faint">What we sent</div><div class="mono">1' OR '1'='1' -- </div></div>
+          </div>
+          <div><div class="faint">What came back</div><div class="mono" style="color:var(--warn)">You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version</div></div>
+          <div class="alert info"><b>How to fix it</b><span>Use parameterized queries (prepared statements) for every value that reaches the database, and check that <code>id</code> is a whole number before using it.</span></div>
+        </div>
+        <details>
+          <summary>Reproduce it yourself</summary>
+          <pre>curl -s -b 'PHPSESSID=…; security=low' \
+  'http://dvwa/vulnerabilities/sqli/?id=1%27+OR+%271%27%3D%271%27+--+&amp;Submit=Submit'
+<span class="c"># the full request and response are saved in this scan's evidence</span></pre>
+        </details>
+      </section>
+    </div>
+
+    <aside class="help-panel">
+      <section class="card">
+        <div class="head"><h3>Set this finding aside</h3></div>
+        <div class="body">
+          <label class="stacked"><span>Reason</span><select><option>Accepted risk</option><option>False positive</option><option>Won't fix</option><option>Test data</option></select></label>
+          <label class="stacked"><span>Why <span class="tag a">Required</span></span><textarea rows="3">Training target; deliberately vulnerable. Not deployed beyond the lab network.</textarea></label>
+          <label class="stacked"><span>Review again by <span class="tag a">Required</span></span><input value="31 Dec 2026"></label>
+          <p>Accepted risk always has an end date. A security engineer approves before it takes effect.</p>
+          <button class="btn primary">Propose to security</button>
+        </div>
+      </section>
+      <section class="card">
+        <div class="head"><h3>Before publishing</h3></div>
+        <div class="body">
+          <p>Destination: <b style="color:var(--ink)">GitHub code scanning</b>, <span class="mono">example-org/dvwa</span></p>
+          <div class="alert warn"><b>Which build was scanned?</b><span>Enter the commit of the deployed build. This tool's own code isn't the app that was scanned.</span></div>
+          <p>Set-aside findings are still sent, marked as such.</p>
+        </div>
+      </section>
+    </aside>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DAST Guided — Scanning dvwa</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <span class="name"><i></i>Security scanning <small>guided · style 3</small></span>
+  <span class="help">Stuck? Ask security engineering.</span>
+</header>
+<nav class="journey">
+  <a class="done" href="01-onboard-wizard.html"><span class="n">1</span>Set up</a><span class="sep"></span>
+  <a class="done" href="02-app-settings.html"><span class="n">2</span>Check settings</a><span class="sep"></span>
+  <a class="on" href="03-run-progress.html"><span class="n">3</span>Run</a><span class="sep"></span>
+  <a href="04-results-and-finding.html"><span class="n">4</span>Review results</a>
+  <span class="side"><a href="05-governance.html">Approvals</a><a href="06-export-to-ci.html">Automate</a></span>
+</nav>
+
+<main class="wrap">
+  <div>
+    <div class="eyebrow">dvwa · started 6 minutes ago</div>
+    <h1>We're testing dvwa's pages for weaknesses</h1>
+    <p class="lead">About 4 minutes left. You can leave this page — we'll keep going and save everything.</p>
+  </div>
+
+  <section class="card">
+    <div class="big-progress">
+      <div class="bar"><i style="width:62%"></i></div>
+      <div class="faint">6 min 12 s of 10 min</div>
+    </div>
+    <div class="steps-list">
+      <div class="done"><span class="n">✓</span><span>Safety checks<small>dvwa is a registered development system, not production.</small></span></div>
+      <div class="done"><span class="n">✓</span><span>Signed in<small>And confirmed we can see a signed-in-only page.</small></span></div>
+      <div class="now"><span class="n">3</span><span><b>Testing pages — 3 of 6 done</b><small>Right now: trying cross-site scripting on the "What's your name?" page.</small></span></div>
+      <div class="todo"><span class="n">4</span><span>Tidying up results<small>Removing secrets and grouping duplicates.</small></span></div>
+      <div class="todo"><span class="n">5</span><span>Checking what we covered<small>So nothing untested looks "fixed".</small></span></div>
+    </div>
+  </section>
+
+  <div class="says ok"><span class="mark">✓</span><span><b>We're still signed in.</b>We were signed out once at 10:14 and signed back in automatically. That's allowed up to 3 times.</span></div>
+
+  <div class="numbers">
+    <div class="number"><div class="v sev-high">11</div><div class="l">serious so far</div></div>
+    <div class="number"><div class="v">40</div><div class="l">medium so far</div></div>
+    <div class="number"><div class="v">71</div><div class="l">low so far</div></div>
+  </div>
+
+  <section class="card tight">
+    <h3>Need to stop?</h3>
+    <p class="muted">That's fine. We'll mark the scan as stopped, keep what we've found, and mark the pages we didn't reach as "not tested" — never "fixed".</p>
+    <div class="actions"><button class="btn danger">Stop the scan</button></div>
+  </section>
+
+  <div class="says bad"><span class="mark">!</span><span><b>Earlier today we couldn't scan orders-portal.</b>Its address isn't on the list of known test systems, so we couldn't be sure it isn't production. Nothing was sent to it. <a href="05-governance.html">Ask Governance to add it</a>.</span></div>
+</main>
+</body>
+</html>

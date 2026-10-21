@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DAST Console — App settings</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<aside class="side">
+  <div class="brand">dast<small>operator console · style 1</small></div>
+  <div><h6>Workflow</h6><nav>
+    <a href="index.html">Overview <kbd>g o</kbd></a>
+    <a href="01-onboard-wizard.html">Onboard an app <kbd>n</kbd></a>
+    <a class="on" href="02-app-settings.html">App settings <kbd>g s</kbd></a>
+    <a href="03-run-progress.html">Runs <kbd>g r</kbd></a>
+    <a href="04-results-and-finding.html">Results &amp; triage <kbd>g f</kbd></a>
+    <a href="05-governance.html">Governance <kbd>g g</kbd></a>
+    <a href="06-export-to-ci.html">Export to CI <kbd>g e</kbd></a>
+  </nav></div>
+  <div class="apps"><h6>Apps</h6><nav>
+    <a class="on" href="02-app-settings.html">dvwa <span class="pill bad">19 high</span></a>
+    <a href="#">juice-shop <span class="pill warn">2 high</span></a>
+    <a href="#">webgoat <span class="pill ok">ok</span></a>
+    <a href="#">semgate <span class="pill ok">lab</span></a>
+    <a href="01-onboard-wizard.html">orders-portal <span class="pill run">new</span></a>
+  </nav></div>
+  <div class="foot">ZAP 2.17.0 · listening on 127.0.0.1 only</div>
+</aside>
+
+<main>
+  <div class="topbar">
+    <span class="crumb">Apps / dvwa / <b>Settings</b></span>
+    <span class="hint mono">security/dast/dvwa/app.yaml</span>
+    <span class="spacer"></span>
+    <button class="btn">Run scan <span class="kbd">r</span></button>
+  </div>
+
+  <div class="content">
+    <div class="split">
+      <div style="display:grid; gap:16px">
+
+        <section class="panel">
+          <header><i class="tier a">MUST</i><h2>Must ask</h2><span class="right hint">no safe default — the scan refuses without these</span></header>
+          <div class="field-row"><span class="k">base_url</span><span class="v"><input value="http://dvwa"></span><span class="hint">as ZAP sees it</span></div>
+          <div class="field-row"><span class="k">environment_class</span><span class="v"><select><option>dev</option><option>test</option><option>staging</option></select></span><span class="hint">no prod</span></div>
+          <div class="field-row"><span class="k">scope.allow</span><span class="v"><input value="dvwa"></span><span></span></div>
+          <div class="field-row"><span class="k">auth.login_url</span><span class="v"><input value="/login.php"></span><span></span></div>
+          <div class="field-row"><span class="k">auth.credentials</span><span class="v"><input value="DVWA_USER  ·  DVWA_PASS" readonly></span><span class="hint">names only</span></div>
+          <div class="field-row"><span class="k">record.authenticated_routes</span><span class="v">5 pages · <a href="#">edit list</a></span><span></span></div>
+        </section>
+
+        <section class="panel">
+          <header><i class="tier b">OPT</i><h2>Advanced</h2><span class="right hint">defaults shown · changing one shows its cost</span></header>
+          <details open>
+            <summary class="field-row" style="display:flex"><span class="k">Scan</span></summary>
+            <div class="field-row"><span class="k">scan.policy.attack_strength</span><span class="v"><select><option>high</option><option>medium (default)</option><option>low</option></select></span><span class="hint">changed</span></div>
+            <div class="field-row"><span class="k">scan.policy.alert_threshold</span><span class="v"><select><option>low</option><option>medium (default)</option></select></span><span class="hint">changed</span></div>
+            <div class="field-row"><span class="k">scan.budgets.max_scan_min</span><span class="v"><input value="10"></span><span class="hint">default 4</span></div>
+            <div class="field-row"><span class="k">scan.dom_xss</span><span class="v">enabled · 15 min <span class="pill warn">≈ 5 GiB for ZAP</span></span><span class="hint">cost</span></div>
+            <div class="field-row"><span class="k">scan.openapi</span><span class="v muted">none — <a href="#">add a spec</a> for better API coverage</span><span></span></div>
+            <div class="field-row"><span class="k">scan.throttle</span><span class="v muted">default</span><span></span></div>
+          </details>
+          <details>
+            <summary class="field-row" style="display:flex"><span class="k">Exploration · 6 settings</span></summary>
+          </details>
+          <details>
+            <summary class="field-row" style="display:flex"><span class="k">Login quirks · cookies: security=low</span></summary>
+          </details>
+        </section>
+
+        <section class="panel">
+          <header><i class="tier c">APPROVAL</i><h2>Approvals</h2><span class="right hint">read-only here · changed by PR review of app.yaml</span></header>
+          <table>
+            <thead><tr><th>Setting</th><th>Value</th><th>Approved by</th><th>When</th></tr></thead>
+            <tbody>
+              <tr><td class="mono">data_policy</td><td class="mono">disposable</td><td>app owner</td><td class="mono">2026-09-28</td></tr>
+              <tr><td class="mono">explore.write_mode</td><td class="mono">deny</td><td>GOV</td><td class="mono">2026-09-29</td></tr>
+              <tr><td class="mono">scan.policy.disabled_rules</td><td class="mono">40026 <span class="muted">(DOM-XSS, own pass)</span></td><td>GOV</td><td class="mono">2026-09-30</td></tr>
+              <tr><td class="mono">gate.fail_on</td><td class="mono">high</td><td>GOV</td><td class="mono">2026-09-30</td></tr>
+              <tr><td class="mono">LLM provider</td><td class="mono">copilot</td><td>GOV</td><td class="mono">2026-09-27</td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section class="panel">
+          <header><i class="tier d">FIXED</i><h2>Never options</h2></header>
+          <div class="body grid-2">
+            <div><p class="muted" style="margin-bottom:6px">Guardrails — enforced in the core</p>
+              <ul style="margin:0; padding-left:18px; display:grid; gap:3px">
+                <li>Production hosts refused</li><li>Deny beats allow; checked before every request</li>
+                <li>ZAP API always keyed</li><li>Redacted before any model sees it</li>
+                <li>Unscanned ≠ resolved</li></ul></div>
+            <div><p class="muted" style="margin-bottom:6px">Worked out by the tool</p>
+              <ul style="margin:0; padding-left:18px; display:grid; gap:3px">
+                <li>Login steps &amp; proof <span class="hint">(editable)</span></li><li>ZAP key, generated per run</li>
+                <li>Report category <code>dast/dvwa</code></li><li>Saved-session file</li></ul></div>
+          </div>
+        </section>
+      </div>
+
+      <aside style="display:grid; gap:16px; position:sticky; top:60px">
+        <section class="panel">
+          <header><h2>Unsaved changes</h2><span class="pill warn right">2</span></header>
+          <pre><span class="cm"># security/dast/dvwa/app.yaml</span>
+ scan:
+   budgets:
+<span class="del">-    max_scan_min: 6</span><span class="add">+    max_scan_min: 10</span>   dom_xss:
+<span class="del">-    max_min: 5</span><span class="add">+    max_min: 15</span></pre>
+        </section>
+        <section class="panel">
+          <header><h2>Equivalent command</h2></header>
+          <pre><span class="cm">$</span> python -m dast scan dvwa</pre>
+        </section>
+        <div class="row"><button class="btn">Discard</button><button class="btn primary right">Save to app.yaml</button></div>
+        <p class="hint">Saving writes the file and validates it against <code>contracts/app.schema.json</code>. Approval changes go through a pull request instead.</p>
+      </aside>
+    </div>
+  </div>
+</main>
+</body>
+</html>

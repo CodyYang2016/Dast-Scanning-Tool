@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DAST Workspace — Overview</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="appbar">
+  <div class="logo"><i></i>DAST Workspace <small>style 2</small></div>
+  <nav>
+    <a class="on" href="index.html">Overview</a>
+    <a href="01-onboard-wizard.html">Onboard</a>
+    <a href="02-app-settings.html">Apps</a>
+    <a href="03-run-progress.html">Runs</a>
+    <a href="04-results-and-finding.html">Findings</a>
+    <a href="05-governance.html">Governance</a>
+    <a href="06-export-to-ci.html">Automation</a>
+  </nav>
+  <div class="me">cyang · Security engineering <span class="avatar">CY</span></div>
+</header>
+
+<div class="page">
+  <div class="titlebar">
+    <div>
+      <h1>Good morning — here's where scanning stands</h1>
+      <p class="sub">Mockup set 2 of 3 · Enterprise workspace: calm, card-based, built for people who use it occasionally.</p>
+    </div>
+    <div class="actions"><a class="btn" href="06-export-to-ci.html">Automate an app</a><a class="btn primary" href="01-onboard-wizard.html">Onboard an app</a></div>
+  </div>
+
+  <div class="layout">
+    <div class="stack">
+      <div class="cols-3">
+        <div class="card metric"><div class="label">Applications</div><div class="value">4 <small>+ 1 onboarding</small></div><div class="faint">dvwa · juice-shop · webgoat · semgate</div></div>
+        <div class="card metric"><div class="label">Open high-severity findings</div><div class="value sev-high">21</div><div class="faint">19 in dvwa · 2 in juice-shop</div></div>
+        <div class="card metric"><div class="label">Waiting for approval</div><div class="value" style="color:var(--tier-c)">2</div><div class="faint">orders-portal registry · juice-shop writes</div></div>
+      </div>
+
+      <section class="card">
+        <div class="head"><h2>What would you like to do?</h2></div>
+        <div class="body tiles">
+          <a class="card tile" href="01-onboard-wizard.html"><span class="who">Security engineer</span><b>Onboard an application</b><span class="muted">Answer a few questions; we find the login for you.</span></a>
+          <a class="card tile" href="03-run-progress.html"><span class="who">Security engineer</span><b>Run or watch a scan</b><span class="muted">See each stage, and stop safely at any time.</span></a>
+          <a class="card tile" href="04-results-and-finding.html"><span class="who">Developer</span><b>Understand a finding</b><span class="muted">What's wrong, how to reproduce it, how to fix it.</span></a>
+          <a class="card tile" href="02-app-settings.html"><span class="who">Security engineer</span><b>Change an app's settings</b><span class="muted">Every change is shown as a diff before it's saved.</span></a>
+          <a class="card tile" href="05-governance.html"><span class="who">Approver</span><b>Review what scans may do</b><span class="muted">Approvals, disclosed gaps and the audit trail.</span></a>
+          <a class="card tile" href="06-export-to-ci.html"><span class="who">Platform / DevOps</span><b>Schedule scans in CI</b><span class="muted">Download a ready workflow for the app's repository.</span></a>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="head"><h2>Recent runs</h2><span class="note">All times local</span></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Application</th><th>Started</th><th>Started by</th><th>Status</th><th class="num">High</th><th class="num">Coverage</th></tr></thead>
+          <tbody>
+            <tr><td><a href="03-run-progress.html"><b>dvwa</b></a></td><td>Today, 10:12</td><td>cyang</td><td><span class="tag run">Scanning — 62%</span></td><td class="num">—</td><td class="num">—</td></tr>
+            <tr><td><a href="04-results-and-finding.html"><b>dvwa</b></a></td><td>Today, 09:41</td><td>cyang</td><td><span class="tag bad">Gate failed</span></td><td class="num">19</td><td class="num">6 of 6 routes</td></tr>
+            <tr><td><b>orders-portal</b></td><td>Today, 08:55</td><td>cyang</td><td><span class="tag warn">Refused — not registered</span></td><td class="num">—</td><td class="num">—</td></tr>
+            <tr><td><b>juice-shop</b></td><td>Monday, 06:00</td><td>Schedule</td><td><span class="tag ok">Passed</span></td><td class="num">2</td><td class="num">359 routes</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+    </div>
+
+    <aside class="help-panel">
+      <section class="card">
+        <div class="head"><h3>How settings are grouped</h3></div>
+        <div class="body legend">
+          <div><span class="tag a">Required</span><span>We can't scan without it, and there's no safe default.</span></div>
+          <div><span class="tag b">Optional</span><span>Has a sensible default. Change it only if you need to.</span></div>
+          <div><span class="tag c">Needs approval</span><span>Someone else decides — it changes what a scan may do.</span></div>
+          <div><span class="tag d">Always on</span><span>A safety rule or something we work out for you.</span></div>
+        </div>
+        <div class="foot">From <a href="../ui_requirements.md">ui_requirements.md</a> §3</div>
+      </section>
+      <section class="card">
+        <div class="head"><h3>About this mockup</h3></div>
+        <div class="body"><p>Totals are real (DVWA, Juice Shop). People, dates and the per-rule split are illustrative.</p></div>
+      </section>
+    </aside>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DAST Guided — Decisions waiting for you</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <span class="name"><i></i>Security scanning <small>guided · style 3</small></span>
+  <span class="help">Signed in as mlopez · Governance</span>
+</header>
+<nav class="journey">
+  <a href="01-onboard-wizard.html"><span class="n">1</span>Set up</a><span class="sep"></span>
+  <a href="02-app-settings.html"><span class="n">2</span>Check settings</a><span class="sep"></span>
+  <a href="03-run-progress.html"><span class="n">3</span>Run</a><span class="sep"></span>
+  <a href="04-results-and-finding.html"><span class="n">4</span>Review results</a>
+  <span class="side"><a class="on" href="05-governance.html">Approvals</a><a href="06-export-to-ci.html">Automate</a></span>
+</nav>
+
+<main class="wrap">
+  <div>
+    <div class="eyebrow">For approvers</div>
+    <h1>2 decisions are waiting for you</h1>
+    <p class="lead">Each one changes what scans are allowed to do. Here's the first, with what it means.</p>
+  </div>
+
+  <section class="card">
+    <div class="eyebrow">Decision 1 of 2 · asked by cyang, 5 days ago</div>
+    <h2>Can orders-portal's address be treated as a test system?</h2>
+    <p class="muted">Scans only run against systems on the known list. <code>orders.test.example.internal</code> isn't on it yet, so its first scan was refused and nothing was sent.</p>
+    <div class="answers">
+      <div><span class="k">If you say yes</span><span class="v">It can be scanned as a test system</span></div>
+      <div><span class="k">Never touched, either way</span><span class="v">Payments, email notifications</span></div>
+      <div><span class="k">Its data</span><span class="v">Kept — scans won't change it</span></div>
+    </div>
+    <div class="says c"><span class="mark">?</span><span><b>This decision is yours</b>You approve it on the pull request, so it's recorded with the code.</span></div>
+    <div class="actions"><a class="btn primary" href="#">Open pull request #14</a><button class="btn link push">Next decision →</button></div>
+  </section>
+
+  <section class="card">
+    <h2>What scans deliberately don't test</h2>
+    <p class="muted">Everyone should know these. Each has an owner — or needs one.</p>
+    <div class="answers">
+      <div><span class="k">dvwa: page-script attacks run in a separate, time-limited check</span><span class="v">Governance</span></div>
+      <div><span class="k">dvwa: setup and diagnostic pages are skipped</span><span class="v">Security</span></div>
+      <div><span class="k">orders-portal: payments and email are never touched</span><span class="v">Security</span></div>
+      <div><span class="k">Everywhere: no "call-back" testing</span><span class="v" style="color:var(--warn)">Not decided</span></div>
+      <div><span class="k">Everywhere: no testing of one user seeing another's data</span><span class="v" style="color:var(--warn)">Not decided</span></div>
+    </div>
+  </section>
+
+  <section class="card tight">
+    <h3>Everything that happened this month</h3>
+    <p class="muted">23 scans. None reached production. One was refused (orders-portal, above).</p>
+    <div class="actions"><button class="btn">Download the audit trail</button></div>
+  </section>
+</main>
+</body>
+</html>

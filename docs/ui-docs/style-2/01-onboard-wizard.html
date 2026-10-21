@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DAST Workspace — Onboard an application</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="appbar">
+  <div class="logo"><i></i>DAST Workspace <small>style 2</small></div>
+  <nav>
+    <a href="index.html">Overview</a>
+    <a class="on" href="01-onboard-wizard.html">Onboard</a>
+    <a href="02-app-settings.html">Apps</a>
+    <a href="03-run-progress.html">Runs</a>
+    <a href="04-results-and-finding.html">Findings</a>
+    <a href="05-governance.html">Governance</a>
+    <a href="06-export-to-ci.html">Automation</a>
+  </nav>
+  <div class="me">cyang · Security engineering <span class="avatar">CY</span></div>
+</header>
+
+<div class="page">
+  <div class="crumbs"><a href="index.html">Overview</a> / Onboard / orders-portal</div>
+  <div class="titlebar">
+    <div><h1>Onboard orders-portal</h1><p class="sub">Step 3 of 5 · Login. We only ask what we can't work out ourselves.</p></div>
+    <div class="actions"><button class="btn ghost">Save draft</button></div>
+  </div>
+
+  <div class="card" style="margin-bottom:20px">
+    <div class="body">
+      <div class="timeline">
+        <div class="tl done"><div class="n">✓</div><b>Application</b><p>orders-portal</p></div>
+        <div class="tl done"><div class="n">✓</div><b>Where &amp; what</b><p>test · 1 host · 2 exclusions</p></div>
+        <div class="tl now"><div class="n">3</div><b>Login</b><p>How people sign in</p></div>
+        <div class="tl todo"><div class="n">4</div><b>Pages to test</b><p>Pick from what we saw</p></div>
+        <div class="tl todo"><div class="n">5</div><b>Review</b><p>See the file, then save</p></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="layout">
+    <div class="stack">
+      <section class="card">
+        <div class="band a"><span class="dot"></span>Required <small>— we can't scan without these</small></div>
+        <div class="body stack" style="gap:18px">
+          <div>
+            <h3 style="margin-bottom:10px">How do people sign in to orders-portal?</h3>
+            <div class="cols-2">
+              <label class="choice on"><b><input type="radio" name="m" checked> A username and password form</b><span class="muted">We fill the form in for you, every scan.</span></label>
+              <label class="choice"><b><input type="radio" name="m"> SSO or MFA</b><span class="muted">You sign in once in a browser window; we reuse that session.</span></label>
+            </div>
+          </div>
+          <label class="stacked"><span>Login page address</span><input value="https://orders.test.example.internal/login"></label>
+          <div class="cols-2">
+            <label class="stacked"><span>Test account username — stored in</span><select><option>ORDERS_PORTAL_USER (environment variable)</option><option>Vault: dast/orders-portal/user</option></select></label>
+            <label class="stacked"><span>Test account password — stored in</span><select><option>ORDERS_PORTAL_PASS (environment variable)</option><option>Vault: dast/orders-portal/pass</option></select></label>
+          </div>
+          <div class="alert info"><b>We never see or save the password itself.</b><span class="muted">You choose where it's stored; the settings file only records that name.</span></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="head"><h2>We checked the login</h2><span class="tag ok">Signed in successfully</span><span class="note">2.4 s, through the scanner</span></div>
+        <div class="body stack" style="gap:16px">
+          <p class="muted">We opened the login page, worked out how to fill it in, and signed in with your test account. You don't need to do anything technical here.</p>
+          <div class="alert warn">
+            <b>One question for you</b>
+            <span>After signing in we landed on <b>My orders</b> (<code>/account/orders</code>). Is this page only visible to someone who is signed in?</span>
+            <div class="row" style="margin-top:8px"><button class="btn primary">Yes, that's right</button><button class="btn">No, choose another page</button></div>
+          </div>
+          <details>
+            <summary>Show the steps we'll use <span class="tag d" style="margin-left:8px">Always on — worked out for you</span></summary>
+            <div class="table-wrap"><table>
+              <thead><tr><th>Step</th><th>Where</th><th>What</th></tr></thead>
+              <tbody>
+                <tr><td>Fill</td><td class="mono">input#username</td><td>test account username</td></tr>
+                <tr><td>Fill</td><td class="mono">input#password</td><td>test account password</td></tr>
+                <tr><td>Click</td><td class="mono">button[type=submit]</td><td></td></tr>
+              </tbody>
+            </table></div>
+          </details>
+        </div>
+        <div class="foot row"><button class="btn">Back</button><span class="spacer"></span><button class="btn primary">Continue to pages to test</button></div>
+      </section>
+    </div>
+
+    <aside class="help-panel">
+      <section class="card">
+        <div class="head"><h3>What this means</h3></div>
+        <div class="body">
+          <p><b style="color:var(--ink)">Why we ask about the "signed-in" page.</b> During a scan we keep checking it. If it disappears, the session was lost — we sign in again or stop, rather than reporting "nothing found".</p>
+          <p><b style="color:var(--ink)">Why SSO is different.</b> Single sign-on and MFA can't be automated safely, so a person signs in once and we reuse that session until it expires.</p>
+        </div>
+      </section>
+      <section class="card">
+        <div class="head"><h3>Already answered</h3></div>
+        <div class="body">
+          <p>Environment: <b style="color:var(--ink)">test</b> <span class="tag ok">in the registry</span></p>
+          <p>Hosts in scope: <span class="mono">orders.test.example.internal</span></p>
+          <p>Never touched: <span class="mono">/api/payments/*</span>, <span class="mono">/api/notify/email</span></p>
+          <p>Data: <b style="color:var(--ink)">durable</b> <span class="tag c">Needs approval to change</span></p>
+        </div>
+      </section>
+      <section class="card">
+        <div class="head"><h3>Same thing on the command line</h3></div>
+        <pre style="border-top:0">python -m dast onboard orders-portal \
+  --base-url https://orders.test.example.internal \
+  --environment-class test --auth form \
+  --discover --login-url /login</pre>
+      </section>
+    </aside>
+  </div>
+</div>
+</body>
+</html>
