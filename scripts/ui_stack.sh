@@ -146,7 +146,13 @@ if [ "$dry" -eq 0 ]; then
 fi
 
 if [ "$cmd" = ui ]; then
-  py=python; have python || py=python3
+  # The project's Python: the active venv, else the repo's .venv (bin/ on macOS and Linux,
+  # Scripts/ in Git Bash on Windows), else whatever python is on PATH.
+  if [ -n "${VIRTUAL_ENV:-}" ] && have python; then py=python
+  elif [ -x .venv/bin/python ]; then py=.venv/bin/python
+  elif [ -x .venv/Scripts/python.exe ]; then py=.venv/Scripts/python.exe
+  elif have python; then py=python
+  else py=python3; fi
   echo "+ $py -m dast ui"
   if [ "$dry" -eq 0 ]; then exec "$py" -m dast ui; fi
 else
