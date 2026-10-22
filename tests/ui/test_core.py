@@ -126,7 +126,7 @@ def test_tri6_entry_without_status_is_applied(ws):
 
 def test_tri_schema_accepts_status_fields():
     schema = json.loads((ROOT / "contracts" / "suppressions.schema.json").read_text())
-    doc = {"suppressions": [{"fingerprint": "abc", "reason": "accepted_risk", "justification": "x",
+    doc = {"suppressions": [{"fingerprint": "a" * 64, "reason": "accepted_risk", "justification": "x",
                              "expires": "2026-12-31", "status": "approved", "proposed_by": "dev",
                              "approved_by": "sec", "decided_at": "2026-10-21T10:00:00Z"}]}
     jsonschema.validate(doc, schema)
