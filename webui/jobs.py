@@ -47,11 +47,20 @@ def _interrupt(proc) -> None:
 
 
 def _kill(proc) -> None:
-    try:
-        if _windows():
+    if _windows():
+        # The whole tree: dast, and the browser or Python it started (proc.kill() alone ends
+        # only the top process, which can leave a child holding the output pipe open).
+        try:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        try:
             proc.kill()
-        else:
-            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError, OSError):
         pass
 

@@ -9,15 +9,17 @@
 name: ssd-dast-poc
 
 services:
+  # Images are fully qualified (docker.io/...): Docker reads them exactly as before, and Podman
+  # needs the registry unless its registries.conf searches Docker Hub. *_IMAGE points at a mirror.
   juice:
-    image: ${JUICE_IMAGE:-bkimminich/juice-shop@sha256:73c53fbf442e8337b3ea3d98c7e8550308854701ebdfce4cc39768f36b75430e}
+    image: ${JUICE_IMAGE:-docker.io/bkimminich/juice-shop@sha256:73c53fbf442e8337b3ea3d98c7e8550308854701ebdfce4cc39768f36b75430e}
     networks: [dast]
     # No compose healthcheck: the juice-shop image is distroless (no /bin/sh), so shell-based
     # healthchecks can't run. Readiness is handled by the runner's wait_ready() instead, which
     # polls http://juice:3000 (and the ZAP API) before scanning.
 
   zap:
-    image: ${ZAP_IMAGE:-zaproxy/zap-stable@sha256:781a2bdaea47324e7bab583e2263f21d257b0aee61ed51521a5be45f5f5081ef}
+    image: ${ZAP_IMAGE:-docker.io/zaproxy/zap-stable@sha256:781a2bdaea47324e7bab583e2263f21d257b0aee61ed51521a5be45f5f5081ef}
     # -silent (no phone-home). The API requires a key (W4-4): it used to run with
     # api.disablekey=true, open to anything that could reach it. Export ZAP_API_KEY first, e.g.
     #   export ZAP_API_KEY=$(openssl rand -hex 24)
@@ -81,13 +83,13 @@ services:
 
   dvwa:
     profiles: [dvwa]
-    image: ${DVWA_IMAGE:-vulnerables/web-dvwa@sha256:dae203fe11646a86937bf04db0079adef295f426da68a92b40e3b181f337daa7}
+    image: ${DVWA_IMAGE:-docker.io/vulnerables/web-dvwa@sha256:dae203fe11646a86937bf04db0079adef295f426da68a92b40e3b181f337daa7}
     networks: [dast]
     # Serves on port 80, so `base_url: http://dvwa` in its app.yaml needs no port.
 
   webgoat:
     profiles: [webgoat]
-    image: webgoat/webgoat@sha256:d4ac9fc2b0a41b68d64dedde684f4783aa60cc785838435a6d5bd5a25b387497
+    image: docker.io/webgoat/webgoat@sha256:d4ac9fc2b0a41b68d64dedde684f4783aa60cc785838435a6d5bd5a25b387497
     networks: [dast]
     environment:
       # WebGoat defaults to 8080, which is ZAP's own port: ZAP claims proxied requests arriving

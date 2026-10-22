@@ -19,7 +19,18 @@ import yaml
 
 from tests.ui.harness import ROOT
 
-BASH = shutil.which("bash")
+def _bash():
+    """Git Bash on Windows, not WSL's bash.exe in System32 (which can't see these paths)."""
+    import os
+    if os.name == "nt":
+        for p in (r"C:\Program Files\Git\bin\bash.exe", r"C:\Program Files\Git\usr\bin\bash.exe"):
+            if os.path.exists(p):
+                return p
+        return None
+    return shutil.which("bash")
+
+
+BASH = _bash()
 needs_bash = pytest.mark.skipif(BASH is None, reason="needs bash (Git Bash on Windows)")
 
 
@@ -171,7 +182,7 @@ def test_compose_dvwa_image_defaults_to_the_same_digest():
     base = yaml.safe_load((ROOT / "compose.yaml").read_text(encoding="utf-8"))
     image = base["services"]["dvwa"]["image"]
     assert _expand_defaults(image) == (
-        "vulnerables/web-dvwa@sha256:dae203fe11646a86937bf04db0079adef295f426da68a92b40e3b181f337daa7")
+        "docker.io/vulnerables/web-dvwa@sha256:dae203fe11646a86937bf04db0079adef295f426da68a92b40e3b181f337daa7")
     assert "DVWA_IMAGE" in image                                # the NTR mirror can be swapped in
 
 
@@ -189,3 +200,10 @@ def test_zap_listens_on_the_port_it_is_published_on():
     runner = base["services"]["runner"]["command"]
     assert "--zap-api=http://zap:${DAST_ZAP_PORT:-8080}" in runner
     assert "--zap-proxy=http://zap:${DAST_ZAP_PORT:-8080}" in runner
+
+
+def test_compose_images_are_fully_qualified_and_unchanged():
+    base = yaml.safe_load((ROOT / "compose.yaml").read_text(encoding="utf-8"))
+    for svc in ("juice", "zap", "dvwa", "webgoat"):
+        image = _expand_defaults(base["services"][svc]["image"])
+        assert image.startswith("docker.io/") and "@sha256:" in image, (svc, image)
