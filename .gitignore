@@ -31,3 +31,6 @@ certs/*
 
 # A stray archive once committed at the root by `tar ... -f -` going to a file named "-"
 /-
+
+# UI test fixtures: real scan output, frozen as part of the test-first spec
+!tests/ui/fixtures/out/

@@ -1,0 +1,21 @@
+# intranet-sso — a fixture: an app behind single sign-on, so a person signs in once (seeded).
+app_id: intranet-sso
+environment_class: dev
+base_url: http://intranet.dev.local
+scope:
+  allow: [intranet.dev.local]
+  traverse: ["https://sso.dev.local"]       # the identity provider: reached to sign in, never attacked
+auth:
+  mode: seeded
+  login_url: /login
+  steps:
+    - {action: click, selector: "a#sign-in-with-sso"}
+  proof:
+    selector: "#signed-in-as"
+  identity: provisioned
+  credentials:
+    email_env: INTRANET_SSO_USER
+    password_env: INTRANET_SSO_PASS
+  storage_state: .secrets/intranet-sso-storageState.json
+record:
+  authenticated_routes: [/home]
