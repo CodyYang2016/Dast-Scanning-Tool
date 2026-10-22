@@ -104,8 +104,9 @@ if [ "$engine" = podman ] && [ "$dry" -eq 0 ]; then
 fi
 
 # One ZAP key per machine, kept owner-only and never printed. An exported ZAP_API_KEY wins.
+key_from_env=0
 if [ -n "${ZAP_API_KEY:-}" ]; then
-  echo "ZAP key: from ZAP_API_KEY"
+  key_from_env=1; echo "ZAP key: from ZAP_API_KEY"
 elif [ -f "$key_file" ]; then
   ZAP_API_KEY="$(cat "$key_file")"; echo "ZAP key: from $key_file"
 elif [ "$dry" -eq 1 ]; then
@@ -144,7 +145,11 @@ if [ "$cmd" = ui ]; then
 else
   echo
   echo "Next, in this terminal:"
-  echo "  export ZAP_API_KEY=\"\$(cat $key_file)\" DAST_ZAP_API=$DAST_ZAP_API"
+  if [ "$key_from_env" -eq 1 ]; then
+    echo "  export DAST_ZAP_API=$DAST_ZAP_API"
+  else
+    echo "  export ZAP_API_KEY=\"\$(cat $key_file)\" DAST_ZAP_API=$DAST_ZAP_API"
+  fi
   echo "  python -m dast ui"
   echo "Or run \`bash scripts/ui_stack.sh ui\` to do both."
 fi

@@ -301,6 +301,40 @@ unreachable, so a `--require-llm` run that completes did use the model.
 This is a lab result. It shows the capability, not a benefit on a Nationwide application; that
 depends on whether the application has forms a fixed test value cannot pass.
 
+## 9. Optional: the web UI
+
+The web UI (`python -m dast ui`) does the same work as the steps above from a browser: onboard an
+app, record its login, scan, read and triage the results, and publish. It uses the terminal setup,
+Podman and NTR images above. Its front end is committed to the repo, so there's no Node to install.
+
+```bash
+bash ./cleanup_demo_ports.sh                           # free 3000 and 8080 from earlier steps
+python -m pip install -r requirements-ui.txt           # through Artifactory (PIP_INDEX_URL above)
+export NODE_EXTRA_CA_CERTS="$HOME/certs/nw-ca-all.pem"
+python -m playwright install chromium                  # once; skip it if step 8 already ran it
+export AUTH_EMAIL=nw-$(openssl rand -hex 3)@juice-sh.op AUTH_PASSWORD=$(openssl rand -hex 10)
+bash scripts/ui_stack.sh ui juice
+```
+
+`scripts/ui_stack.sh` starts ZAP and Juice Shop with `podman-compose`, the same way step 3 does,
+waits until ZAP answers with your `ZAP_API_KEY`, then starts the UI.
+
+**Pass:**
+- The script prints `engine: podman`, `compose: podman-compose`, then `ZAP is ready.`
+- `python -m dast ui` prints a link that works once. Open it in your browser.
+- **Overview** shows ZAP **Reachable** at `http://127.0.0.1:8080`.
+- **Apps → juice-shop → Settings** shows a banner that the login hasn't been recorded. **Record the
+  login** ends with "Login recorded" within about 15 seconds.
+- **Run a scan**: the five stages end ✓ in about 3 to 5 minutes, and **See results** lists findings.
+- Start a second scan and click **Stop scan**: it ends as **stopped**, not failed.
+
+Stop the UI with Ctrl+C, then run `bash ./cleanup_demo_ports.sh`. Do this before running step 4
+again: here ZAP accepts calls from your workstation (with the key), as in step 3, which step 4
+doesn't allow.
+
+To show a whole new app from onboarding to results, see `docs/ui-docs/ui_demo.md`. How Podman and
+Docker are chosen is in `docs/podman_and_docker.md`.
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
@@ -326,6 +360,11 @@ depends on whether the application has forms a fixed test value cannot pass.
 | `404` from the Issues API | `OWNER` or `REPO` is wrong, or the token can't see the repo | Check the spelling and the token's repository access |
 | `410: Issues has been disabled` | Issues are turned off in the repo | Settings → General → Features → Issues |
 | `403: Advanced Security must be enabled` | Expected without GitHub Advanced Security | Use step 6 instead |
+| `The Podman machine isn't running` (step 9) | The VM is stopped | Run step 2 again: it starts the machine and repairs the proxy |
+| `ZAP didn't answer at http://127.0.0.1:8080` (step 9) | A container from an earlier step holds the port, or ZAP is still starting | `bash ./cleanup_demo_ports.sh`, then run `bash scripts/ui_stack.sh ui juice` again |
+| `No module named 'fastapi'` (step 9) | The UI's packages aren't installed in this venv | `python -m pip install -r requirements-ui.txt` |
+| The UI says ZAP refused its API key (step 9) | ZAP was started with another terminal's `ZAP_API_KEY` | In the terminal that runs the UI, run `bash scripts/ui_stack.sh ui juice` again: it restarts ZAP with this terminal's key |
+| `The UI hasn't been built` (step 9) | Old code | Pull again (step 0) |
 
 ## If you need help
 
