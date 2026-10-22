@@ -48,10 +48,14 @@ class Workspace:
         (self.dist_dir / "index.html").write_text(
             "<!doctype html><html><head><title>DAST</title></head><body><div id=root></div>"
             "</body></html>", encoding="utf-8")
-        self.python = base / "fake-python"
-        self.python.write_text(f"#!/bin/sh\nexec {sys.executable} {FAKE_DAST} \"$@\"\n",
-                               encoding="utf-8")
-        self.python.chmod(self.python.stat().st_mode | stat.S_IEXEC)
+        if os.name == "nt":             # Windows runs a .cmd, not a shebang script
+            self.python = base / "fake-python.cmd"
+            self.python.write_text(f'@"{sys.executable}" "{FAKE_DAST}" %*\r\n', encoding="utf-8")
+        else:
+            self.python = base / "fake-python"
+            self.python.write_text(f"#!/bin/sh\nexec {sys.executable} {FAKE_DAST} \"$@\"\n",
+                                   encoding="utf-8")
+            self.python.chmod(self.python.stat().st_mode | stat.S_IEXEC)
 
     def app_yaml(self, app: str) -> Path:
         return self.apps_dir / app / "app.yaml"
