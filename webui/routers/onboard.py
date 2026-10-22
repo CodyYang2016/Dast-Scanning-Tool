@@ -179,7 +179,7 @@ def router(ctx) -> APIRouter:
                 error(422, f"The discovered settings aren't valid: {problem}")
         target = ctx.store.path(app)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text, encoding="utf-8")
+        target.write_text(text, encoding="utf-8", newline="\n")
         p.unlink()
         pending.pop(app, None)
         ctx.audit.record(ctx.actor(request), "onboard.confirm", app, valid=valid)

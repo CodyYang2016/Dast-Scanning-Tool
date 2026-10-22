@@ -223,3 +223,18 @@ def test_ui_stack_down_needs_no_exported_key(tmp_path):
     r = subprocess.run([BASH, str(ROOT / "scripts" / "ui_stack.sh"), "down"], cwd=ROOT, env=env,
                        capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+# ── files people review in git are written with LF, on Windows too ────────────────────────
+
+def test_settings_save_and_suppressions_write_lf(api, ws):
+    s = api.get("/api/apps/orders-portal/settings").json()
+    r = api.put("/api/apps/orders-portal/settings",
+                json={"etag": s["etag"], "changes": {"scan.budgets.max_scan_min": 12}})
+    assert r.status_code == 200, r.text
+    assert b"\r\n" not in ws.app_yaml("orders-portal").read_bytes()
+    fp = api.get("/api/apps/juice-shop/runs/20261021T090000Z/findings").json()[0]["fingerprint"]
+    r = api.post("/api/apps/juice-shop/suppressions",
+                 json={"fingerprint": fp, "reason": "false_positive", "justification": "LF check", "expires": None})
+    assert r.status_code in (200, 201), r.text
+    assert b"\r\n" not in ws.suppressions("juice-shop").read_bytes()

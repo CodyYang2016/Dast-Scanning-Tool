@@ -294,7 +294,8 @@ def _discover(args, path) -> int:
     path.write_text(discover.render_config(
         app_id=args.app, base_url=args.base_url, login_url=args.login_url,
         steps=found["steps"], proof=found["proof"],
-        authenticated_routes=found.get("authenticated_routes", []), model=found["model"]), encoding="utf-8")
+        authenticated_routes=found.get("authenticated_routes", []), model=found["model"]), encoding="utf-8",
+        newline="\n")   # app.yaml is reviewed in git: LF, not CRLF, on Windows too
     print(f"\nwrote {display(path)}")
     print(f"  login:  {len(found['steps'])} steps against {args.login_url}")
     print(f"  proof:  {json.dumps(found['proof'])}")
@@ -310,7 +311,7 @@ def _write_skeleton(args, path) -> int:
         app_id=args.app, base_url=args.base_url, host=host, mode=args.auth,
         environment_class=args.environment_class, login_url=getattr(args, "login_url", "/login"),
         app_env=args.app.replace("-", "_").upper(),
-    ), encoding="utf-8")
+    ), encoding="utf-8", newline="\n")
     print(f"wrote {display(path)}")
     try:
         appconfig.load_app_config(str(path))
@@ -698,7 +699,7 @@ def cmd_triage(args) -> int:
               "# Review each entry, then move the ones you agree with into suppressions.yaml.\n"
               "# Nothing here takes effect until it is in that file.\n")
     proposed.write_text(header + yaml.safe_dump({"suppressions": result["proposed"]},
-                                                sort_keys=False), encoding="utf-8")
+                                                sort_keys=False), encoding="utf-8", newline="\n")
     print(f"triage: {len(result['proposed'])} proposed, {len(result['ambiguous'])} ambiguous, "
           f"{len(result['unmatched'])} unmatched — written to {display(proposed)}")
     for a in result["ambiguous"]:
