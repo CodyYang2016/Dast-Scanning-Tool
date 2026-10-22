@@ -14,7 +14,10 @@ export interface SettingField {
   owner: string; secret?: { name: string; set: boolean };
   missing?: boolean;    // required, but not in app.yaml yet (QA-3)
 }
-export interface Settings { app_id: string; etag: string; command: string; fields: SettingField[] }
+export interface Settings {
+  app_id: string; etag: string; command: string; fields: SettingField[];
+  login_recorded?: boolean;    // a login has been recorded, so a scan can sign in (QA-12)
+}
 export interface RunSummary { scan_id: string; status: string; started_at: string | null }
 export interface RunDetail {
   scan_id: string; status: string;

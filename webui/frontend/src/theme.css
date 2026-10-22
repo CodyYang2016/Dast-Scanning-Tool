@@ -257,3 +257,5 @@ dialog.dialog > .body { padding: 18px 20px; display: grid; gap: 10px; }
 /* A refused value, shown under its setting (QA-4). */
 .field-error { color: var(--bad); font-size: 13px; margin-top: 6px; }
 .field [aria-invalid="true"] { border-color: var(--bad); }
+.alert.ok { background: var(--ok-soft); border-color: #b9dfc9; }
+.alert.ok b { color: var(--ok); }

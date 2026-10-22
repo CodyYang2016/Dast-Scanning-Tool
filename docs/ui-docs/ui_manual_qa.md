@@ -211,6 +211,13 @@ python -m dast author juice-shop
 
 - [x] **Expect:** it ends with `bundle ready: … — next: dast scan juice-shop`.
 
+**Or from the UI** (QA-12): export the two variables above, skip the `dast author` line, and in
+I3 open **juice-shop → Settings** first. A banner says the login hasn't been recorded; click
+**Record the login**.
+
+- [ ] **Expect:** "Recording the login…", then "Login recorded. You can run a scan now." within
+  about 10 seconds, and the banner goes.
+
 ### I3. Scan from the UI
 
 Start the UI again (`python -m dast ui`) and open **Overview**.
