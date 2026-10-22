@@ -85,7 +85,8 @@ _SECRET_KEYS = {
 # one list, not two that drift apart. A secret in a header with an unrecognised custom name is not
 # caught by this; extend the list here.
 SENSITIVE_HEADERS = frozenset({"authorization", "cookie", "set-cookie", "proxy-authorization",
-                               "x-auth-token", "x-api-key"})
+                               "x-auth-token", "x-api-key", "x-csrf-token", "x-xsrf-token",
+                               "x-csrftoken"})
 
 # A header LINE: the name survives so a stored request still reads as one, the value does not.
 # Anchored at a line start so prose that happens to say "Cookie:" mid-sentence is left alone.

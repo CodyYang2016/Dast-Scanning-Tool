@@ -239,6 +239,25 @@ def _context_cookies(context, base_url: str) -> dict[str, str]:
     return out
 
 
+def _screenshot(page, evidence_dir: str) -> None:
+    """Full-page evidence screenshot with password fields masked (text redaction can't reach
+    pixels; masking the fields that hold a typed secret is what can be done without config)."""
+    page.screenshot(path=str(Path(evidence_dir) / "screenshot.png"), full_page=True,
+                    mask=[page.locator("input[type=password]")])
+
+
+def _clean_har(evidence_dir: str | None) -> None:
+    """Redact the HAR the moment the browser has written it — on success AND on failure, so a
+    login that went wrong never leaves the typed password on disk (it used to be redacted only
+    by runner.main after a successful login, and never by `python -m runner.replay`)."""
+    if not evidence_dir:
+        return
+    har = Path(evidence_dir) / "active-scan.har"
+    if har.exists():
+        from runner import evidence
+        evidence.redact_har_file(str(har))
+
+
 def replay(scope: dict, flow_module, base_url: str, zap_proxy: str, headless: bool = True,
            evidence_dir: str | None = None, cookies: dict | None = None,
            on_session=None):
@@ -246,8 +265,8 @@ def replay(scope: dict, flow_module, base_url: str, zap_proxy: str, headless: bo
     (result, guard). Raises ScopeViolation if any out-of-scope request occurred.
 
     If evidence_dir is given, a HAR (active-scan.har) and a screenshot (screenshot.png) are
-    captured there (FR-E1). The HAR is UNREDACTED at this point — the caller must redact it
-    before it is published (see runner/evidence.py)."""
+    captured there (FR-E1). The HAR is redacted as soon as the browser writes it, whether the
+    flow succeeded or not (see runner/evidence.py)."""
     from playwright.sync_api import sync_playwright  # imported lazily so tests don't need it
 
     # In a container Chromium runs as root and with a small /dev/shm; both need flags. Gated by
@@ -281,11 +300,12 @@ def replay(scope: dict, flow_module, base_url: str, zap_proxy: str, headless: bo
             raise flow_exc from exc
         finally:
             if evidence_dir and "evidence_dir" not in inspect.signature(flow_module.run).parameters:
-                page.screenshot(path=str(Path(evidence_dir) / "screenshot.png"), full_page=True)
+                _screenshot(page, evidence_dir)
             if on_session:
                 on_session(_context_cookies(context, base_url))
             context.close()  # writes the HAR
             browser.close()
+            _clean_har(evidence_dir)
 
     guard.raise_if_violated()  # FR-S4: fail the scan if the boundary was crossed
     return result, guard
@@ -300,7 +320,7 @@ def replay_seeded(scope: dict, base_url: str, zap_proxy: str, storage_state: str
 
     Raises SessionDeadError if the seeded session is not authenticated (caller falls back to a
     login flow — never scan unauthenticated). Both safety layers stay active: preflight (caller)
-    and the scope guard (page.route). HAR is unredacted here; the caller redacts before publishing.
+    and the scope guard (page.route). The HAR is redacted as soon as it is written.
     """
     from playwright.sync_api import sync_playwright  # lazy, as in replay()
 
@@ -332,11 +352,12 @@ def replay_seeded(scope: dict, base_url: str, zap_proxy: str, storage_state: str
             raise
         finally:
             if evidence_dir:
-                page.screenshot(path=str(Path(evidence_dir) / "screenshot.png"), full_page=True)
+                _screenshot(page, evidence_dir)
             if on_session:
                 on_session(_context_cookies(context, base_url))
             context.close()  # writes the HAR
             browser.close()
+            _clean_har(evidence_dir)
 
     guard.raise_if_violated()  # FR-S4
     return {"authenticated": True, "seeded": True, "routes_visited": len(seed_routes)}, guard
