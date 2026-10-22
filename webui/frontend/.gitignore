@@ -1,5 +1,6 @@
 node_modules/
-dist/
+# dist/ is committed: the UI then runs with Python alone (no Node), e.g. on a Nationwide
+# laptop. CI rebuilds it and fails if it differs, so rebuild and commit it with any change.
 test-results/
 playwright-report/
 e2e/.server.json

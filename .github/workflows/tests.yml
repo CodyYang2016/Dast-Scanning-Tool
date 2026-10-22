@@ -54,6 +54,11 @@ jobs:
         run: npx vitest run
       - name: Build
         run: npm run build
+      - name: The committed build is current
+        # webui/frontend/dist is committed so the UI needs no Node to run. Rebuild and commit it
+        # (`npm run build`) whenever the front end changes.
+        working-directory: .
+        run: git diff --exit-code --stat -- webui/frontend/dist && test -z "$(git status --porcelain -- webui/frontend/dist)"
 
   ui-e2e:
     # The frozen browser tests against a real `python -m dast ui` (live ones skip without LIVE=1).
