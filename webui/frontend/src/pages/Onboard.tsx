@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { api, ApiError, enc } from "../api";
 import { Card, Command, ErrorNote, Tag, TitleBar } from "../components/ui";
 import type { Job } from "../types";
@@ -34,13 +34,28 @@ function SecretStatus({ name, path }: { name: string; path: string }) {
 
 export default function Onboard() {
   const navigate = useNavigate();
-  const [step, setStep] = useState(0);
   const [f, setF] = useState<Form>({ app_id: "", base_url: "", environment_class: "dev", allow: "", exclude: "",
     mode: "form", login_url: "", user_env: "", pass_env: "", routes: "" });
   const [refusal, setRefusal] = useState<ApiError | null>(null);
   const [job, setJob] = useState<Job | null>(null);
   const [message, setMessage] = useState("");
   const [proposal, setProposal] = useState<Proposal | null>(null);
+
+  // The step lives in the URL (?step=2), so the browser's back and forward arrows move through
+  // the wizard (QA-2). A step the form can't be on yet falls back to the furthest one it can.
+  const [params, setParams] = useSearchParams();
+  const furthest = !f.app_id || !f.base_url ? 0 : proposal ? 3 : 2;
+  const asked = Math.max(0, (Number(params.get("step")) || 1) - 1);
+  const step = Math.min(asked, furthest);
+  const setStep = (n: number, replace = false) =>
+    setParams(n === 0 ? {} : { step: String(n + 1) }, { replace });
+  useEffect(() => {
+    if (asked !== step) setStep(step, true);
+  }, [asked, step]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // What step 1 last filled in by itself. A field still holding that is refreshed when the id or
+  // address changes; one the person edited is left alone (QA-8).
+  const prefilled = useRef({ allow: "", user_env: "", pass_env: "" });
   const [busy, setBusy] = useState(false);
   const set = (k: keyof Form) => (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value });
 
@@ -53,12 +68,15 @@ export default function Onboard() {
     try {
       if (step === 0) {
         // Move on at once and check in the background; a refusal brings the person back here.
-        setF((x) => ({ ...x, allow: x.allow || hostOf(f.base_url), user_env: x.user_env || `${envName(f.app_id)}_USER`,
-          pass_env: x.pass_env || `${envName(f.app_id)}_PASS` }));
+        const auto = { allow: hostOf(f.base_url), user_env: `${envName(f.app_id)}_USER`, pass_env: `${envName(f.app_id)}_PASS` };
+        const last = prefilled.current;
+        const fill = (k: keyof typeof auto, current: string) => (!current || current === last[k] ? auto[k] : current);
+        setF((x) => ({ ...x, allow: fill("allow", x.allow), user_env: fill("user_env", x.user_env), pass_env: fill("pass_env", x.pass_env) }));
+        prefilled.current = auto;
         setStep(1);
         try {
           await api.post("/api/onboard/check", { app_id: f.app_id, base_url: f.base_url, environment_class: f.environment_class });
-        } catch (e) { setStep(0); throw e; }
+        } catch (e) { navigate(-1); throw e; }   // undo the optimistic step, not add another
       } else if (step === 1) {
         setStep(2);
       } else if (step === 2) {

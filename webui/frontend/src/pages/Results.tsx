@@ -60,8 +60,16 @@ export default function Results() {
   }
 
   const order = (f: Finding) => SEVS.indexOf(f.severity) * 10 + STATES.indexOf(f.status);
-  const rows = (findings.data ?? []).filter((f) => filter === "all" || f.status === filter || f.severity === filter)
-    .sort((a, b) => order(a) - order(b));
+  // ZAP reports the same rule, page and input once per piece of evidence, so a run holds several
+  // copies of one finding. One row per finding, with the count: the fingerprint is then a unique
+  // row key, and changing the filter can't leave stale rows behind (QA-5).
+  const grouped = new Map<string, { f: Finding; n: number }>();
+  for (const f of findings.data ?? []) {
+    const g = grouped.get(f.fingerprint);
+    if (g) g.n += 1; else grouped.set(f.fingerprint, { f, n: 1 });
+  }
+  const rows = [...grouped.values()].filter(({ f }) => filter === "all" || f.status === filter || f.severity === filter)
+    .sort((a, b) => order(a.f) - order(b.f));
   const d = run.data;
   return (
     <>
@@ -75,6 +83,8 @@ export default function Results() {
           <Metric label="Findings" value={SEVS.reduce((n, s) => n + d.counts[s], 0)}>
             <div className="row gap-sm">{SEVS.map((s) => (
               <span key={s}><Tag kind={SEV_TAG[s]} testid={`count-${s}`}>{d.counts[s]}</Tag> {s}</span>))}</div>
+            {findings.data && grouped.size < findings.data.length &&
+              <div className="faint" data-testid="distinct-count">in {grouped.size} distinct problems</div>}
           </Metric>
           <Metric label="How much was tested" value={d.coverage.routes_tested} small="routes">
             <div className="faint">{d.coverage.rules} rules</div>
@@ -99,10 +109,11 @@ export default function Results() {
             {findings.data && (
               <div className="table-wrap" tabIndex={0} role="region" aria-label="Table, scrolls sideways"><table className="findings">
                 <thead><tr><th>Severity</th><th>Problem</th><th>Page</th><th>Input</th><th>Status</th></tr></thead>
-                <tbody>{rows.map((f) => (
+                <tbody>{rows.map(({ f, n }) => (
                   <tr key={f.fingerprint} data-testid="findings-row">
                     <td><Tag kind={SEV_TAG[f.severity] ?? "d"}>{f.severity}</Tag></td>
-                    <td><Link to={`/apps/${enc(app)}/runs/${enc(scanId)}/findings/${enc(f.fingerprint)}`}>{f.title}</Link></td>
+                    <td><Link to={`/apps/${enc(app)}/runs/${enc(scanId)}/findings/${enc(f.fingerprint)}`}>{f.title}</Link>
+                      {n > 1 && <> <Tag kind="d" testid="findings-copies">×{n}</Tag></>}</td>
                     <td className="mono">{f.endpoint}</td>
                     <td className="mono">{f.parameter ?? "—"}</td>
                     <td><div className="row gap-sm">

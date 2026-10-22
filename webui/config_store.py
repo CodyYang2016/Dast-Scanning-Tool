@@ -40,6 +40,16 @@ def _yaml() -> YAML:
     return y
 
 
+def _mode_of(path: Path) -> int:
+    """The permission bits a rewrite of `path` should have: its own, or a new file's default."""
+    try:
+        return path.stat().st_mode & 0o777
+    except FileNotFoundError:
+        umask = os.umask(0)
+        os.umask(umask)
+        return 0o666 & ~umask
+
+
 def etag_of(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -150,6 +160,8 @@ class ConfigStore:
         fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=".app.yaml.")
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(new_text)
+        # mkstemp creates the file owner-only; keep the permissions the file had (QA-9).
+        os.chmod(tmp, _mode_of(target))
         os.replace(tmp, target)
         return {"etag": etag_of(target.read_bytes()), "diff": diff}
 
