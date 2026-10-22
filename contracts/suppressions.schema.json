@@ -25,7 +25,11 @@
           "rule_id": {"type": "string"},
           "endpoint": {"type": "string"},
           "parameter": {"type": ["string", "null"]},
-          "github_alert": {"type": "integer", "description": "The GitHub alert this was imported from, if any."}
+          "github_alert": {"type": "integer", "description": "The GitHub alert this was imported from, if any."},
+          "status": {"enum": ["proposed", "approved"], "description": "proposed = a suggestion (from the UI, or imported from a GitHub dismissal), never applied; approved = a decision. Absent means approved, for files written before proposals existed (UI-10)."},
+          "proposed_by": {"type": "string", "description": "Who proposed it."},
+          "approved_by": {"type": "string", "description": "Who approved it."},
+          "decided_at": {"type": "string", "description": "When it was approved (ISO 8601)."}
         },
         "allOf": [
           {"if": {"properties": {"reason": {"enum": ["accepted_risk", "wont_fix"]}}},

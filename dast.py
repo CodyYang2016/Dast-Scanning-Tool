@@ -311,7 +311,7 @@ def _write_skeleton(args, path) -> int:
     ), encoding="utf-8")
     print(f"wrote {display(path)}")
     try:
-        appconfig.load_app_config(args.app)
+        appconfig.load_app_config(str(path))
         print("config is already schema-valid; fill in the TODOs, then: "
               f"dast author {args.app}")
     except Exception as exc:
@@ -320,7 +320,9 @@ def _write_skeleton(args, path) -> int:
 
 
 def cmd_onboard(args) -> int:
-    path = appconfig.app_config_path(args.app)
+    # --config-out stages the config somewhere else (the web UI keeps it there until a person has
+    # confirmed the login proof); without it the config goes where every other command reads it.
+    path = Path(args.config_out) if args.config_out else appconfig.app_config_path(args.app)
     if path.exists() and not args.force:
         print(f"{path} already exists (use --force to overwrite)", file=sys.stderr)
         return 2
@@ -762,6 +764,9 @@ def build_parser() -> argparse.ArgumentParser:
     o.add_argument("--model", default=None,
                    help="model id (default depends on LLM_PROVIDER: anthropic or copilot)")
     o.add_argument("--headed", action="store_true", help="Watch the verification log in")
+    o.add_argument("--config-out", default=None,
+                   help="Write the config here instead of security/dast/<app>/app.yaml "
+                        "(to review before it goes live)")
     o.set_defaults(func=cmd_onboard)
 
     a = common(sub.add_parser("author", help="record (or seed+explore) -> generate -> validate"))
