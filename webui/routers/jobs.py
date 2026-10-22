@@ -7,6 +7,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
+from webui import registry_check
 from webui.app import error
 from webui.routers.apps import zap_reachable
 
@@ -42,6 +43,12 @@ def router(ctx) -> APIRouter:
     def start(app: str, body: JobRequest, request: Request):
         if not ctx.store.exists(app):
             error(404, f"There is no application called {app}.")
+        if body.command in ("author", "scan"):
+            _, cfg = ctx.store.read(app)
+            refused = registry_check.refusal(ctx.config.registry_path, cfg.get("base_url", ""),
+                                             cfg.get("environment_class", ""))
+            if refused:
+                error(422, *refused)
         args = [app]
         if body.command == "author":
             if body.options.get("explore"):

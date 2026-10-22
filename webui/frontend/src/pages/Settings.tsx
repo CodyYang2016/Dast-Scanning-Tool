@@ -87,6 +87,7 @@ export default function Settings() {
   const [problem, setProblem] = useState<ApiError | { message: string; fix: string | null } | null>(null);
   const [saved, setSaved] = useState(false);
   const [job, setJob] = useState<Job | null>(null);
+  const [startRefusal, setStartRefusal] = useState<ApiError | null>(null);
 
   useEffect(() => { setDraft({}); setDiff(null); setProblem(null); }, [app]);
 
@@ -132,11 +133,11 @@ export default function Settings() {
   }
 
   async function runScan() {
-    setProblem(null);
+    setProblem(null); setStartRefusal(null);
     try {
       const started = await api.post<Job>(`/api/apps/${enc(app)}/jobs`, { command: "scan", options: {} });
       setJob(started);
-    } catch (e) { setProblem(e as ApiError); }
+    } catch (e) { setStartRefusal(e as ApiError); }
   }
 
   async function signIn() {
@@ -177,6 +178,7 @@ export default function Settings() {
             disabled={job?.status === "running"}>Run a scan</button>
         </>} />
       {job?.status === "running" && <div className="alert info mb" role="status"><b>Starting…</b><span>{job.command}</span></div>}
+      {startRefusal && <ErrorNote testid="refusal" error={startRefusal} />}
       {job?.refusal && <ErrorNote testid="refusal" error={job.refusal} />}
       {job && job.status !== "running" && !job.refusal && !job.scan_id &&
         <ErrorNote testid="refusal" error={{ message: `The job ${job.status} before a run started.`,

@@ -157,8 +157,10 @@ class JobManager:
                 pass
 
     def _refusal(self, job: Job) -> dict | None:
-        if job.status == "succeeded" or job.scan_id is None:
+        if job.status != "failed":
             return None
+        if job.scan_id is None:
+            return self._refusal_from_output(job)
         events_path = self.config.out_dir / job.app_id / "scans" / job.scan_id / "events.jsonl"
         aborts = []
         if events_path.exists():
@@ -170,7 +172,7 @@ class JobManager:
                 if e.get("event") == "abort":
                     aborts.append(e)
         if not aborts:
-            return None
+            return self._refusal_from_output(job)
         e = aborts[-1]
         kind = str(e.get("kind") or "abort")
         reason = mask(str(e.get("reason") or "The run stopped before scanning."), job.secrets)
@@ -179,6 +181,23 @@ class JobManager:
             message += "."
         return {"kind": kind, "message": message,
                 "fix": e.get("hint") or FIXES.get(kind, "See the job's log for details.")}
+
+    @staticmethod
+    def _refusal_from_output(job: Job) -> dict:
+        """A command that stopped without an abort event still said why: use its own words."""
+        lines = [ln.strip() for ln in mask("".join(job.output), job.secrets).splitlines()
+                 if ln.strip() and not ln.startswith((" ", "\t", "File ", "Traceback"))]
+        said = next((ln for ln in reversed(lines) if "ABORT" in ln or " — run: " in ln), None)
+        said = said or (lines[-1] if lines else f"`{job.command}` stopped with exit code {job.exit_code}.")
+        for prefix in ("RUNNER ABORT:", "AUTHOR ABORT:", "SEED ABORT:", "EXPLORE ABORT:"):
+            said = said.replace(prefix, "").strip()
+        fix = "See the job's log for details."
+        if " — run: " in said:
+            said, _, command = said.partition(" — run: ")
+            fix = f"Run `python -m {command.strip()}` first."
+        message = said[0].upper() + said[1:] if said else "The command stopped."
+        return {"kind": "command", "message": message if message.endswith(".") else message + ".",
+                "fix": fix}
 
     @staticmethod
     def _summary(job: Job) -> dict | None:

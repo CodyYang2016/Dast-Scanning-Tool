@@ -19,6 +19,7 @@ from ruamel.yaml import YAML
 
 from authoring import appconfig, llm_backend
 from runner import env_registry
+from webui import registry_check
 from webui.app import error
 
 _APP_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
@@ -64,18 +65,10 @@ def router(ctx) -> APIRouter:
         host = (urlparse(body.base_url).hostname or "").lower()
         if not host or urlparse(body.base_url).scheme not in ("http", "https"):
             error(422, "The address must start with http:// or https:// and name a host.")
-        registry = env_registry.load(ctx.config.registry_path)
-        if registry.is_production(host):
-            error(422, f"{host} looks like a production system, so it can't be scanned.",
-                  "Scan a dev, test or staging copy instead.")
-        registered = registry.lookup(host)
-        if body.environment_class in ("test", "staging") and registered != body.environment_class:
-            if registered is None:
-                error(422, f"{host} isn't in the environment registry, so the tool can't confirm "
-                           f"it's a {body.environment_class} system.",
-                      f"Ask Governance to add {host} as {body.environment_class} in the environment registry.")
-            error(422, f"{host} is registered as {registered}, not {body.environment_class}.",
-                  f"Choose {registered}, or ask Governance to correct the registry.")
+        refused = registry_check.refusal(ctx.config.registry_path, body.base_url, body.environment_class)
+        if refused:
+            error(422, *refused)
+        registered = env_registry.load(ctx.config.registry_path).lookup(host)
         if ctx.store.exists(body.app_id) and not overwrite:
             error(409, f"{body.app_id} is already onboarded.",
                   "Pick another id, or confirm you want to replace its settings.")
