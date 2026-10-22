@@ -31,7 +31,8 @@ def _repo_with_history(ws):
     _git(ws, "add", "-A")
     _git(ws, "commit", "-q", "-m", "orders-portal approved", author=GOV, date=GOV_DATE)
     path = ws.app_yaml("orders-portal")
-    path.write_text(path.read_text(encoding="utf-8").replace("max_scan_min: 8", "max_scan_min: 9"), encoding="utf-8")
+    path.write_text(path.read_text(encoding="utf-8").replace("max_scan_min: 8", "max_scan_min: 9"), encoding="utf-8",
+                    newline="\n")
     _git(ws, "commit", "-q", "-am", "longer scan", author="Sec Engineer <sec@example.com>",
          date="2026-10-10T09:00:00+00:00")
 
