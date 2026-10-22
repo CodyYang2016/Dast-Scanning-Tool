@@ -2,12 +2,16 @@
 # Exposes Juice Shop and ZAP to localhost so the audience can see the app and scanner API.
 # ZAP's API still needs the X-ZAP-API-Key header, and admits only the runner's address unless
 # compose is started with ZAP_API_ALLOW='.*'.
+#
+# The web UI uses this same overlay (scripts/ui_stack.sh). DAST_ZAP_PORT / DAST_JUICE_PORT move the
+# ports when 8080 or 3000 is taken (ZAP then also listens on DAST_ZAP_PORT inside, which it
+# needs). The defaults are what the Nationwide checklist uses; leave both unset for demo_*.sh.
 
 services:
   juice:
     ports:
-      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:${DAST_JUICE_PORT:-3000}:3000"
 
   zap:
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:${DAST_ZAP_PORT:-8080}:${DAST_ZAP_PORT:-8080}"

@@ -110,21 +110,21 @@ def test_ui_stack_podman_only_uses_podman_compose_on_8080(tmp_path):
     out = _dry_run(tmp_path, podman=_stub(tmp_path, "podman"),
                    podman_compose=_stub(tmp_path, "podman-compose"))
     assert "engine: podman" in out
-    assert re.search(r"podman-compose -f compose\.yaml -f compose\.demo\.yaml up -d zap juice", out)
+    assert re.search(r"podman-compose -f compose\.yaml -f compose\.demo\.yaml up -d (--force-recreate )?zap juice", out)
     assert "DAST_ZAP_API=http://127.0.0.1:8080" in out
 
 
 @needs_bash
 def test_ui_stack_podman_without_podman_compose_uses_podman_compose_subcommand(tmp_path):
     out = _dry_run(tmp_path, podman=_stub(tmp_path, "podman"))
-    assert re.search(r"(?<!-)podman compose -f compose\.yaml -f compose\.demo\.yaml up -d zap juice", out)
+    assert re.search(r"(?<!-)podman compose -f compose\.yaml -f compose\.demo\.yaml up -d (--force-recreate )?zap juice", out)
 
 
 @needs_bash
 def test_ui_stack_docker_only_uses_docker_compose(tmp_path):
     out = _dry_run(tmp_path, docker=_stub(tmp_path, "docker"))
     assert "engine: docker" in out
-    assert re.search(r"docker compose -f compose\.yaml -f compose\.demo\.yaml up -d zap juice", out)
+    assert re.search(r"docker compose -f compose\.yaml -f compose\.demo\.yaml up -d (--force-recreate )?zap juice", out)
 
 
 @needs_bash
@@ -174,3 +174,18 @@ def test_compose_dvwa_image_defaults_to_the_same_digest():
         "vulnerables/web-dvwa@sha256:dae203fe11646a86937bf04db0079adef295f426da68a92b40e3b181f337daa7")
     assert "DVWA_IMAGE" in image                                # the NTR mirror can be swapped in
 
+
+
+def test_zap_listens_on_the_port_it_is_published_on():
+    """ZAP only answers API calls addressed to its own port: 18080 -> 8080 gets a 502. So a moved
+    DAST_ZAP_PORT must move ZAP's listening port, its healthcheck and the in-network runner too."""
+    base = yaml.safe_load((ROOT / "compose.yaml").read_text(encoding="utf-8"))
+    demo = yaml.safe_load((ROOT / "compose.demo.yaml").read_text(encoding="utf-8"))
+    zap = base["services"]["zap"]
+    port = zap["command"][zap["command"].index("-port") + 1]
+    assert port == "${DAST_ZAP_PORT:-8080}"
+    assert zap["environment"]["ZAP_PORT"] == "${DAST_ZAP_PORT:-8080}"
+    assert demo["services"]["zap"]["ports"] == ["127.0.0.1:${DAST_ZAP_PORT:-8080}:${DAST_ZAP_PORT:-8080}"]
+    runner = base["services"]["runner"]["command"]
+    assert "--zap-api=http://zap:${DAST_ZAP_PORT:-8080}" in runner
+    assert "--zap-proxy=http://zap:${DAST_ZAP_PORT:-8080}" in runner
