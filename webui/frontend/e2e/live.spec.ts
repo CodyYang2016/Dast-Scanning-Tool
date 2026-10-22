@@ -63,6 +63,7 @@ test("GEN-6 the command the UI shows, run by hand, produces the same artifacts",
   await open(page, "/apps/juice-shop/settings");
   const shown = (await page.getByTestId("equivalent-command").first().innerText()).trim();
   expect(shown).toBe("python -m dast scan juice-shop");
+  cli(["author", "juice-shop"]);            // a scan needs an authored bundle, by hand or from the UI
   const before = runs("juice-shop");
   await page.getByRole("button", { name: /run a scan/i }).click();
   await expect(page.getByTestId("run-stage-coverage")).toHaveAttribute("data-state", "done", { timeout: 20 * 60_000 });
