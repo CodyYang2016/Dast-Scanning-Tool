@@ -108,6 +108,7 @@ def router(ctx) -> APIRouter:
                         env_extra=env_extra, extra_secrets=secret_values,
                         audit_event="onboard.start",
                         audit_detail={"mode": pending[body.app_id]["mode"]})
+        pending[body.app_id]["job_id"] = job.job_id
         message = ("Reading the login page and signing in with the test account."
                    if discover else
                    "No AI provider is available, so the login steps must be filled in by hand "
@@ -123,7 +124,17 @@ def router(ctx) -> APIRouter:
                   "Start onboarding, and wait for it to finish.")
         cfg = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
         auth = cfg.get("auth") or {}
-        return {"app_id": app, "mode": pending.get(app, {}).get("mode", "skeleton"),
+        info = pending.get(app, {})
+        problem = None
+        job = ctx.jobs.get(info.get("job_id", ""))
+        if job is not None and info.get("mode") == "discover":
+            # `dast onboard --discover` falls back to the skeleton when no proof verifies; say so.
+            for line in job.log().splitlines():
+                if line.startswith("discovery failed:"):
+                    problem = line.removeprefix("discovery failed:").strip()
+                    info["mode"] = "skeleton"
+                    break
+        return {"app_id": app, "mode": info.get("mode", "skeleton"), "problem": problem,
                 "steps": auth.get("steps") or [], "proof": auth.get("proof") or {},
                 "authenticated_routes": (cfg.get("record") or {}).get("authenticated_routes") or [],
                 "base_url": cfg.get("base_url"), "login_url": auth.get("login_url")}

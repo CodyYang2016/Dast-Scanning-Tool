@@ -214,7 +214,7 @@ scope:
 
 auth:
   mode: {mode}
-  login_url: /login           # TODO the login page
+  login_url: {login_url}           # TODO check: the login page
   # Either this three-field shorthand...
   selectors:
     email: "input[name=username]"     # TODO the identifier field (email, username, employee id)
@@ -308,7 +308,7 @@ def _write_skeleton(args, path) -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(SKELETON.format(
         app_id=args.app, base_url=args.base_url, host=host, mode=args.auth,
-        environment_class=args.environment_class,
+        environment_class=args.environment_class, login_url=getattr(args, "login_url", "/login"),
         app_env=args.app.replace("-", "_").upper(),
     ), encoding="utf-8")
     print(f"wrote {display(path)}")

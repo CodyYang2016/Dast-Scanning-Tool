@@ -11,7 +11,7 @@ type Form = {
   allow: string; exclude: string; mode: "form" | "seeded"; login_url: string;
   user_env: string; pass_env: string; routes: string;
 };
-type Proposal = { mode: string; steps: unknown[]; proof: Record<string, unknown>; authenticated_routes: string[] };
+type Proposal = { mode: string; problem?: string | null; steps: unknown[]; proof: Record<string, unknown>; authenticated_routes: string[] };
 const STEPS = ["Application", "Where & what", "Login", "Pages to test"];
 
 const hostOf = (url: string) => { try { return new URL(url).hostname; } catch { return ""; } };
@@ -163,15 +163,27 @@ export default function Onboard() {
                 {job?.status === "running" && <p role="status">{message}</p>}
               </>}
               {step === 3 && proposal && <>
-                <p>{message}</p>
-                <div className="alert warn">
-                  <b>One question for you</b>
-                  <span>After signing in, the tool checks <code>{proofText}</code>. Does that only hold when someone is signed in?</span>
-                </div>
+                {proposal.mode === "skeleton" ? (
+                  <div className="alert warn" role="status">
+                    <b>{proposal.problem ? "Discovery couldn't verify how to tell you're signed in." : "No AI provider, so the login wasn't discovered."}</b>
+                    {proposal.problem && <span className="mono-block">{proposal.problem}</span>}
+                    <span>The app will be saved with a starting point. Before scanning, set its login steps and
+                      its signed-in check under Settings → "Worked out by the tool".</span>
+                  </div>
+                ) : (
+                  <>
+                    <p>{message}</p>
+                    <div className="alert warn">
+                      <b>One question for you</b>
+                      <span>After signing in, the tool checks <code>{proofText}</code>. Does that only hold when someone is signed in?</span>
+                    </div>
+                  </>
+                )}
                 <label className="stacked"><span>Pages to test (one per line, at least one signed-in page)</span>
                   <textarea data-testid="onboard-field-record.authenticated_routes" value={f.routes} onChange={set("routes")} rows={3} /></label>
                 <div className="row">
-                  <button className="btn primary" type="button" data-testid="proof-confirm" onClick={confirm}>Yes, save this app</button>
+                  <button className="btn primary" type="button" data-testid="proof-confirm" onClick={confirm}>
+                    {proposal.mode === "skeleton" ? "Save the starting point" : "Yes, save this app"}</button>
                   <button className="btn" type="button" onClick={() => setStep(2)}>No, go back</button>
                 </div>
               </>}
