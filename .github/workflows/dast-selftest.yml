@@ -78,8 +78,15 @@ jobs:
           print(f"{len(r)} findings over {len(c.get('routes', []))} routes:", dict(sev))
           PY
 
-      - name: keep the results
+      - name: evidence holds no secrets
+        # Nothing leaves the runner with a credential in it (FR-E1): the HAR and stored exchanges
+        # are redacted on capture; this re-checks them before upload-artifact publishes them. It
+        # runs even after a failed scan, because that is when the results are still uploaded.
+        id: evidence
         if: always()
+        run: python -m runner.evidence --check out/
+      - name: keep the results
+        if: always() && steps.evidence.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: dast-selftest-${{ github.run_id }}

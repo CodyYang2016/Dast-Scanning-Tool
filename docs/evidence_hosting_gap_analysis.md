@@ -4,6 +4,15 @@
 `0dc9593`. Re-verified on 2026-10-16 against this repository's `main` at `82caf5d`, which has that
 branch merged in (PR #9). Where `main` differs from the original analysis, it says so below.*
 
+> **Status, 2026-10-22:** the redaction holes (items 1–3 of the suggested scope) are fixed on
+> branch `fix/evidence-redaction`, test first (`tests/test_evidence_redaction.py`, RED-1..RED-9):
+> `redact_har` now delegates to `runner.redact`; HARs are redacted the moment the browser writes
+> them, including after a failed login and in `python -m runner.replay`; screenshots mask password
+> fields; `python -m runner.evidence --check DIR` finds any evidence still holding a secret, and
+> `dast report --upload|--issues` and the self-test workflow refuse to publish if it finds one.
+> Items 4–5 (a scan workflow for internal apps, resolvable SARIF links) still wait on the
+> self-hosted-runner decision.
+
 ## Verdict: not done
 
 The building blocks exist. Durable hosting, links that resolve, and redaction that has been
@@ -88,12 +97,12 @@ Nothing scans the evidence directory for secrets before it would be uploaded.
 
 ## Suggested scope to close the story (about one session)
 
-1. **Make `evidence.redact_har` delegate to `runner.redact`,** and also scrub `request.url`,
+1. **✅ Make `evidence.redact_har` delegate to `runner.redact`,** and also scrub `request.url`,
    `queryString[]` and `postData.params[]`. Add tests using the fixtures above: form login,
    query token, CSRF header, extra JSON keys, bearer in a body.
-2. **Redact on every path.** Redact in `replay()`'s `finally`, or in `main.py`'s error path, so a
+2. **✅ Redact on every path.** Redact in `replay()`'s `finally`, or in `main.py`'s error path, so a
    failed login never leaves a raw HAR. Make the `runner.replay` command line redact too.
-3. **Add a check before publication.** Re-run the redactor over the evidence directory and fail
+3. **✅ Add a check before publication.** Re-run the redactor over the evidence directory and fail
    if anything would change. Add screenshot masking through app config, or exclude screenshots
    from publication.
 4. **Add a scan workflow for internal applications,** on a self-hosted runner inside the

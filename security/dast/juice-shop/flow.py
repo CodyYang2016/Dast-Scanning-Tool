@@ -25,7 +25,8 @@ def _capture(page, evidence_dir: str | None, filename: str) -> None:
         return
     path = Path(evidence_dir)
     path.mkdir(parents=True, exist_ok=True)
-    page.screenshot(path=str(path / filename), full_page=True)
+    page.screenshot(path=str(path / filename), full_page=True,
+                    mask=[page.locator("input[type=password]")])   # typed secrets stay out of evidence
 
 
 def _dismiss_banners(page) -> None:

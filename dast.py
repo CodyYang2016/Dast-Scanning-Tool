@@ -428,6 +428,20 @@ def cmd_report(args) -> int:
         print(f"no scan to report on — run: dast scan {args.app}", file=sys.stderr)
         return 2
 
+    # Nothing is published from a run whose evidence still holds a secret (FR-E1). A local report
+    # is still allowed: the operator can see it; GitHub and its readers can't.
+    if args.upload or args.issues:
+        from runner import evidence
+        dirty = evidence.unredacted(run_dir)
+        if dirty:
+            print("PUBLISH REFUSED: this scan's evidence still holds secrets, so nothing was "
+                  "published:", file=sys.stderr)
+            for f in dirty:
+                print(f"  {display(f)}", file=sys.stderr)
+            print(f"  next: python -m runner.evidence --check {display(run_dir)} after re-running "
+                  "the scan with the current tool, which redacts on capture", file=sys.stderr)
+            return 2
+
     # W3-3: the report stage appends to the same audit trail as the scan it reports on.
     from runner import events
     events.start(app_id=args.app, scan_id=run_dir.name).attach(run_dir / "events.jsonl")
