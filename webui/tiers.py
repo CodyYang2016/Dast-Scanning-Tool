@@ -81,3 +81,17 @@ class TierMap:
 
         walk(cfg, "")
         return out
+
+    def missing_required(self, cfg: dict, present: set[str]) -> list[tuple[str, object]]:
+        """Tier A settings that apply to this app but aren't in its file, as (dotted path, empty
+        value). Without them the settings page can't ask for a required answer (QA-3)."""
+        out: list[tuple[str, object]] = []
+        for path, e in self.entries.items():
+            if e.get("prefix") or e.get("whole") or path in present:
+                continue
+            if any(p.startswith(path + ".") or path.startswith(p + ".") for p in present):
+                continue
+            tier = self.resolve(path, cfg)
+            if tier.tier == "A" and tier.editable:
+                out.append((path, [] if e.get("kind") == "list" else ""))
+        return out

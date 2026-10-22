@@ -5,10 +5,12 @@ import type { ApiErrorDetail } from "./types";
 export class ApiError extends Error {
   status: number;
   fix: string | null;
+  field: string | null;    // the setting a refused change is about, when the server knows it
   constructor(status: number, detail: ApiErrorDetail) {
     super(detail.message);
     this.status = status;
     this.fix = detail.fix;
+    this.field = detail.field ?? null;
   }
 }
 

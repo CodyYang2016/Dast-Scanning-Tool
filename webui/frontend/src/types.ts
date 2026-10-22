@@ -12,13 +12,16 @@ export interface AppSummary {
 export interface SettingField {
   path: string; value: unknown; tier: Tier; editable: boolean; label: string; help: string;
   owner: string; secret?: { name: string; set: boolean };
+  missing?: boolean;    // required, but not in app.yaml yet (QA-3)
 }
 export interface Settings { app_id: string; etag: string; command: string; fields: SettingField[] }
 export interface RunSummary { scan_id: string; status: string; started_at: string | null }
 export interface RunDetail {
   scan_id: string; status: string;
+  compared?: "recorded" | "preview" | "none";    // how "compared with last time" was decided (QA-10)
   counts: Record<Severity, number>; lifecycle: Record<Lifecycle, number>;
   coverage: { routes_tested: number; rules: number; truncated_rules: string[]; excluded: string[];
+              truncated?: { id: string; name: string | null }[];
               declared: number | null; exercised: number | null };
 }
 export interface SuppressionInfo { reason: string; status: string; expires: string | null; expired: boolean }
@@ -48,4 +51,4 @@ export interface Governance {
   registry: { hosts: Record<string, string>; prod_patterns: string[] };
   audit: { ts: string; actor: string; app_id: string | null; event: string; detail: Record<string, unknown> }[];
 }
-export interface ApiErrorDetail { message: string; fix: string | null }
+export interface ApiErrorDetail { message: string; fix: string | null; field?: string }
