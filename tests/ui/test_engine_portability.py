@@ -78,9 +78,9 @@ def test_exported_workflow_reaches_zap_and_lets_podman_runners_choose(api):
     start = next(s for s in steps if s.get("name") == "start ZAP")["run"]
     assert "${{ vars.DAST_COMPOSE || 'docker compose' }}" in start
     assert "-f compose.yaml -f compose.demo.yaml up -d zap" in start
+    assert next(s for s in steps if s.get("name") == "start ZAP")["env"]["ZAP_API_ALLOW"] == ".*"
     scan = next(s for s in steps if s.get("name") == "author and scan")
     assert scan["env"]["DAST_ZAP_API"] == "http://127.0.0.1:8080"
-    assert scan["env"]["ZAP_API_ALLOW"] == ".*"
     assert "DAST_COMPOSE=podman-compose" in content           # the comment a Podman runner needs
     assert not re.search(r"run: docker compose", content)
 
