@@ -278,7 +278,7 @@ python -m detections.lifecycle_diff out/records.json --app-id juice-shop \
 
 ```bash
 pip install -r requirements-dev.txt
-pytest -q          # 1,195 tests, including the 103 web UI acceptance tests
+pytest -q          # 1,200 tests, including the 103 web UI acceptance tests
 ```
 
 Testing philosophy is **objective / test-first**: expectations are anchored to independent
