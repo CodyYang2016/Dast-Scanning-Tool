@@ -39,7 +39,7 @@ export default function Finding() {
     <>
       <TitleBar crumbs={[{ to: "/", label: "Overview" }, { to: `/apps/${enc(app)}/runs/${enc(scanId)}/results`, label: `${app} · ${scanId}` }, { label: "Finding" }]}
         title={<><Tag kind={SEV_TAG[d.severity] ?? "d"}>{d.severity}</Tag> {d.title}</>}
-        sub={<>Rule {d.rule_id}{d.cwe_id ? ` · CWE-${d.cwe_id}` : ""}{d.confidence ? ` · ${d.confidence} confidence` : ""} · <span className="mono">{d.endpoint}</span></>} />
+        sub={<>Rule {d.rule_id}{d.cwe_id ? ` · ${String(d.cwe_id).startsWith("CWE-") ? d.cwe_id : `CWE-${d.cwe_id}`}` : ""}{d.confidence ? ` · ${d.confidence} confidence` : ""} · <span className="mono">{d.endpoint}</span></>} />
       <div className="layout">
         <div className="stack">
           <Card title="What the scanner saw">

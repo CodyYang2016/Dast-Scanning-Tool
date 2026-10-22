@@ -96,6 +96,10 @@ export default function Settings() {
   const [saved, setSaved] = useState(false);
   const [job, setJob] = useState<Job | null>(null);
   const [startRefusal, setStartRefusal] = useState<ApiError | null>(null);
+  // What the running job is: a scan goes to its run; an author job (Record the login, or
+  // Sign in (SSO)) stays here and ends with the login recorded (QA-12).
+  const [jobKind, setJobKind] = useState<"scan" | "author" | null>(null);
+  const [recorded, setRecorded] = useState(false);
   const advanced = useRef<HTMLDetailsElement>(null);
   const worked = useRef<HTMLDetailsElement>(null);
   // A refused change that names its setting is shown beside that setting, not only at the top (QA-4).
@@ -153,7 +157,7 @@ export default function Settings() {
   }
 
   async function runScan() {
-    setProblem(null); setStartRefusal(null);
+    setProblem(null); setStartRefusal(null); setRecorded(false); setJobKind("scan");
     try {
       const started = await api.post<Job>(`/api/apps/${enc(app)}/jobs`, { command: "scan", options: {} });
       setJob(started);
@@ -161,9 +165,16 @@ export default function Settings() {
   }
 
   async function signIn() {
-    setProblem(null);
+    setProblem(null); setStartRefusal(null); setRecorded(false); setJobKind("author");
     try { setJob(await api.post<Job>(`/api/onboard/${enc(app)}/sign-in`)); }
     catch (e) { setProblem(e as ApiError); }
+  }
+
+  // A form login is recorded by `dast author <app>`, which a scan needs first (QA-12).
+  async function recordLogin() {
+    setProblem(null); setStartRefusal(null); setRecorded(false); setJobKind("author");
+    try { setJob(await api.post<Job>(`/api/apps/${enc(app)}/jobs`, { command: "author", options: {} })); }
+    catch (e) { setStartRefusal(e as ApiError); }
   }
 
   // Follow a started job: go to its run once it has one; show a refusal if it ends without.
@@ -176,11 +187,13 @@ export default function Settings() {
         navigate(`/apps/${enc(app)}/runs/${enc(j.scan_id)}/progress?job=${enc(j.job_id)}`);
       } else if (j.status !== "running") {
         clearInterval(t); setJob(j);
-        if (j.scan_id && !j.refusal) navigate(`/apps/${enc(app)}/runs/${enc(j.scan_id)}/results`);
+        if (jobKind === "author") {
+          if (j.status === "succeeded") { setRecorded(true); settings.reload(); }
+        } else if (j.scan_id && !j.refusal) navigate(`/apps/${enc(app)}/runs/${enc(j.scan_id)}/results`);
       }
     }, 700);
     return () => clearInterval(t);
-  }, [job, app, navigate]);
+  }, [job, app, navigate, jobKind]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (settings.loading && !settings.data) return <Loading what="settings" />;
   if (settings.error) return <ErrorNote error={settings.error} />;
@@ -193,14 +206,25 @@ export default function Settings() {
         title={`${app} — settings`} sub={<>Saved in <code>security/dast/{app}/app.yaml</code></>}
         actions={<>
           <Link className="btn" to={`/apps/${enc(app)}/automate`}>Automate</Link>
-          {mode === "seeded" && <button className="btn" type="button" onClick={signIn}>Sign in (SSO)</button>}
+          {mode === "seeded"
+            ? <button className="btn" type="button" onClick={signIn} disabled={job?.status === "running"}>Sign in (SSO)</button>
+            : <button className="btn" type="button" onClick={recordLogin} disabled={job?.status === "running"}>Record the login</button>}
           <button className="btn primary" type="button" onClick={runScan}
             disabled={job?.status === "running"}>Run a scan</button>
         </>} />
-      {job?.status === "running" && <div className="alert info mb" role="status"><b>Starting…</b><span>{job.command}</span></div>}
+      {job?.status === "running" && <div className="alert info mb" role="status">
+        <b>{jobKind === "author" ? "Recording the login…" : "Starting…"}</b><span>{job.command}</span></div>}
+      {recorded && <div className="alert ok mb" role="status" data-testid="login-recorded">
+        <b>Login recorded.</b><span>You can run a scan now.</span></div>}
+      {s.login_recorded === false && mode !== "seeded" && !recorded && job?.status !== "running" &&
+        <div className="alert warn mb" data-testid="login-not-recorded">
+          <b>This app's login hasn't been recorded yet.</b>
+          <span>Record it before running a scan: the tool signs in with the test account and saves the steps.</span>
+          <div><button className="btn primary" type="button" onClick={recordLogin}>Record the login</button></div>
+        </div>}
       {startRefusal && <ErrorNote testid="refusal" error={startRefusal} />}
       {job?.refusal && <ErrorNote testid="refusal" error={job.refusal} />}
-      {job && job.status !== "running" && !job.refusal && !job.scan_id &&
+      {job && jobKind === "scan" && job.status !== "running" && !job.refusal && !job.scan_id &&
         <ErrorNote testid="refusal" error={{ message: `The job ${job.status} before a run started.`,
           fix: "Open its log from the run list, or try again." }} />}
       <ErrorNote error={fieldError ? { message: "1 setting needs attention.", fix: "The reason is shown under it." } : problem} />

@@ -76,7 +76,9 @@ def router(ctx) -> APIRouter:
 
     @r.get("/apps/{app}/settings")
     def settings(app: str):
-        return ctx.store.settings(app)
+        # Whether `dast scan` would find a recorded login: the same check it makes (QA-12).
+        recorded = (ctx.runs.paths(app).bundle / "flow.py").exists()
+        return {**ctx.store.settings(app), "login_recorded": recorded}
 
     @r.post("/apps/{app}/settings/preview")
     def preview(app: str, body: Changes):
