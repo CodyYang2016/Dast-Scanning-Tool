@@ -94,8 +94,16 @@ def router(ctx) -> APIRouter:
         args = [body.app_id, "--base-url", body.base_url, "--environment-class",
                 body.environment_class, "--auth", body.auth, "--login-url", body.login_url,
                 "--config-out", str(out)]
+        # Discover the way the scan will reach the app: through ZAP, when it's answering. An app
+        # only the scanner can route to (one on ZAP's network, say) is otherwise out of reach
+        # (QA-14). With ZAP down, discovery still runs directly, as it needs nothing from ZAP.
+        via_zap = False
         if discover:
+            from webui.routers.apps import zap_status
             args.append("--discover")
+            if zap_status(ctx.config.zap_api) in ("ok", "key"):    # the proxy needs no API key
+                args += ["--zap-proxy", ctx.config.zap_api]
+                via_zap = True
         env_extra, secret_values = {}, []
         user, password = ctx.secrets.value(body.user_env), ctx.secrets.value(body.pass_env)
         if user and password:           # discovery signs in with them, under the names it reads
@@ -109,7 +117,8 @@ def router(ctx) -> APIRouter:
                         audit_event="onboard.start",
                         audit_detail={"mode": pending[body.app_id]["mode"]})
         pending[body.app_id]["job_id"] = job.job_id
-        message = ("Reading the login page and signing in with the test account."
+        message = (f"Reading the login page{' through ZAP' if via_zap else ''} and signing in with "
+                   "the test account."
                    if discover else
                    "No AI provider is available, so the login steps must be filled in by hand "
                    "under Advanced after saving.")

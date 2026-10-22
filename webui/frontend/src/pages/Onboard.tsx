@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { api, ApiError, enc } from "../api";
 import { Card, Command, ErrorNote, Tag, TitleBar } from "../components/ui";
-import type { Job } from "../types";
+import type { Job, System } from "../types";
+import { useApi } from "../useApi";
 
 // Only the tier A onboarding questions (ui_acceptance_criteria.md §4). Data is durable until an
 // app owner attests otherwise, so "never touched" is always asked here.
@@ -75,8 +76,12 @@ export default function Onboard() {
   const [busy, setBusy] = useState(false);
   const set = (k: keyof Form) => (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value });
 
+  // With an AI provider the UI discovers the login, through ZAP when it's answering (QA-14).
+  const system = useApi<System>("/api/system");
+  const discovery = system.data?.ai.available
+    ? ` --discover${system.data.zap.reachable ? ` --zap-proxy ${system.data.zap.url}` : ""}` : "";
   const command = `python -m dast onboard ${f.app_id || "<app>"} --base-url ${f.base_url || "<address>"} ` +
-    `--environment-class ${f.environment_class} --auth ${f.mode} --login-url ${f.login_url || "/login"}`;
+    `--environment-class ${f.environment_class} --auth ${f.mode} --login-url ${f.login_url || "/login"}${discovery}`;
 
   async function next() {
     setRefusal(null);
