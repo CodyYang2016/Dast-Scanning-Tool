@@ -1,0 +1,5 @@
+# The local web UI (`python -m dast ui`). Not needed by the scanner image or CI scans.
+-r requirements.txt
+fastapi==0.159.1      # HTTP API and serving the built front end
+uvicorn==0.54.0       # the server; bound to 127.0.0.1 only
+ruamel.yaml==0.19.1   # edits app.yaml without losing its comments (PyYAML drops them)
