@@ -48,10 +48,8 @@ jobs:
       - name: Install dev dependencies
         run: pip install -r requirements-dev.txt
       - name: Tests
-        # Python's UTF-8 mode, as a Nationwide workstation should run the suite: some frozen tests
-        # read files and git output with the default encoding, which is cp1252 on Windows.
-        env:
-          PYTHONUTF8: "1"
+        # Not in UTF-8 mode: a Windows workstation's default encoding is cp1252, and the suite
+        # must pass under it.
         run: python -m pytest -q
 
   ui-frontend:
