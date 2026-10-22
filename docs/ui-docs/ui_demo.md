@@ -1,8 +1,9 @@
 # DAST web UI — live demonstration
 
 *A path for showing the web UI end to end in about 15 minutes: setup in a terminal once, then the
-demo itself entirely in the UI. It was dry-run from start to finish on 2026-10-22 on branch
-`fix/ui-qa-run1`; the times and results quoted below are from that run.*
+demo itself entirely in the UI. It was dry-run from start to finish on 2026-10-22; the times and results quoted below are from
+that run. Recording the login from the UI (D4) was checked live on the same setup after QA-12
+was fixed.*
 
 The demo runs against its **own** copy of the app configs, its own ZAP and its own Juice Shop.
 Nothing in the repository is edited, and containers you already run (a `zap` on 8080, a `juice`
@@ -18,14 +19,14 @@ lighter.
 
 ## Part 1 — Before the demo (terminal, once, about 5 minutes)
 
-Use one terminal, from the repository root, for every step. Keep it open: step 8 runs the UI in
+Use one terminal, from the repository root, for every step. Keep it open: step 7 runs the UI in
 it.
 
 ### 1. The code and the project's Python
 
 ```bash
 cd ~/Dast-Scanning-Tool
-git checkout fix/ui-qa-run1        # main, once the QA fixes are merged
+git checkout main && git pull
 source .venv/bin/activate
 ```
 
@@ -82,32 +83,21 @@ export ANTHROPIC_API_KEY=$(cat .secrets/anthropic.key)
 export GITHUB_TOKEN=placeholder-for-preview-only
 ```
 
-- The test account is made up here; Juice Shop registers it itself on first sign-in.
+- The test account is made up here; Juice Shop registers it itself the first time the login is
+  recorded (D4).
 - The UI never takes an API key: it reads `ANTHROPIC_API_KEY` from the shell that starts it, so
   the key never passes through a web page. Read it from the file as above; don't paste or echo it.
 - **Publish → Preview** only checks that the token variable is set; it reads files and never
   contacts GitHub. The placeholder makes Preview work. **Don't click Publish** in the demo: a
   real publish would be rejected by GitHub with this token.
 
-### 6. Record Juice Shop's login
+### 6. Check the starting point
 
 ```bash
-python -m dast author juice-shop
+ls "$DEMO/out"                     # empty: no recorded login and no scans yet
 ```
 
-- [ ] **Expect:** it ends with `bundle ready: … — next: dast scan juice-shop` (11 seconds in the
-  dry run).
-
-This is the one step the UI can't do yet for an app that signs in with a form (see "Known gaps"
-below).
-
-### 7. Check the starting point
-
-```bash
-ls "$DEMO/out/juice-shop"          # authoring only: no scans yet
-```
-
-### 8. Start the demo UI
+### 7. Start the demo UI
 
 ```bash
 python -m dast ui --port 8796
@@ -125,15 +115,16 @@ which `http://127.0.0.1:8796/` is enough in the same browser.
 |---|---|---|
 | D1 | Open **Overview** | ZAP **Reachable** at `http://127.0.0.1:18080`; AI provider **Available · anthropic**; 4 applications |
 | D2 | **Onboard**: `prod-shop`, `https://shop.prod.example.com`, Test → **Continue** | Refused at once: *"shop.prod.example.com looks like a production system, so it can't be scanned. Scan a dev, test or staging copy instead."* |
-| D3 | **Onboard** again: `demo-app`, `http://demo-app.dev.local`, Development → **Continue** | Step 2, with **Hosts in scope** already filled in as `demo-app.dev.local` and a **Never touched** list to answer. The tool asks only what it can't work out. Stop here and leave the page (see "Known gaps") |
-| D4 | **Apps → juice-shop → Settings**, open **Advanced**. Set **How hard to test** to **Low**, **Time limit for the scan** to `2`, **Time limit per rule** to `1`. Click **Preview**, then **Save** | The exact change to `app.yaml` before it's saved (below). "Needs approval" settings are read-only on the same page |
-| D5 | Click **Run a scan** | The progress page within a second. **Safety checks ✓**, **Sign in ✓**, then the scan with live activity. Finished in **about 3 minutes** in the dry run, with all five stages ✓ |
-| D6 | Click **See results** | 1,212 findings (2 high) in 862 distinct problems; 314 routes and 113 rules tested. "Compared with last time": **1,212 new**, marked *"Not recorded yet: publishing records this comparison."* Copies are grouped as ×N, and **Show** filters the list |
-| D7 | Open **SQL Injection** on `/rest/user/login` | The vulnerable input (`email`), what was sent (`'`), what came back (`HTTP/1.1 500 Internal Server Error`), how to fix it, and a `curl` to reproduce it. Then **Set this finding aside**: Reason *Accepted risk*, a why, a review date, **Propose**, then **Approve** → status **approved** |
-| D8 | Back to the results, **Publish to GitHub…**. Fill in an owner, repository, `refs/heads/main` and a 40-character commit. Click **Preview** only | How many results would be sent, from which run, under which category. **Don't click Publish** |
-| D9 | Open **Governance** | Every action you just took in the audit trail, the settings that need approval, and the known gaps in testing |
+| D3 | **Onboard** again: `demo-app`, `http://demo-app.dev.local`, Development → **Continue** | Step 2, with **Hosts in scope** already filled in as `demo-app.dev.local` and a **Never touched** list to answer. The tool asks only what it can't work out. Stop here and leave the page: `demo-app` doesn't exist, so its login can't be checked (see "Known gaps") |
+| D4 | **Apps → juice-shop → Settings** | A yellow banner: *"This app's login hasn't been recorded yet."* Click **Record the login**: "Recording the login…", then **"Login recorded. You can run a scan now."** after about 10 seconds, and the banner goes. The tool signed in with the test account and saved the steps |
+| D5 | Still on juice-shop's settings, open **Advanced**. Set **How hard to test** to **Low**, **Time limit for the scan** to `2`, **Time limit per rule** to `1`. Click **Preview**, then **Save** | The exact change to `app.yaml` before it's saved (below). "Needs approval" settings are read-only on the same page |
+| D6 | Click **Run a scan** | The progress page within a second. **Safety checks ✓**, **Sign in ✓**, then the scan with live activity. Finished in **about 3 minutes** in the dry run, with all five stages ✓ |
+| D7 | Click **See results** | 1,212 findings (2 high) in 862 distinct problems; 314 routes and 113 rules tested. "Compared with last time": **1,212 new**, marked *"Not recorded yet: publishing records this comparison."* Copies are grouped as ×N, and **Show** filters the list |
+| D8 | Open **SQL Injection** on `/rest/user/login` | The vulnerable input (`email`), what was sent (`'`), what came back (`HTTP/1.1 500 Internal Server Error`), how to fix it, and a `curl` to reproduce it. Then **Set this finding aside**: Reason *Accepted risk*, a why, a review date, **Propose**, then **Approve** → status **approved** |
+| D9 | Back to the results, **Publish to GitHub…**. Fill in an owner, repository, `refs/heads/main` and a 40-character commit. Click **Preview** only | How many results would be sent, from which run, under which category. **Don't click Publish** |
+| D10 | Open **Governance** | Every action you just took in the audit trail, the settings that need approval, and the known gaps in testing |
 
-The D4 preview, as it appeared:
+The D5 preview, as it appeared:
 
 ```diff
    policy:
@@ -158,11 +149,12 @@ The D4 preview, as it appeared:
 
 ```bash
 cp "$DEMO/juice-shop.app.yaml.start" "$DEMO/apps/juice-shop/app.yaml"
-rm -rf "$DEMO/out/juice-shop/scans" "$DEMO/out/ui-audit.jsonl" "$DEMO/apps/juice-shop/suppressions.yaml"
+rm -rf "$DEMO/out/juice-shop" "$DEMO/out/ui-audit.jsonl" "$DEMO/apps/juice-shop/suppressions.yaml"
 python -m dast ui --port 8796
 ```
 
-This keeps the recorded login (`$DEMO/out/juice-shop/authoring`), so step 6 isn't repeated.
+This also removes the recorded login, so D4 shows the banner and records it again. To skip D4
+next time, keep it: remove `"$DEMO/out/juice-shop/scans"` instead of `"$DEMO/out/juice-shop"`.
 
 **To clean up:** stop the UI (Ctrl+C), then:
 
@@ -180,8 +172,6 @@ rm -rf "$DEMO"
 
 | Gap | Effect on the demo | Tracked as |
 |---|---|---|
-| The UI can't record the login for an app that signs in with a form (`dast author`). Only SSO/MFA apps have a button (**Sign in (SSO)**) | Step 6 is done in the terminal. A newly onboarded form-login app can't be scanned from the UI alone, which is why D3 stops at step 2 | QA-12 |
-| AI discovery can't always verify a signed-in check (ONB-8). On the semgate lab it falls back to a starting point | Finishing onboarding with AI live hasn't been rehearsed against this setup. Rehearse it before showing it | ONB-8 (status doc) |
-| The finding header shows "CWE-CWE-89": real records already hold `CWE-89`, and the page adds the prefix again | Cosmetic; visible in D7 | QA-13 |
-| The lighter scan still takes about 3 minutes | Talk through the Activity list while it runs, or show the Stop scan option | — |
+| AI discovery can't always verify a signed-in check (ONB-8). On the semgate lab it falls back to a starting point | Finishing onboarding with AI live hasn't been rehearsed against this setup, so D3 stops at step 2. To show onboard → record → scan for a new app, rehearse it first against a real app with a test account | ONB-8 (status doc) |
+| The lighter scan still takes 2½–3 minutes | Talk through the Activity list while it runs, or show the Stop scan option | — |
 | Governance shows "not committed yet" for approvals | Expected here: the demo workspace isn't a git repository. Against the real configs it shows the author and date from git (QA step G7) | — |
