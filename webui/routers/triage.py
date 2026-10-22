@@ -66,7 +66,7 @@ def _write(ctx, app: str, doc) -> None:
         error(422, f"That decision isn't valid: {message}")
     p = _path(ctx, app)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(text, encoding="utf-8")
+    p.write_text(text, encoding="utf-8", newline="\n")
 
 
 def suppressions_by_fp(ctx, app: str) -> dict:

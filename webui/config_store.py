@@ -173,7 +173,7 @@ class ConfigStore:
         new_text, diff = self._apply(app, etag, changes)
         target = self.path(app)
         fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=".app.yaml.")
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:   # LF on Windows too
             fh.write(new_text)
         # mkstemp creates the file owner-only; keep the permissions the file had (QA-9).
         os.chmod(tmp, _mode_of(target))

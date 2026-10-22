@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import os
 import stat
 import sys
 
@@ -32,12 +33,17 @@ def test_unregistered_host_refused_before_starting(ws, zap_up):
 
 
 def test_failure_without_abort_event_is_explained(ws, zap_up):
-    script = ws.root / "no-bundle-python"
-    script.write_text(
-        f"#!{sys.executable}\nimport sys\n"
-        "print('no bundle at out/orders-portal/authoring/bundle — run: dast author orders-portal',"
-        " file=sys.stderr)\nsys.exit(2)\n", encoding="utf-8")
-    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    body = ("import sys\n"
+            "print('no bundle at out/orders-portal/authoring/bundle — run: dast author orders-portal',"
+            " file=sys.stderr)\nsys.exit(2)\n")
+    if os.name == "nt":                     # Windows runs a .cmd, not a shebang script
+        (ws.root / "no-bundle.py").write_text(body, encoding="utf-8")
+        script = ws.root / "no-bundle-python.cmd"
+        script.write_text(f'@"{sys.executable}" "{ws.root / "no-bundle.py"}" %*\r\n', encoding="utf-8")
+    else:
+        script = ws.root / "no-bundle-python"
+        script.write_text(f"#!{sys.executable}\n" + body, encoding="utf-8")
+        script.chmod(script.stat().st_mode | stat.S_IEXEC)
     c = logged_in(make_app(ws, zap_api=zap_up, python=str(script)))
     job = c.post("/api/apps/orders-portal/jobs", json={"command": "scan", "options": {}}).json()
     done = wait_job(c, job["job_id"])

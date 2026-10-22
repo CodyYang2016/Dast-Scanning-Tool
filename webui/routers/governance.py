@@ -27,7 +27,8 @@ def blame(repo: Path, file: Path, line: int) -> tuple[str | None, str | None]:
         return None, None
     try:
         out = subprocess.run(["git", "-C", str(repo), "blame", "--porcelain", "-L", f"{line},{line}",
-                              "--", str(rel)], capture_output=True, text=True, timeout=10)
+                              "--", str(rel)], capture_output=True, text=True, timeout=10,
+                             encoding="utf-8", errors="replace")   # not cp1252 on Windows
     except (OSError, subprocess.TimeoutExpired):
         return None, None
     if out.returncode != 0:
@@ -128,10 +129,16 @@ def router(ctx) -> APIRouter:
             "        run: pip install -r requirements.txt && python -m playwright install --with-deps chromium\n"
             "      - name: ZAP key for this run\n"
             "        run: echo \"ZAP_API_KEY=$(openssl rand -hex 24)\" >> \"$GITHUB_ENV\"\n"
+            "      # A runner with Podman sets the repository variable DAST_COMPOSE=podman-compose\n"
+            "      # (e.g. a Nationwide self-hosted runner); GitHub-hosted runners use Docker.\n"
             "      - name: start ZAP\n"
-            "        run: docker compose up -d zap\n"
+            "        env:\n"
+            "          ZAP_API_ALLOW: \".*\"   # the scan runs on the runner, outside ZAP's network\n"
+            "        run: ${{ vars.DAST_COMPOSE || 'docker compose' }} -f compose.yaml -f compose.demo.yaml up -d zap\n"
             "      - name: author and scan\n"
-            + (f"        env:\n{env_lines}" if env_lines else "")
+            "        env:\n"
+            "          DAST_ZAP_API: http://127.0.0.1:8080\n"
+            + env_lines
             + "        run: |\n"
             f"          python -m dast author {app} --no-llm\n"
             f"          python -m dast scan {app}\n"

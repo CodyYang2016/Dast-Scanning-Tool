@@ -179,28 +179,22 @@ Open **Onboard**.
 
 ## Part I — A real scan (optional, 30–45 minutes)
 
-This starts its own ZAP and Juice Shop on a private network, with ZAP published only on
-127.0.0.1:18080, so it doesn't clash with anything already on 8080 or 3000.
+This starts its own ZAP and Juice Shop with `scripts/ui_stack.sh`, on Podman or Docker
+([`../podman_and_docker.md`](../podman_and_docker.md)), published only on `127.0.0.1`. Run 1 used
+a hand-written compose override on Docker for the same result.
 
 ### I1. Start the isolated scanner
 
 Stop the UI first (Ctrl+C). Then, from the repository root, in the A2 terminal:
 
 ```bash
-export ZAP_API_KEY=$(openssl rand -hex 24) DAST_ZAP_API=http://127.0.0.1:18080
-cat > "$QA/zap-override.yaml" <<'EOF'
-services:
-  zap:
-    ports: ["127.0.0.1:18080:18080"]
-    command: [zap.sh, -daemon, -host, 0.0.0.0, -port, "18080", -silent,
-              -config, "api.key=${ZAP_API_KEY}", -config, "api.addrs.addr.name=.*",
-              -config, api.addrs.addr.regex=true]
-EOF
-docker compose -f compose.yaml -f "$QA/zap-override.yaml" up -d zap juice
-curl -s -H "X-ZAP-API-Key: $ZAP_API_KEY" http://127.0.0.1:18080/JSON/core/view/version/
+# Only where 8080 or 3000 is already taken (e.g. by your own ZAP or Juice Shop):
+export DAST_ZAP_PORT=18080 DAST_JUICE_PORT=13000
+bash scripts/ui_stack.sh up juice
+# then run the `export` line it prints (DAST_ZAP_API, and ZAP_API_KEY unless already set)
 ```
 
-- [x] **Expect:** `{"version":"2.17.0"}` (ZAP can take a minute to answer).
+- [x] **Expect:** `engine: podman` or `docker`, then `ZAP is ready.` (ZAP can take a minute).
 
 ### I2. Author Juice Shop once
 
@@ -224,7 +218,7 @@ Start the UI again (`python -m dast ui`) and open **Overview**.
 
 | # | Do | Expect | Pass |
 |---|---|---|---|
-| I3.1 | Read the ZAP tile | **Reachable** at http://127.0.0.1:18080 | ✅ |
+| I3.1 | Read the ZAP tile | **Reachable** at `DAST_ZAP_API` (run 1: http://127.0.0.1:18080) | ✅ |
 | I3.2 | Open **juice-shop → Settings → Run a scan** | You're taken to the run's progress page within a few seconds | ✅ (0.8 s) |
 | I3.3 | Watch the five stages | Safety checks ✓, Sign in ✓, then Scan in progress; the Activity list fills with events | ✅ |
 | I3.4 | Wait for it to finish (about 5–8 minutes) | All five stages ✓ and a **See results** button | ✅ (about 3 min) |
@@ -236,7 +230,7 @@ Start the UI again (`python -m dast ui`) and open **Overview**.
 ### I4. Clean up
 
 ```bash
-docker compose -f compose.yaml -f "$QA/zap-override.yaml" down
+bash scripts/ui_stack.sh down
 rm -rf "$QA"
 ```
 

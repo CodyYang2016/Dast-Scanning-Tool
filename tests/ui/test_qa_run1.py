@@ -11,10 +11,14 @@ import json
 import os
 import shutil
 
+import pytest
 import yaml
 
 from detections import lifecycle_diff, triage
+from runner.session_store import POSIX_PERMISSIONS
 from tests.ui.harness import ABORTED_RUN, COMPLETE_RUN, LATER_RUN
+
+posix_only = pytest.mark.skipif(not POSIX_PERMISSIONS, reason="Windows has no POSIX mode bits")
 
 FRESH_RUN = "20261022T120000Z"
 LIFECYCLE = ("new", "open", "resolved", "not_scanned", "suppressed")
@@ -39,6 +43,7 @@ def _save_budget(api, value):
     assert r.status_code == 200, r.text
 
 
+@posix_only
 def test_qa9_save_keeps_mode_0644(api, ws):
     target = ws.app_yaml("orders-portal")
     target.chmod(0o644)
@@ -46,6 +51,7 @@ def test_qa9_save_keeps_mode_0644(api, ws):
     assert oct(target.stat().st_mode & 0o777) == oct(0o644)
 
 
+@posix_only
 def test_qa9_save_keeps_mode_0640(api, ws):
     target = ws.app_yaml("orders-portal")
     target.chmod(0o640)

@@ -5,10 +5,10 @@ demo itself entirely in the UI. It was dry-run from start to finish on 2026-10-2
 that run. Recording the login from the UI (D4) was checked live on the same setup after QA-12
 was fixed.*
 
-The demo runs against its **own** copy of the app configs, its own ZAP and its own Juice Shop.
-Nothing in the repository is edited, and containers you already run (a `zap` on 8080, a `juice`
-on 3000) are not touched. ZAP is published only on `127.0.0.1:18080`; Juice Shop is not
-published at all and is reached only through ZAP.
+The demo runs against its **own** copy of the app configs, its own ZAP and its own Juice Shop,
+on **Podman or Docker** (`scripts/ui_stack.sh` picks; see [`../podman_and_docker.md`](../podman_and_docker.md)).
+Nothing in the repository is edited. ZAP and Juice Shop are published only on `127.0.0.1`, on
+8080 and 3000, or on other ports where those are taken (step 4).
 
 **Why the scan is faster than a real one:** it uses a lighter attack. Attack strength goes from
 medium to **low**, the scan is capped at **2 minutes**, and each rule at **1 minute**. The slow
@@ -27,8 +27,12 @@ it.
 ```bash
 cd ~/Dast-Scanning-Tool
 git checkout main && git pull
-source .venv/bin/activate
+source .venv/bin/activate            # Git Bash on Windows: source .venv/Scripts/activate
 ```
+
+On a Nationwide workstation, paste the checklist's terminal setup instead
+([`../nationwide_test_checklist.md`](../nationwide_test_checklist.md)): it sets the NTR images, the
+CA bundle and `ZAP_API_KEY`, and step 9 there covers the UI's extra packages.
 
 ### 2. A demo workspace: a copy of the real configs
 
@@ -56,24 +60,17 @@ cp "$DEMO/apps/juice-shop/app.yaml" "$DEMO/juice-shop.app.yaml.start"   # for a 
 
 (This works because `scan:` is the last section of Juice Shop's `app.yaml`.)
 
-### 4. A separate ZAP and Juice Shop
+### 4. ZAP and Juice Shop, on Podman or Docker
 
 ```bash
-export ZAP_API_KEY=$(openssl rand -hex 24) DAST_ZAP_API=http://127.0.0.1:18080
-cat > "$DEMO/zap-override.yaml" <<'EOF'
-services:
-  zap:
-    ports: ["127.0.0.1:18080:18080"]
-    command: [zap.sh, -daemon, -host, 0.0.0.0, -port, "18080", -silent,
-              -config, "api.key=${ZAP_API_KEY}", -config, "api.addrs.addr.name=.*",
-              -config, api.addrs.addr.regex=true]
-EOF
-docker compose -f compose.yaml -f "$DEMO/zap-override.yaml" up -d zap juice
-curl -s -H "X-ZAP-API-Key: $ZAP_API_KEY" http://127.0.0.1:18080/JSON/core/view/version/
+# Only where 8080 or 3000 is already taken (e.g. your own ZAP or Juice Shop); otherwise skip:
+export DAST_ZAP_PORT=18080 DAST_JUICE_PORT=13000
+bash scripts/ui_stack.sh up juice
 ```
 
-- [ ] **Expect:** `{"version":"2.17.0"}`. ZAP can take up to a minute to answer; repeat the
-  `curl` until it does.
+- [ ] **Expect:** `engine: podman` (or `docker`), then `ZAP is ready.` ZAP can take up to a minute.
+  Then run the `export` line it prints, which sets `DAST_ZAP_API` (and `ZAP_API_KEY`, unless you
+  had already exported one).
 
 ### 5. The test account, the AI provider and a placeholder GitHub token
 
@@ -113,7 +110,7 @@ which `http://127.0.0.1:8796/` is enough in the same browser.
 
 | # | Do | What the audience sees (from the dry run) |
 |---|---|---|
-| D1 | Open **Overview** | ZAP **Reachable** at `http://127.0.0.1:18080`; AI provider **Available · anthropic**; 4 applications |
+| D1 | Open **Overview** | ZAP **Reachable** at `http://127.0.0.1:8080` (or the port from step 4); AI provider **Available · anthropic**; 4 applications |
 | D2 | **Onboard**: `prod-shop`, `https://shop.prod.example.com`, Test → **Continue** | Refused at once: *"shop.prod.example.com looks like a production system, so it can't be scanned. Scan a dev, test or staging copy instead."* |
 | D3 | **Onboard** again: `demo-app`, `http://demo-app.dev.local`, Development → **Continue** | Step 2, with **Hosts in scope** already filled in as `demo-app.dev.local` and a **Never touched** list to answer. The tool asks only what it can't work out. Stop here and leave the page: `demo-app` doesn't exist, so its login can't be checked (see "Known gaps") |
 | D4 | **Apps → juice-shop → Settings** | A yellow banner: *"This app's login hasn't been recorded yet."* Click **Record the login**: "Recording the login…", then **"Login recorded. You can run a scan now."** after about 10 seconds, and the banner goes. The tool signed in with the test account and saved the steps |
@@ -159,7 +156,7 @@ next time, keep it: remove `"$DEMO/out/juice-shop/scans"` instead of `"$DEMO/out
 **To clean up:** stop the UI (Ctrl+C), then:
 
 ```bash
-docker compose -f compose.yaml -f "$DEMO/zap-override.yaml" down
+bash scripts/ui_stack.sh down
 rm -rf "$DEMO"
 ```
 

@@ -118,9 +118,13 @@ shows the equivalent command for everything it runs.
 
 ```bash
 pip install -r requirements-ui.txt                       # fastapi, uvicorn, ruamel.yaml
-(cd webui/frontend && npm ci && npm run build)           # once, and after front-end changes
-python -m dast ui                                        # prints a one-time link and opens it
+bash scripts/ui_stack.sh ui juice                        # ZAP + Juice Shop on Podman or Docker, then the UI
 ```
+
+The front end is committed (`webui/frontend/dist`), so no Node is needed to run it; after changing
+it, rebuild with `cd webui/frontend && npm ci && npm run build` and commit the result (CI checks).
+`scripts/ui_stack.sh` picks Podman or Docker; on a Nationwide workstation follow step 9 of
+`docs/nationwide_test_checklist.md`. Details: `docs/podman_and_docker.md`.
 
 - **This machine only.** It listens on 127.0.0.1, answers only to its own address, and needs
   the one-time link it prints (a fresh one each start). Every change needs a CSRF token.
@@ -142,7 +146,7 @@ before the code was written (`tests/ui/`, `webui/frontend/tests/`, `webui/fronte
 ## Prerequisites
 
 - Python 3.11+ (3.12 used; macOS ships 3.9 — `brew install python@3.12`)
-- Docker (or Podman) — for ZAP + the pilot app (OWASP Juice Shop)
+- Docker or Podman — for ZAP + the pilot app (OWASP Juice Shop); see `docs/podman_and_docker.md`
 - `pip install -r requirements-dev.txt` then `python -m playwright install chromium`
 
 ## Run it

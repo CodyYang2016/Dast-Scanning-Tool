@@ -21,6 +21,50 @@ from pathlib import Path
 from webui.audit import now
 from webui.secret_refs import mask
 
+def _windows() -> bool:
+    return os.name == "nt"
+
+
+# A job runs in its own process group so a stop reaches dast and the browser it started. POSIX:
+# a new session, then signals to the group. Windows has no killpg: a new process group, then
+# CTRL_BREAK_EVENT (what Ctrl+Break sends), then kill.
+_CREATE_NEW_PROCESS_GROUP = 0x00000200
+_CTRL_BREAK_EVENT = 1
+
+
+def _spawn_kwargs() -> dict:
+    return {"creationflags": _CREATE_NEW_PROCESS_GROUP} if _windows() else {"start_new_session": True}
+
+
+def _interrupt(proc) -> None:
+    try:
+        if _windows():
+            proc.send_signal(_CTRL_BREAK_EVENT)
+        else:
+            os.killpg(proc.pid, signal.SIGINT)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+
+
+def _kill(proc) -> None:
+    if _windows():
+        # The whole tree: dast, and the browser or Python it started (proc.kill() alone ends
+        # only the top process, which can leave a child holding the output pipe open).
+        try:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+
+
 # What to do about each kind of refusal the runner records in its `abort` event (UI-8).
 FIXES = {
     "PreflightError": "Check the app's environment and hosts. A test or staging host must be "
@@ -120,13 +164,15 @@ class JobManager:
         env = self.config.job_env()
         env["DAST_ACTOR"] = actor
         env.update(env_extra or {})
+        env.setdefault("PYTHONIOENCODING", "utf-8")   # dast prints "—" and "…"; Windows' default is cp1252
         scans = self.config.out_dir / app / "scans"
         job.scans_dir = scans
         job.scans_before = set(p.name for p in scans.iterdir()) if scans.is_dir() else set()
         job.proc = subprocess.Popen([self.config.python, "-m", "dast", *argv],
                                     cwd=self.config.repo_root, env=env, text=True, bufsize=1,
+                                    encoding="utf-8", errors="replace",
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                    start_new_session=True)
+                                    **_spawn_kwargs())
         threading.Thread(target=self._follow, args=(job,), daemon=True).start()
         threading.Thread(target=self._watch_scan, args=(job,), daemon=True).start()
         return job
@@ -221,10 +267,7 @@ class JobManager:
         job.find_scan()
         job.status = "stopped"
         job.stopped_by = actor
-        try:
-            os.killpg(job.proc.pid, signal.SIGINT)
-        except (ProcessLookupError, PermissionError):
-            pass
+        _interrupt(job.proc)
         env = self.config.job_env()
         env["DAST_ACTOR"] = actor
         subprocess.run([self.config.python, "-m", "dast", "stop", job.app_id,
@@ -234,7 +277,4 @@ class JobManager:
         while job.proc.poll() is None and time.monotonic() < deadline:
             time.sleep(0.1)
         if job.proc.poll() is None:
-            try:
-                os.killpg(job.proc.pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                pass
+            _kill(job.proc)

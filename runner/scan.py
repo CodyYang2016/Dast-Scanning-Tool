@@ -260,7 +260,8 @@ def _poll_until_done(zap_api: str, view_path: str, scan_id: str, poll_s: float,
             if failures >= _MAX_CONSECUTIVE_API_FAILURES:
                 raise ZapUnavailableError(
                     f"ZAP stopped responding after {failures} consecutive failed polls "
-                    f"({exc}). The daemon may have been killed — check `docker logs zap` for "
+                    f"({exc}). The daemon may have been killed — check the ZAP container's logs "
+                    f"(`podman logs` / `docker logs`) for "
                     f"an OOM (exit 137); browser-driven rules such as DOM-XSS (40026) at high "
                     f"attack strength are the usual cause."
                 ) from exc

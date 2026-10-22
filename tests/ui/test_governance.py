@@ -22,7 +22,7 @@ def _git(ws, *args, author=None, date=None):
     if date:
         env.update(GIT_AUTHOR_DATE=date, GIT_COMMITTER_DATE=date)
     return subprocess.run(["git", "-C", str(ws.root), *args], env=env, check=True,
-                          capture_output=True, text=True).stdout
+                          capture_output=True, text=True, encoding="utf-8").stdout
 
 
 def _repo_with_history(ws):
@@ -31,13 +31,14 @@ def _repo_with_history(ws):
     _git(ws, "add", "-A")
     _git(ws, "commit", "-q", "-m", "orders-portal approved", author=GOV, date=GOV_DATE)
     path = ws.app_yaml("orders-portal")
-    path.write_text(path.read_text().replace("max_scan_min: 8", "max_scan_min: 9"), encoding="utf-8")
+    path.write_text(path.read_text(encoding="utf-8").replace("max_scan_min: 8", "max_scan_min: 9"), encoding="utf-8",
+                    newline="\n")
     _git(ws, "commit", "-q", "-am", "longer scan", author="Sec Engineer <sec@example.com>",
          date="2026-10-10T09:00:00+00:00")
 
 
 def _blame(ws, rel, needle):
-    lines = ws.root.joinpath(rel).read_text().splitlines()
+    lines = ws.root.joinpath(rel).read_text(encoding="utf-8").splitlines()
     n = next(i for i, ln in enumerate(lines, 1) if needle in ln)
     out = _git(ws, "blame", "--porcelain", "-L", f"{n},{n}", "--", rel)
     meta = dict(line.split(" ", 1) for line in out.splitlines() if " " in line and not line.startswith("\t"))
@@ -68,7 +69,7 @@ def test_gov2_gaps_cover_rules_exclusions_and_postures(api, ws):
         f = app_dir / "app.yaml"
         if not f.exists():
             continue
-        cfg = yaml.safe_load(f.read_text())
+        cfg = yaml.safe_load(f.read_text(encoding="utf-8"))
         for rule in cfg.get("scan", {}).get("policy", {}).get("disabled_rules", []):
             assert (cfg["app_id"], "disabled_rule", str(rule)) in have
         for path in cfg.get("scope", {}).get("exclude", []):

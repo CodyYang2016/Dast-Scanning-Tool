@@ -27,7 +27,7 @@ def start_job(ctx, request, app: str, kind: str, args: list[str], *, needs_zap: 
               "Start `python -m dast ui` with ZAP_API_KEY set to the key ZAP was started with.")
     if zap == "down":
         error(422, f"ZAP isn't answering at {ctx.config.zap_api}, so nothing was started.",
-              "Start ZAP (for example `docker compose up -d zap`), then try again.")
+              "Start ZAP with `bash scripts/ui_stack.sh up`, then try again.")
     actor = ctx.actor(request)
     try:
         job = ctx.jobs.start(app, kind, args, actor, env_extra=env_extra,

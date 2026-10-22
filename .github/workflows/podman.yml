@@ -1,0 +1,75 @@
+# The web UI's container path on Podman, the engine the Nationwide workstation uses.
+#
+# dast-selftest.yml covers Docker. This starts ZAP and Juice Shop the way a Podman user does
+# (scripts/ui_stack.sh with podman-compose, compose.yaml + compose.demo.yaml), then records the
+# login and runs a short scan from the host through that ZAP, exactly as the web UI's jobs do.
+name: podman
+
+on:
+  push:
+    paths:
+      - compose.yaml
+      - compose.demo.yaml
+      - scripts/**
+      - webui/**
+      - runner/**
+      - authoring/**
+      - dast.py
+      - requirements*.txt
+      - .github/workflows/podman.yml
+  pull_request:
+    paths:
+      - compose.yaml
+      - compose.demo.yaml
+      - scripts/**
+      - webui/**
+      - runner/**
+      - authoring/**
+      - dast.py
+      - requirements*.txt
+      - .github/workflows/podman.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  podman:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DAST_CONTAINER_ENGINE: podman
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - name: Install
+        run: |
+          pip install -r requirements.txt podman-compose
+          python -m playwright install --with-deps chromium
+      - name: Versions
+        run: podman --version && podman-compose --version
+      - name: Start ZAP and Juice Shop with Podman
+        run: bash scripts/ui_stack.sh up juice
+      - name: Record the login and scan through ZAP
+        run: |
+          W="$(mktemp -d)"
+          cp -r security/dast "$W/apps" && mkdir "$W/out"
+          printf '  policy:\n    attack_strength: low\n  budgets:\n    max_scan_min: 2\n    max_rule_min: 1\n' >> "$W/apps/juice-shop/app.yaml"
+          export ZAP_API_KEY="$(cat .secrets/zap-ui.key)" DAST_ZAP_API=http://127.0.0.1:8080
+          export DAST_APPS_DIR="$W/apps" DAST_OUT="$W/out" DAST_ENV_REGISTRY="$W/apps/environments.yaml"
+          export AUTH_EMAIL="ci-$(openssl rand -hex 3)@juice-sh.op" AUTH_PASSWORD="$(openssl rand -hex 10)"
+          python -m dast author juice-shop --no-llm
+          python -m dast scan juice-shop
+          run="$(ls -d "$W"/out/juice-shop/scans/* | tail -1)"
+          python -c "import json, sys; n = len(json.load(open(sys.argv[1]))); print(n, 'records'); assert n > 0" "$run/records.json"
+          python -m runner.evidence --check "$run"
+      - name: Container logs
+        if: failure()
+        run: podman-compose -f compose.yaml -f compose.demo.yaml logs --tail 80 || true
+      - name: Stop
+        if: always()
+        run: bash scripts/ui_stack.sh down
