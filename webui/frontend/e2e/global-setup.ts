@@ -34,7 +34,8 @@ export default async function globalSetup() {
     DAST_OUT: join(work, "out"),
     DAST_ENV_REGISTRY: join(work, "security/dast/environments.yaml"),
   };
-  delete (env as Record<string, string | undefined>).ANTHROPIC_API_KEY;   // deterministic: no AI
+  // Deterministic without AI — except in live runs, whose onboarding test (ONB-8) needs discovery.
+  if (!process.env.LIVE) delete (env as Record<string, string | undefined>).ANTHROPIC_API_KEY;
   const proc = spawn(python, ["-m", "dast", "ui", "--no-open", "--port", String(port)], {
     cwd: ROOT, env, stdio: ["ignore", "pipe", "pipe"], detached: false,
   });
