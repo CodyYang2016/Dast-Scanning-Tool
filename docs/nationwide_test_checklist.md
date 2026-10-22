@@ -365,6 +365,7 @@ Docker are chosen is in `docs/podman_and_docker.md`.
 | `No module named 'fastapi'` (step 9) | The UI's packages aren't installed in this venv | `python -m pip install -r requirements-ui.txt` |
 | The UI says ZAP refused its API key (step 9) | ZAP was started with another terminal's `ZAP_API_KEY` | In the terminal that runs the UI, run `bash scripts/ui_stack.sh ui juice` again: it restarts ZAP with this terminal's key |
 | `The UI hasn't been built` (step 9) | Old code | Pull again (step 0) |
+| `UnicodeDecodeError: 'charmap' codec` in `tests/ui` (step 1) | Some UI tests read files and git output with Windows' default encoding | `export PYTHONUTF8=1`, then run the tests again |
 
 ## If you need help
 

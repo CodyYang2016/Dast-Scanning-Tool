@@ -208,3 +208,18 @@ def test_compose_images_are_fully_qualified_and_unchanged():
     for svc in ("juice", "zap", "dvwa", "webgoat"):
         image = _expand_defaults(base["services"][svc]["image"])
         assert image.startswith("docker.io/") and "@sha256:" in image, (svc, image)
+
+
+@needs_bash
+def test_ui_stack_down_needs_no_exported_key(tmp_path):
+    """compose checks ZAP's required key even to stop containers (found on the Podman CI run)."""
+    stub = tmp_path / "docker"
+    stub.write_text('#!/bin/sh\n[ "$1" = info ] && exit 0\n'
+                    '[ -n "$ZAP_API_KEY" ] || { echo "ZAP_API_KEY missing" >&2; exit 1; }\nexit 0\n',
+                    encoding="utf-8")
+    stub.chmod(0o755)
+    env = {"PATH": __import__("os").environ["PATH"], "HOME": str(tmp_path), "DOCKER_BIN": str(stub),
+           "PODMAN_BIN": str(tmp_path / "none"), "PODMAN_COMPOSE_BIN": str(tmp_path / "none")}
+    r = subprocess.run([BASH, str(ROOT / "scripts" / "ui_stack.sh"), "down"], cwd=ROOT, env=env,
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stdout + r.stderr

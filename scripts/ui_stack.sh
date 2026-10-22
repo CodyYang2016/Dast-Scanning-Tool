@@ -81,6 +81,13 @@ zap_answers() {
     | grep -q '"version"'
 }
 
+# compose checks the whole file, including ZAP's required key, even to stop or list containers.
+if [ "$cmd" = down ] || [ "$cmd" = status ]; then
+  if [ -z "${ZAP_API_KEY:-}" ]; then
+    if [ -f "$key_file" ]; then ZAP_API_KEY="$(cat "$key_file")"; else ZAP_API_KEY="not-needed-to-stop"; fi
+  fi
+  export ZAP_API_KEY
+fi
 if [ "$cmd" = down ]; then run "${files[@]}" --profile dvwa down; exit 0; fi
 if [ "$cmd" = status ]; then
   run "${files[@]}" ps
