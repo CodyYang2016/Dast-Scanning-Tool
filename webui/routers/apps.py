@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 import datetime as dt
-import urllib.request
 
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from authoring import llm_backend
+from runner import zapapi
 from webui.app import error
 from webui.config_store import ConfigError
 from webui.routers.triage import suppressions_by_fp
@@ -20,15 +20,23 @@ class Changes(BaseModel):
     changes: dict
 
 
-def zap_reachable(url: str) -> bool:
+def zap_status(url: str) -> str:
+    """'ok', 'key' (answering, but refused our ZAP_API_KEY) or 'down'.
+
+    Through the runner's own keyed client: a keyed ZAP drops an unkeyed request without a word,
+    which a plain probe would misread as ZAP being down.
+    """
     try:
-        req = urllib.request.Request(url.rstrip("/") + "/JSON/core/view/version/")
-        with urllib.request.urlopen(req, timeout=1.5):
-            return True
-    except urllib.error.HTTPError:
-        return True                        # it answered: reachable, whatever it said
+        zapapi.call(url, "/JSON/core/view/version/", timeout=2.0)
+        return "ok"
+    except zapapi.ZapAuthError:
+        return "key"
     except Exception:
-        return False
+        return "down"
+
+
+def zap_reachable(url: str) -> bool:
+    return zap_status(url) == "ok"
 
 
 def router(ctx) -> APIRouter:
@@ -40,7 +48,8 @@ def router(ctx) -> APIRouter:
 
     @r.get("/system")
     def system():
-        return {"zap": {"url": ctx.config.zap_api, "reachable": zap_reachable(ctx.config.zap_api)},
+        zap = zap_status(ctx.config.zap_api)
+        return {"zap": {"url": ctx.config.zap_api, "reachable": zap == "ok", "status": zap},
                 "ai": {"provider": llm_backend.provider(), "available": llm_backend.available()}}
 
     @r.get("/secrets/{name}")

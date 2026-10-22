@@ -45,3 +45,40 @@ def test_failure_without_abort_event_is_explained(ws, zap_up):
     refusal = done["refusal"]
     assert refusal["message"].startswith("No bundle at out/orders-portal/authoring/bundle")
     assert refusal["fix"] == "Run `python -m dast author orders-portal` first."
+
+
+def test_keyed_zap_is_reachable_with_the_key_and_explained_without(ws, monkeypatch):
+    """A keyed ZAP hangs up on a request without its key (ZAP 2.17). With the right key it is
+    reachable; with the wrong one the UI says the key is the problem, not that ZAP is down."""
+    import http.server
+    import socketserver
+    import threading
+
+    class KeyedZap(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            if self.headers.get("X-ZAP-API-Key") != "right-key":
+                self.close_connection = True
+                return                          # hang up without a response, as ZAP does
+            body = b'{"version": "2.17.0"}'
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    srv = socketserver.TCPServer(("127.0.0.1", 0), KeyedZap)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{srv.server_address[1]}"
+    try:
+        monkeypatch.setenv("ZAP_API_KEY", "right-key")
+        c = logged_in(make_app(ws, zap_api=url))
+        assert c.get("/api/system").json()["zap"]["reachable"] is True
+        monkeypatch.setenv("ZAP_API_KEY", "wrong-key")
+        r = c.post("/api/apps/orders-portal/jobs", json={"command": "scan", "options": {}})
+        assert r.status_code == 422 and "API key" in r.json()["detail"]["message"]
+        assert ws.invocations() == []
+    finally:
+        srv.shutdown()
+        srv.server_close()

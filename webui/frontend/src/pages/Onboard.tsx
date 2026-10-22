@@ -36,7 +36,7 @@ export default function Onboard() {
   const navigate = useNavigate();
   const [step, setStep] = useState(0);
   const [f, setF] = useState<Form>({ app_id: "", base_url: "", environment_class: "dev", allow: "", exclude: "",
-    mode: "form", login_url: "/login", user_env: "", pass_env: "", routes: "" });
+    mode: "form", login_url: "", user_env: "", pass_env: "", routes: "" });
   const [refusal, setRefusal] = useState<ApiError | null>(null);
   const [job, setJob] = useState<Job | null>(null);
   const [message, setMessage] = useState("");
@@ -45,7 +45,7 @@ export default function Onboard() {
   const set = (k: keyof Form) => (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value });
 
   const command = `python -m dast onboard ${f.app_id || "<app>"} --base-url ${f.base_url || "<address>"} ` +
-    `--environment-class ${f.environment_class} --auth ${f.mode} --login-url ${f.login_url}`;
+    `--environment-class ${f.environment_class} --auth ${f.mode} --login-url ${f.login_url || "/login"}`;
 
   async function next() {
     setRefusal(null);
@@ -64,7 +64,7 @@ export default function Onboard() {
       } else if (step === 2) {
         const r = await api.post<{ job_id: string; mode: string; message: string }>("/api/onboard", {
           app_id: f.app_id, base_url: f.base_url, environment_class: f.environment_class, auth: f.mode,
-          login_url: f.login_url, user_env: f.user_env, pass_env: f.pass_env });
+          login_url: f.login_url || "/login", user_env: f.user_env, pass_env: f.pass_env });
         setMessage(r.message);
         setJob(await api.get<Job>(`/api/jobs/${enc(r.job_id)}`));
       }
@@ -151,7 +151,7 @@ export default function Onboard() {
                     <span className="muted">A person signs in once in a browser window.</span></label>
                 </fieldset>
                 <label className="stacked"><span>Login page</span>
-                  <input data-testid="onboard-field-auth.login_url" value={f.login_url} onChange={set("login_url")} /></label>
+                  <input data-testid="onboard-field-auth.login_url" value={f.login_url} onChange={set("login_url")} placeholder="/login" /></label>
                 <div className="cols-2">
                   <label className="stacked"><span>Test account username is kept in (variable name) <SecretStatus name={f.user_env} path="auth.credentials.email_env" /></span>
                     <input data-testid="onboard-field-auth.credentials.email_env" value={f.user_env} onChange={set("user_env")} /></label>

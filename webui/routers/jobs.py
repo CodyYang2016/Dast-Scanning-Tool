@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from webui import registry_check
 from webui.app import error
-from webui.routers.apps import zap_reachable
+from webui.routers.apps import zap_status
 
 
 class JobRequest(BaseModel):
@@ -21,7 +21,11 @@ def start_job(ctx, request, app: str, kind: str, args: list[str], *, needs_zap: 
               env_extra: dict | None = None, extra_secrets: list[str] = (), audit_event="job.start",
               audit_detail: dict | None = None, on_exit=None):
     """Start a dast job for an app, or refuse in plain words. Shared by every router that runs one."""
-    if needs_zap and not zap_reachable(ctx.config.zap_api):
+    zap = zap_status(ctx.config.zap_api) if needs_zap else "ok"
+    if zap == "key":
+        error(422, f"ZAP at {ctx.config.zap_api} refused this UI's API key, so nothing was started.",
+              "Start `python -m dast ui` with ZAP_API_KEY set to the key ZAP was started with.")
+    if zap == "down":
         error(422, f"ZAP isn't answering at {ctx.config.zap_api}, so nothing was started.",
               "Start ZAP (for example `docker compose up -d zap`), then try again.")
     actor = ctx.actor(request)
