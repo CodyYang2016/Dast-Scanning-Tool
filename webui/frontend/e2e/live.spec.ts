@@ -25,6 +25,8 @@ const runs = (app: string) => {
 };
 
 test.skip(!process.env.LIVE, "LIVE=1 runs the tests that need the semgate lab, ZAP and an AI key");
+// Real scans and AI-driven authoring take minutes, not the 60 s the config allows other tests.
+test.describe.configure({ timeout: 45 * 60_000 });
 
 test("ONB-8 semgate onboarded through the UI passes `dast author`", async ({ page }) => {
   await open(page, "/onboard");
