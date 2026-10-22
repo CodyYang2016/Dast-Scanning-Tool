@@ -1,6 +1,6 @@
 # Status and roadmap
 
-*As of 2026-10-03, `main` after PR #9 (`parallel-poc-branch` merged in). The issue-by-issue history is in
+*As of 2026-10-22, `main` after PR #12 (the web UI). The issue-by-issue history is in
 [`dast_poc_remediation_plan.md`](dast_poc_remediation_plan.md); this page is the summary.*
 
 ## Where we are
@@ -8,21 +8,26 @@
 The tool authenticates into a web application, drives OWASP ZAP to attack it within an
 enforced boundary, and publishes findings a developer can act on. It does so honestly about
 what it did *not* test. It started as a Juice Shop demo. It now onboards an application from
-one config file and is ready for a first scan of a real internal application in a shared
+one config file, and since PR #12 every persona can use it through a local web UI
+(`python -m dast ui`). It is ready for a first scan of a real internal application in a shared
 non-production environment. **No code item blocks that scan; what remains on the critical path
-is decisions.**
+is decisions** — plus the evidence-redaction fix in PR #13, which should merge first.
 
-| | Start of 2026-09-30 | 2026-10-01 | Now (2026-10-03) |
-|---|---|---|---|
-| Open register items | 43 | 15 (+ 1 effectively done) | **14** (+ 1 effectively done) |
-| Tests | 559 | 948 | **1,090** |
-| Apps onboarded (config only) | Juice Shop + 2 | same three, all re-verified live | same three, plus the semgate lab |
-| DVWA high-severity findings | 7 | 17 (10 from the new DOM-XSS pass) | **19**¹ |
-| Lifecycle "fix → re-scan → resolved" | never demonstrated | [demonstrated](proof/fix_rescan_resolved.md) | same |
+| | Start of 2026-09-30 | 2026-10-01 | 2026-10-03 | Now (2026-10-22) |
+|---|---|---|---|---|
+| Open register items | 43 | 15 (+ 1 effectively done) | 14 (+ 1 effectively done) | **14** (+ 1 effectively done) |
+| Tests | 559 | 948 | 1,090 | **1,200**² |
+| Web UI | — | — | — | **built**: all seven screens, 66 acceptance criteria |
+| Apps onboarded (config only) | Juice Shop + 2 | same three, all re-verified live | same three, plus the semgate lab | same |
+| DVWA high-severity findings | 7 | 17 (10 from the new DOM-XSS pass) | 19¹ | 19 |
+| Lifecycle "fix → re-scan → resolved" | never demonstrated | [demonstrated](proof/fix_rescan_resolved.md) | same | same |
 
 ¹ Hand-picked `record` path with the DOM-XSS pass, measured 2026-10-03. It was identical before
 and after the merge: 522 findings with the same fingerprints. The Juice Shop self-test also held
 steady: 1,351 findings over 359 routes, against 1,350 before.
+
+² 1,090 before the UI, plus 103 frozen UI acceptance tests and 7 more from the UI work; PR #13
+adds 13 for evidence redaction. The UI's front end adds 3 component and 23 browser tests.
 
 ### What it does now
 
@@ -36,6 +41,7 @@ steady: 1,351 findings over 359 routes, against 1,350 before.
 | **Session integrity** | Session re-probed during the scan. A lost session is re-established by logging in again, with ZAP's attacks pointed at the new session. The stored login comes from a secret store or an owner-only, expiring file. Login failures are one line, never a traceback |
 | **Coverage that means something** | Script-driven API writes replayed into ZAP (disposable apps). Data reset before each scan. DOM-XSS in its own bounded pass. OpenAPI import, with "N of M declared routes" |
 | **Unattended operation** | Per-run `events.jsonl` audit trail. GitHub over HTTP by token (no `gh` needed). Lint and tests on every push, plus a weekly self-test |
+| **Web UI** | `python -m dast ui`: onboarding, settings by tier, live runs with a safe stop, results, triage in the UI, publishing, governance with git-blame provenance, CI export. Local only (loopback, one-time link, CSRF, strict CSP); secrets by name. A front end to the `dast` commands — same files, and it shows the equivalent command ([`ui-docs/`](ui-docs/)) |
 | **Model provider** | Anthropic or the GitHub Copilot CLI, chosen by `LLM_PROVIDER`. `--require-llm` fails loudly instead of quietly falling back, so a misconfigured provider cannot pass for a deliberate `--no-llm` run |
 | **Exploration that gets past forms** | Can answer a question a form asks (an arithmetic gate, say), but only with a value of the shape declared in `explore.inferred_fields`; anything else is refused before it is sent. Keeps a list of links it has not followed yet, returns to pages where it saw a form, and reports whether the app accepted each submit. The semgate lab shows the difference: 3 pages without the model, 6 with it |
 | **Publishing without Advanced Security** | `dast report --issues` files findings as GitHub Issues for repositories without code scanning |
@@ -210,6 +216,16 @@ None of these can be closed by code. They have the longest lead time, so they sh
 | **W8-1** | Commit the no-LLM comparison and the live false-"fixed" incident (both only in run logs) | 0.5 |
 | **W8-3** | Screenshots/recordings; the live runbook is a rehearsal risk | 1 |
 | **W8-5** | Re-cut the demo around a user, not the architecture | 1 |
+
+### Web UI and evidence — follow-ups
+
+| Item | What | Size |
+|---|---|---|
+| **PR #13** | Evidence redaction: one redactor, redaction on capture, a check before publishing. Closes the password-in-evidence holes found in [`evidence_hosting_gap_analysis.md`](evidence_hosting_gap_analysis.md). Merge before the first internal scan | done, awaiting merge |
+| **Evidence hosting 4–5** | A scan workflow for internal apps and resolvable SARIF evidence links | 1, after the runner decision |
+| **Discovery proof (ONB-8)** | AI discovery only sees the login page, so it can't propose a sign-in check that lives on the page after login (semgate's `#whoami`). The UI says so and saves a starting point; the fix is in `authoring/discover.py` | 1 |
+| **Live UI tests in CI** | ONB-8, RUN-5 and GEN-6 run with `LIVE=1` locally; a manually started workflow was planned and not built | 0.5 |
+| **UI first-version limits** | "N of M declared routes" not computed in the UI yet; running jobs and in-progress onboarding are held in memory; ZAP is reported on, not started; roles are not enforced locally | 1 |
 
 ### Housekeeping
 
