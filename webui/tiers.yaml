@@ -10,7 +10,8 @@
 #
 # Fields: path (dotted), tier, editable (default: true for A/B, false for C/D), label, help,
 # owner, prefix (also covers everything under the path), whole (a list or free-form map edited
-# as one value), when (overrides tried in order; first match wins).
+# as one value), when (overrides tried in order; first match wins), kind (list: the value is a
+# list, so a required setting missing from app.yaml is offered as an empty list; default text).
 
 fields:
   # ── 4.1 Onboard: describe the app ─────────────────────────────────────────────────────────
@@ -20,9 +21,9 @@ fields:
      help: "As the scanner reaches it, inside the scan network."}
   - {path: environment_class, tier: A, owner: SEC, label: Environment,
      help: "dev, test or staging. Production is always refused; test and staging hosts must be in the environment registry."}
-  - {path: scope.allow, tier: A, owner: SEC, label: Hosts in scope,
+  - {path: scope.allow, tier: A, kind: list, owner: SEC, label: Hosts in scope,
      help: "The attack boundary. Exact host names."}
-  - {path: scope.exclude, tier: B, owner: SEC, label: Never touched,
+  - {path: scope.exclude, tier: B, kind: list, owner: SEC, label: Never touched,
      help: "Endpoints the scanner must never touch: mail, SMS, payments, partner calls.",
      when: [{data_policy: [durable], tier: A}]}
   - {path: scope.deny, tier: B, owner: SEC, label: Hosts always refused,
@@ -58,7 +59,7 @@ fields:
   - {path: output.dir, tier: D, owner: OPS, label: Output folder, help: "An installation setting."}
 
   # ── 4.2 Author: decide what gets tested ──────────────────────────────────────────────────
-  - {path: record.authenticated_routes, tier: A, owner: SEC, label: Pages to test,
+  - {path: record.authenticated_routes, tier: A, kind: list, owner: SEC, label: Pages to test,
      help: "At least one page that only shows when signed in."}
   - {path: explore.seed_routes, tier: B, owner: SEC, label: Where exploration starts}
   - {path: explore.budgets, tier: B, prefix: true, owner: SEC, label: Exploration limits}

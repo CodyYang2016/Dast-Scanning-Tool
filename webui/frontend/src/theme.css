@@ -253,3 +253,7 @@ dialog.dialog::backdrop { background: rgba(16, 24, 40, .35); }
 dialog.dialog > .head { display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-bottom: 1px solid var(--line); }
 dialog.dialog > .head .btn { margin-left: auto; }
 dialog.dialog > .body { padding: 18px 20px; display: grid; gap: 10px; }
+
+/* A refused value, shown under its setting (QA-4). */
+.field-error { color: var(--bad); font-size: 13px; margin-top: 6px; }
+.field [aria-invalid="true"] { border-color: var(--bad); }

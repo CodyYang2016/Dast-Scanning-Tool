@@ -94,8 +94,14 @@ export default function Results() {
                 {" "}its time limit: {d.coverage.truncated!.map((t) => t.name ? `${t.name} (${t.id})` : t.id).join(", ")}</div>}
           </Metric>
           <Metric label="Compared with last time" value="">
-            <div className="row gap-sm">{STATES.map((s) => (
-              <span key={s}><Tag kind={STATUS_TAG[s]} testid={`lifecycle-${s}`}>{d.lifecycle[s]}</Tag> {LABEL[s] ?? s}</span>))}</div>
+            {d.compared === "none"
+              ? <p className="faint" data-testid="compared-note">Not compared with an earlier run: only the latest run is compared before it’s reported.</p>
+              : <>
+                <div className="row gap-sm">{STATES.map((s) => (
+                  <span key={s}><Tag kind={STATUS_TAG[s]} testid={`lifecycle-${s}`}>{d.lifecycle[s]}</Tag> {LABEL[s] ?? s}</span>))}</div>
+                {d.compared === "preview" &&
+                  <p className="faint mt" data-testid="compared-note">Not recorded yet: publishing records this comparison.</p>}
+              </>}
           </Metric>
         </div>)}
       <div className="layout">

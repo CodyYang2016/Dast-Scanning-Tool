@@ -56,14 +56,16 @@ def create_app(config: UIConfig) -> FastAPI:
     jobs = JobManager(config)
     ctx = Context(config=config, identity=Identity(config), secrets=secrets, tiers=tiers,
                   store=ConfigStore(config.apps_dir, tiers, secrets), jobs=jobs,
-                  runs=Runs(config.out_dir, jobs), audit=AuditLog(config.audit_log))
+                  runs=Runs(config.out_dir, jobs, config.apps_dir), audit=AuditLog(config.audit_log))
     app.state.ctx = ctx
     security.install(app, config, security.Sessions(config.launch_token))
 
     @app.exception_handler(ConfigError)
     async def _config_error(_: Request, exc: ConfigError):
-        return JSONResponse({"detail": {"message": exc.message, "fix": exc.fix}},
-                            status_code=exc.status)
+        detail = {"message": exc.message, "fix": exc.fix}
+        if exc.field:
+            detail["field"] = exc.field
+        return JSONResponse({"detail": detail}, status_code=exc.status)
 
     @app.exception_handler(RequestValidationError)
     async def _bad_request(_: Request, exc: RequestValidationError):

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, ApiError, enc } from "../api";
 import { Card, Command, ErrorNote, Loading, Tag, TierBand, TitleBar, when } from "../components/ui";
@@ -33,8 +33,12 @@ function parse(original: unknown, text: string): unknown {
   return text;
 }
 
-function FieldRow({ f, draft, setDraft }: { f: SettingField; draft: Draft; setDraft: (d: Draft) => void }) {
+function FieldRow({ f, draft, setDraft, error }: {
+  f: SettingField; draft: Draft; setDraft: (d: Draft) => void; error?: ApiError | null;
+}) {
   const id = `setting-input-${f.path}`;
+  const errorId = `setting-error-${f.path}`;
+  const invalid = error ? { "aria-invalid": true, "aria-describedby": errorId } : {};
   const text = f.path in draft ? draft[f.path] : toText(f.value);
   const changed = f.path in draft;
   const multiline = Array.isArray(f.value) || (f.value !== null && typeof f.value === "object");
@@ -43,19 +47,19 @@ function FieldRow({ f, draft, setDraft }: { f: SettingField; draft: Draft; setDr
     control = <div className="value-display">{toText(f.value) || "—"}</div>;
   } else if (CHOICES[f.path]) {
     control = (
-      <select id={id} value={text} onChange={(e) => setDraft({ ...draft, [f.path]: e.target.value })}>
+      <select id={id} value={text} {...invalid} onChange={(e) => setDraft({ ...draft, [f.path]: e.target.value })}>
         {CHOICES[f.path].map(([v, l]) => <option key={v} value={v}>{l}</option>)}
       </select>);
   } else if (typeof f.value === "boolean") {
     control = (
-      <select id={id} value={text} onChange={(e) => setDraft({ ...draft, [f.path]: e.target.value })}>
+      <select id={id} value={text} {...invalid} onChange={(e) => setDraft({ ...draft, [f.path]: e.target.value })}>
         <option value="true">Yes</option><option value="false">No</option>
       </select>);
   } else if (multiline) {
-    control = <textarea id={id} value={text} rows={Math.min(8, text.split("\n").length + 1)}
+    control = <textarea id={id} value={text} {...invalid} rows={Math.min(8, text.split("\n").length + 1)}
       onChange={(e) => setDraft({ ...draft, [f.path]: e.target.value })} />;
   } else {
-    control = <input id={id} type={typeof f.value === "number" ? "number" : "text"} value={text}
+    control = <input id={id} type={typeof f.value === "number" ? "number" : "text"} value={text} {...invalid}
       onChange={(e) => setDraft({ ...draft, [f.path]: e.target.value })} />;
   }
   return (
@@ -66,6 +70,10 @@ function FieldRow({ f, draft, setDraft }: { f: SettingField; draft: Draft; setDr
       </div>
       <div className="value">
         {control}
+        {error && <div className="field-error" id={errorId} role="alert"><b>{error.message}</b>
+          {error.fix && <span> {error.fix}</span>}</div>}
+        {f.missing && <div className="help"><Tag kind="warn" testid="setting-missing">Not in app.yaml yet</Tag>
+          {" "}Required: fill it in and save to add it.</div>}
         {f.secret && (
           <div className="help">{f.secret.set
             ? <Tag kind="ok">{f.secret.name} is set</Tag>
@@ -88,6 +96,18 @@ export default function Settings() {
   const [saved, setSaved] = useState(false);
   const [job, setJob] = useState<Job | null>(null);
   const [startRefusal, setStartRefusal] = useState<ApiError | null>(null);
+  const advanced = useRef<HTMLDetailsElement>(null);
+  const worked = useRef<HTMLDetailsElement>(null);
+  // A refused change that names its setting is shown beside that setting, not only at the top (QA-4).
+  const fieldError = problem instanceof ApiError && problem.field ? problem : null;
+  useEffect(() => {
+    if (!fieldError?.field) return;
+    const tier = settings.data?.fields.find((x) => x.path === fieldError.field)?.tier;
+    if (tier === "B" && advanced.current) advanced.current.open = true;
+    if (tier === "D" && worked.current) worked.current.open = true;
+    document.getElementById(`setting-input-${fieldError.field}`)?.focus();
+  }, [fieldError, settings.data]);
+  const rowError = (path: string) => (fieldError?.field === path ? fieldError : null);
 
   useEffect(() => { setDraft({}); setDiff(null); setProblem(null); }, [app]);
 
@@ -183,16 +203,16 @@ export default function Settings() {
       {job && job.status !== "running" && !job.refusal && !job.scan_id &&
         <ErrorNote testid="refusal" error={{ message: `The job ${job.status} before a run started.`,
           fix: "Open its log from the run list, or try again." }} />}
-      <ErrorNote error={problem} />
+      <ErrorNote error={fieldError ? { message: "1 setting needs attention.", fix: "The reason is shown under it." } : problem} />
       <div className="layout mt">
         <div className="stack">
           <section className="card"><TierBand tier="A" />
-            <div className="fields">{byTier.A.map((f) => <FieldRow key={f.path} f={f} draft={draft} setDraft={setDraft} />)}</div>
+            <div className="fields">{byTier.A.map((f) => <FieldRow key={f.path} f={f} draft={draft} setDraft={setDraft} error={rowError(f.path)} />)}</div>
           </section>
           <section className="card"><TierBand tier="B" />
-            <details>
+            <details ref={advanced}>
               <summary>Advanced · {byTier.B.length} settings</summary>
-              <div className="fields">{byTier.B.map((f) => <FieldRow key={f.path} f={f} draft={draft} setDraft={setDraft} />)}</div>
+              <div className="fields">{byTier.B.map((f) => <FieldRow key={f.path} f={f} draft={draft} setDraft={setDraft} error={rowError(f.path)} />)}</div>
             </details>
           </section>
           <section className="card"><TierBand tier="C" />
@@ -209,9 +229,9 @@ export default function Settings() {
             <div className="foot">To change one of these, open a pull request on <code>app.yaml</code>; Governance reviews it there.</div>
           </section>
           <section className="card"><TierBand tier="D" />
-            <details>
+            <details ref={worked}>
               <summary>Worked out by the tool · {byTier.D.length} settings</summary>
-              <div className="fields">{byTier.D.map((f) => <FieldRow key={f.path} f={f} draft={draft} setDraft={setDraft} />)}</div>
+              <div className="fields">{byTier.D.map((f) => <FieldRow key={f.path} f={f} draft={draft} setDraft={setDraft} error={rowError(f.path)} />)}</div>
             </details>
             <div className="foot">Always on: production is refused, out-of-scope requests are blocked before they're sent, and an untested page is never reported as fixed.</div>
           </section>

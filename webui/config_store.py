@@ -27,9 +27,9 @@ SECRET_FIELDS = ("auth.credentials.email_env", "auth.credentials.password_env")
 class ConfigError(Exception):
     """A refused edit. `status` is the HTTP status; message and fix are shown as they are."""
 
-    def __init__(self, status: int, message: str, fix: str | None = None):
+    def __init__(self, status: int, message: str, fix: str | None = None, field: str | None = None):
         super().__init__(message)
-        self.status, self.message, self.fix = status, message, fix
+        self.status, self.message, self.fix, self.field = status, message, fix, field
 
 
 def _yaml() -> YAML:
@@ -80,6 +80,16 @@ def _set(doc: CommentedMap, dotted: str, value) -> None:
         node[last] = value
 
 
+def _changed_setting(exc: Exception, changes: dict) -> str | None:
+    """Which of the changed settings a validation error is about, so the page can show the error
+    beside it (QA-4): the changed path the error's location falls under, or that falls under it."""
+    where = ".".join(str(p) for p in getattr(exc, "absolute_path", None) or [])
+    if not where:
+        return next(iter(changes)) if len(changes) == 1 else None
+    matches = [c for c in changes if where == c or where.startswith(c + ".") or c.startswith(where + ".")]
+    return max(matches, key=len) if matches else None
+
+
 class ConfigStore:
     def __init__(self, apps_dir: Path, tiers: TierMap, secrets):
         self.apps_dir = Path(apps_dir)
@@ -113,6 +123,10 @@ class ConfigStore:
             if dotted in SECRET_FIELDS and isinstance(value, str):
                 entry["secret"] = self.secrets.status(value)
             fields.append(entry)
+        present = {f["path"] for f in fields}
+        for dotted, empty in self.tiers.missing_required(cfg, present):
+            fields.append({"path": dotted, "value": empty, "missing": True,
+                           **self.tiers.resolve(dotted, cfg).as_dict()})
         return {"app_id": app, "etag": etag_of(raw), "fields": fields,
                 "command": f"python -m dast scan {app}"}
 
@@ -143,7 +157,8 @@ class ConfigStore:
         except Exception as exc:                       # jsonschema.ValidationError or ValueError
             message = getattr(exc, "message", None) or str(exc).splitlines()[0]
             raise ConfigError(422, f"That change isn't valid: {message}",
-                              "Check the value's type and allowed choices.") from None
+                              "Check the value's type and allowed choices.",
+                              field=_changed_setting(exc, changes)) from None
         old_text = raw.decode("utf-8")
         diff = "".join(difflib.unified_diff(old_text.splitlines(keepends=True),
                                             new_text.splitlines(keepends=True),
