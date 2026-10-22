@@ -1,0 +1,12 @@
+{"ts": "2026-10-19T12:50:38.813318Z", "scan_id": "20261019T125049Z", "app_id": "juice-shop", "event": "preflight", "outcome": "ok", "environment_class": "dev", "allow": ["juice"], "traverse": []}
+{"ts": "2026-10-19T12:50:49.022072Z", "scan_id": "20261019T125049Z", "app_id": "juice-shop", "event": "zap_api", "open": false}
+{"ts": "2026-10-19T12:51:12.959208Z", "scan_id": "20261019T125049Z", "app_id": "juice-shop", "event": "auth", "outcome": "ok", "seeded": false}
+{"ts": "2026-10-19T12:51:13.171084Z", "scan_id": "20261019T125049Z", "app_id": "juice-shop", "event": "scan_progress", "kind": "spider", "zap_scan_id": "0", "percent": "0"}
+{"ts": "2026-10-19T12:51:34.234956Z", "scan_id": "20261019T125049Z", "app_id": "juice-shop", "event": "scan_progress", "kind": "spider", "zap_scan_id": "0", "percent": "100"}
+{"ts": "2026-10-19T12:51:34.250399Z", "scan_id": "20261019T125049Z", "app_id": "juice-shop", "event": "scan_progress", "kind": "ascan", "zap_scan_id": "0", "percent": "0"}
+{"ts": "2026-10-19T12:52:34.361445Z", "scan_id": "20261019T125049Z", "app_id": "juice-shop", "event": "scan_progress", "kind": "ascan", "zap_scan_id": "0", "percent": "38"}
+{"ts": "2026-10-19T12:53:34.467430Z", "scan_id": "20261019T125049Z", "app_id": "juice-shop", "event": "scan_progress", "kind": "ascan", "zap_scan_id": "0", "percent": "90"}
+{"ts": "2026-10-19T12:54:34.677904Z", "scan_id": "20261019T125049Z", "app_id": "juice-shop", "event": "scan_progress", "kind": "ascan", "zap_scan_id": "0", "percent": "92"}
+{"ts": "2026-10-19T12:54:59.731914Z", "scan_id": "20261019T125049Z", "app_id": "juice-shop", "event": "scan_progress", "kind": "ascan", "zap_scan_id": "0", "percent": "100"}
+{"ts": "2026-10-19T12:55:00.326965Z", "scan_id": "20261019T125049Z", "app_id": "juice-shop", "event": "zap_context", "name": "dast-1792414273099", "include": ["^https?://juice(?::\\d+)?(?:[/?#].*)?$"], "exclude": ["(?i).*logout.*", "(?i).*delete\\-account.*"]}
+{"ts": "2026-10-19T12:55:02.566996Z", "scan_id": "20261019T125049Z", "app_id": "juice-shop", "event": "scan_done", "records": 1355, "routes": 359, "blocked": 0, "health_gate": {"mode": "expect-findings", "authenticated": true, "scope_ok": true, "routes_tested": 359, "session_alive": true, "session_degraded": false, "has_high_or_medium": true, "detections": 1355, "passed": true}}

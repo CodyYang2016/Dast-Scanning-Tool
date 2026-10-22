@@ -1,0 +1,119 @@
+# Which tier every app.yaml setting falls into (docs/ui-docs/ui_requirements.md §3–§4, UI-N7).
+#
+#   A  must ask — no safe default; asked during onboarding, editable
+#   B  offer, with a default — under "Advanced", editable
+#   C  approval, not a setting — read-only in the UI; changed by review of app.yaml
+#   D  never an option — a guardrail, worked out by the tool, or an installation setting
+#
+# A setting this file doesn't list is tier C: the UI fails closed. A decision on a scan posture
+# (postures, below) changes entries here, not code.
+#
+# Fields: path (dotted), tier, editable (default: true for A/B, false for C/D), label, help,
+# owner, prefix (also covers everything under the path), whole (a list or free-form map edited
+# as one value), when (overrides tried in order; first match wins).
+
+fields:
+  # ── 4.1 Onboard: describe the app ─────────────────────────────────────────────────────────
+  - {path: app_id, tier: A, editable: false, owner: SEC, label: Application id,
+     help: "Everything is keyed by it, including its folder name, so it can't be renamed here."}
+  - {path: base_url, tier: A, owner: SEC, label: Application address,
+     help: "As the scanner reaches it, inside the scan network."}
+  - {path: environment_class, tier: A, owner: SEC, label: Environment,
+     help: "dev, test or staging. Production is always refused; test and staging hosts must be in the environment registry."}
+  - {path: scope.allow, tier: A, owner: SEC, label: Hosts in scope,
+     help: "The attack boundary. Exact host names."}
+  - {path: scope.exclude, tier: B, owner: SEC, label: Never touched,
+     help: "Endpoints the scanner must never touch: mail, SMS, payments, partner calls.",
+     when: [{data_policy: [durable], tier: A}]}
+  - {path: scope.deny, tier: B, owner: SEC, label: Hosts always refused,
+     help: "Wildcard patterns that are refused even when allowed."}
+  - {path: scope.avoid_actions, tier: B, owner: SEC, label: Actions exploration avoids,
+     help: "Words like logout or delete that exploration never clicks."}
+  - {path: scope.traverse, tier: B, owner: SEC, label: Login-only hosts,
+     help: "Single sign-on hosts the browser may visit to sign in, never attacked."}
+  - {path: auth.mode, tier: A, owner: SEC, label: How people sign in,
+     help: "form: the tool fills the login form. seeded: a person signs in once (SSO or MFA)."}
+  - {path: auth.login_url, tier: A, owner: SEC, label: Login page}
+  - {path: auth.credentials.email_env, tier: A, owner: SEC, label: Test account username is kept in,
+     help: "The name of the environment variable, never the value."}
+  - {path: auth.credentials.password_env, tier: A, owner: SEC, label: Test account password is kept in,
+     help: "The name of the environment variable, never the value."}
+  - {path: auth.steps, tier: D, editable: true, whole: true, owner: SEC, label: Login steps,
+     help: "Worked out by discovery and verified by signing in. Edit only if discovery got it wrong."}
+  - {path: auth.selectors, tier: D, editable: true, prefix: true, owner: SEC, label: Login form fields,
+     help: "Worked out by discovery. Edit only if discovery got it wrong."}
+  - {path: auth.proof, tier: D, editable: true, prefix: true, owner: SEC, label: Signed-in check,
+     help: "How the tool knows it is still signed in. Confirmed by a person during onboarding."}
+  - {path: ui.dismiss_selectors, tier: B, owner: SEC, label: Banners to dismiss}
+  - {path: auth.cookies, tier: B, whole: true, owner: SEC, label: Cookies set before signing in}
+  - {path: auth.bearer_from_cookie, tier: B, owner: SEC, label: Bearer token cookie}
+  - {path: auth.identity, tier: C, owner: GOV, label: Test account origin,
+     help: "provisioned: an account exists. self-register: the tool creates data in the app, so it needs approval."}
+  - {path: auth.bootstrap, tier: C, prefix: true, owner: GOV, label: Account self-registration}
+  - {path: data_policy, tier: C, owner: GOV, label: Data can be thrown away,
+     help: "An attestation by the app owner. It unlocks writes and data reset."}
+  - {path: auth.storage_state_ttl_hours, tier: C, owner: GOV, label: How long a saved sign-in lasts}
+  - {path: auth.storage_state, tier: D, owner: SEC, label: Where the saved sign-in is kept,
+     help: "Managed by the tool."}
+  - {path: output.dir, tier: D, owner: OPS, label: Output folder, help: "An installation setting."}
+
+  # ── 4.2 Author: decide what gets tested ──────────────────────────────────────────────────
+  - {path: record.authenticated_routes, tier: A, owner: SEC, label: Pages to test,
+     help: "At least one page that only shows when signed in."}
+  - {path: explore.seed_routes, tier: B, owner: SEC, label: Where exploration starts}
+  - {path: explore.budgets, tier: B, prefix: true, owner: SEC, label: Exploration limits}
+  - {path: explore.submit_get_forms, tier: B, owner: SEC, label: Submit search-style forms}
+  - {path: explore.test_data, tier: B, whole: true, owner: SEC, label: Values typed into forms}
+  - {path: explore.inferred_fields, tier: B, whole: true, owner: SEC, label: Fields the AI may answer,
+     help: "Each needs a strict pattern. Anything else is refused before it is sent."}
+  - {path: explore.write_mode, tier: C, owner: GOV, label: Exploration may change data,
+     help: "Scan posture SP-1."}
+  - {path: explore.safe_forms, tier: C, owner: GOV, label: Forms that may change data,
+     help: "Scan posture SP-1."}
+  - {path: api.patterns, tier: B, owner: SEC, label: API address patterns}
+
+  # ── 4.3 Scan: attack it ──────────────────────────────────────────────────────────────────
+  - {path: scan.openapi, tier: B, owner: SEC, label: API description (OpenAPI),
+     help: "The best single way to cover an API."}
+  - {path: scan.policy.attack_strength, tier: C, owner: GOV, label: How hard to test,
+     help: "A scan posture in shared environments.", when: [{environment_class: [dev], tier: B}]}
+  - {path: scan.policy.alert_threshold, tier: C, owner: GOV, label: Lowest confidence reported,
+     help: "A scan posture in shared environments.", when: [{environment_class: [dev], tier: B}]}
+  - {path: scan.policy.disabled_rules, tier: C, owner: GOV, label: Scanner rules switched off,
+     help: "Each one is a disclosed gap."}
+  - {path: scan.budgets.max_scan_min, tier: B, owner: SEC, label: Time limit for the scan (minutes)}
+  - {path: scan.budgets.max_rule_min, tier: B, owner: SEC, label: Time limit per rule (minutes)}
+  - {path: scan.throttle, tier: B, prefix: true, owner: SEC, label: Request rate}
+  - {path: scan.dom_xss, tier: B, prefix: true, owner: SEC, label: DOM-XSS pass,
+     help: "Needs about 5 GiB of memory for the scanner and up to 15 minutes on a full site."}
+  - {path: scan.reset, tier: C, prefix: true, owner: SEC, label: Reset data before scanning,
+     help: "Only for apps whose data can be thrown away.", when: [{data_policy: [disposable], tier: B}]}
+  - {path: scan.state_probes, tier: B, owner: SEC, label: Pages fingerprinted before the scan}
+  - {path: scan.liveness_path, tier: D, editable: true, owner: SEC, label: Signed-in check during the scan,
+     help: "Derived from the signed-in check."}
+  - {path: scan.reauth, tier: B, prefix: true, owner: SEC, label: Signing in again}
+  - {path: scan.anti_csrf_tokens, tier: B, owner: SEC, label: Extra anti-CSRF fields}
+
+  # ── 4.4 Report and publish ───────────────────────────────────────────────────────────────
+  - {path: publish.github.owner, tier: A, owner: SEC, label: Repository owner}
+  - {path: publish.github.repo, tier: A, owner: SEC, label: Repository}
+  - {path: publish.github.ref, tier: A, owner: SEC, label: Deployed ref}
+  - {path: publish.github.commit, tier: A, owner: SEC, label: Deployed commit}
+  - {path: publish.github.category, tier: D, owner: SEC, label: Report category,
+     help: "dast/<app>. Two apps sharing one would overwrite each other's alerts."}
+  - {path: publish.evidence_url, tier: D, owner: OPS, label: Evidence link}
+  - {path: gate.fail_on, tier: C, owner: GOV, label: Fail the build at,
+     help: "Policy: the person being gated shouldn't be the one lowering the bar."}
+
+# Scan postures (ui_requirements.md §8 Q5). Undecided postures keep their settings at tier C.
+postures:
+  - {id: SP-1, title: Exploration may submit forms that change data, decided: false,
+     paths: [explore.write_mode, explore.safe_forms]}
+  - {id: SP-1a, title: "W4-8: ZAP's attack phase reaches data-changing requests", decided: false,
+     paths: [scope.exclude]}
+  - {id: SP-2, title: How long a scan may run, decided: false, paths: [scan.budgets]}
+  - {id: SP-3, title: DOM-XSS check (rule 40026), decided: false, paths: [scan.dom_xss]}
+  - {id: SP-4, title: How the scanner learns what to attack, decided: false, paths: [scan.openapi]}
+  - {id: SP-5, title: Signing in again during a long scan, decided: true, paths: [scan.reauth]}
+  - {id: SP-6, title: Out-of-band (blind) vulnerabilities not tested, decided: false, paths: []}
+  - {id: SP-7, title: One user reaching another user's data not tested, decided: false, paths: []}

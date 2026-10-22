@@ -33,6 +33,11 @@ def _clean(value):
 class EventLog:
     def __init__(self, app_id: str = "", scan_id: str = ""):
         self.context = {"scan_id": scan_id, "app_id": app_id}
+        # Who started this run (UI-N4): the web UI passes its user in DAST_ACTOR. A run started by
+        # hand or by CI has none, and its events say nothing rather than guessing.
+        actor = os.environ.get("DAST_ACTOR")
+        if actor:
+            self.context["actor"] = actor
         self.path = None
         self._pending: list[dict] = []
         self.count = 0

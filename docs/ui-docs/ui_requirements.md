@@ -6,7 +6,7 @@ everything the tool exposes today: 4 commands with about 30 flags, about 60 `app
 about 30 environment variables. §8 records the decisions taken on the original open questions,
 and the scan postures that are still pending.*
 
-*Mockups of these screens, in three visual styles, are in [`README.md`](README.md). Style 2,
+*Built: `python -m dast ui` (see the main README). Mockups of these screens, in three visual styles, are in [`README.md`](README.md). Style 2,
 "Enterprise workspace", is the chosen direction (§8 Q1).*
 
 ## 1. Purpose

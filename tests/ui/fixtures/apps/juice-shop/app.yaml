@@ -1,0 +1,93 @@
+# OWASP Juice Shop — the pilot application.
+#
+# Everything app-specific lives here; onboarding another application means adding a directory
+# with a file like this one, never editing authoring/ or runner/ (enforced by
+# tests/test_no_app_specifics.py). Validated against contracts/app.schema.json.
+
+app_id: juice-shop
+environment_class: dev            # preflight refuses prod outright (D3); no default anywhere
+base_url: http://juice:3000       # as ZAP resolves it on the compose network (D7)
+
+scope:
+  allow: [juice]                  # may be reached AND attacked
+  deny: ["*.google-analytics.com"]
+  avoid_actions: [logout, delete-account]
+
+auth:
+  mode: form
+  login_url: /#/login
+  # Shorthand for the usual single-step form. An app with a username field, a two-page login
+  # or a keypress uses `steps:` instead — both normalize to the same step list.
+  selectors:
+    email: "#email"
+    password: "#password"
+    submit: "#loginButton"
+  # How we prove the session is real — exactly one mode, no default. Juice Shop is an SPA that
+  # stores a JWT in localStorage, so a JS expression is the honest check. A cookie-session app
+  # uses `route:` (an authenticated page must answer and not bounce to the login form) and one
+  # with neither uses `selector:` (a logged-in-only element).
+  proof:
+    js: "window.localStorage.getItem('token')"
+  # Juice Shop lets anyone register, so the recorder creates its own throwaway account. Most
+  # real applications do not — they use a provisioned test identity and omit `bootstrap`.
+  identity: self-register
+  bootstrap:
+    method: POST
+    path: /api/Users/
+    body:
+      securityQuestion: {id: 1}
+      securityAnswer: dast
+  credentials:                    # names only, never values (NFR-3)
+    email_env: AUTH_EMAIL
+    password_env: AUTH_PASSWORD
+  storage_state: .secrets/storageState.json
+  # The session is a JWT held both as the `token` cookie and as `Authorization: Bearer`. If the
+  # scan has to log in again mid-scan (W5-2), ZAP's attacks get the new token both ways.
+  bearer_from_cookie: token
+
+ui:
+  # Juice Shop's welcome banner and cookie bar sit over the login form. A new application
+  # inherits none of these.
+  dismiss_selectors:
+    - "button[aria-label='Close Welcome Banner']"
+    - "a[aria-label='dismiss cookie message']"
+    - ".cc-btn"
+
+record:
+  # Visited after login so the SPA fires its authenticated XHR, which is what ZAP records.
+  authenticated_routes: ["/#/basket"]
+
+api:
+  patterns: ["/rest/", "/api/"]
+
+explore:
+  seed_routes:
+    - "/#/basket"
+    - "/#/order-history"
+    - "/#/search?q=apple"
+    - "/#/privacy-security/privacy-policy"
+    - "/rest/products/1/reviews"
+  safe_forms: []                  # read-only exploration until SP-1 is settled per app
+  budgets:
+    max_pages: 12
+
+# Where findings are filed: the APPLICATION's repository, at the build that was scanned — not this
+# tool's repo, whose branches describe the scanner (W1-8). GitHub only accepts a commit that exists
+# in the repo you upload to, so Juice Shop's results go to a fork of Juice Shop. The pinned image
+# (versions.lock) reports itself as v20.2.0, which is upstream commit 5658473; the fork's
+# `deployed/v20.2.0` branch points there. Pinning the commit here is right only because the image
+# is pinned — an app that is redeployed should pass --commit/$DAST_TARGET_COMMIT per run instead.
+# Publishing still needs an explicit `dast report juice-shop --upload`.
+publish:
+  github:
+    owner: CodyYang2016
+    repo: juice-shop
+    ref: refs/heads/deployed/v20.2.0
+    commit: 5658473cf8814459bf89000ce373b20ed0b4eb37
+    category: dast/juice-shop
+
+scan:
+  # Juice Shop proves login from localStorage, which a probe cannot read. /rest/user/whoami answers
+  # with the user when the session's `token` cookie is valid and {"user":{}} when it is not —
+  # the signal the liveness check needs while ZAP attacks (W5-1).
+  liveness_path: /rest/user/whoami

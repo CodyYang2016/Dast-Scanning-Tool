@@ -1,0 +1,43 @@
+# orders-portal — a fixture: an internal app in a shared test environment whose data is durable.
+#
+# Used by the UI tests for the tiers that depend on the environment and the data policy.
+app_id: orders-portal
+environment_class: test           # shared test environment; registered in the fixture registry
+base_url: https://orders.test.example.internal
+data_policy: durable              # nobody has attested this data can be thrown away
+scope:
+  allow: [orders.test.example.internal]
+  exclude:                        # never touched: they reach real people or partners
+    - /api/notify/email
+    - /api/payments/
+auth:
+  mode: form
+  login_url: /login
+  steps:
+    - {action: fill, selector: "input#username", value: identifier}
+    - {action: fill, selector: "input#password", value: secret}
+    - {action: click, selector: "button[type=submit]"}
+  proof:
+    route:
+      path: /account/orders
+      forbid_redirect_to: /login
+  identity: provisioned
+  credentials:
+    email_env: ORDERS_PORTAL_USER
+    password_env: ORDERS_PORTAL_PASS
+record:
+  authenticated_routes:
+    - /account/orders
+    - /account/profile
+scan:
+  policy:
+    attack_strength: medium
+    alert_threshold: medium
+    disabled_rules: ["40026"]
+  budgets:
+    max_scan_min: 8
+  throttle:
+    threads_per_host: 2
+    delay_ms: 200
+gate:
+  fail_on: high

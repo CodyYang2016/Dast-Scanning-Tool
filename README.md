@@ -109,6 +109,36 @@ like, the failure modes each onboarded app actually hit, and the three configs s
 and the runner are unchanged. See `security/dast/juice-shop/app.yaml` for a worked example and
 `docs/dast_poc_remediation_plan.md` for where this is going.
 
+## The web UI
+
+The same loop, without the command line: onboarding, settings, scans, results, triage,
+governance and CI export, in a local browser UI (`docs/ui-docs/`). It is a front end to the
+`dast` commands — it reads and writes the same `app.yaml`, `suppressions.yaml` and `out/`, and
+shows the equivalent command for everything it runs.
+
+```bash
+pip install -r requirements-ui.txt                       # fastapi, uvicorn, ruamel.yaml
+(cd webui/frontend && npm ci && npm run build)           # once, and after front-end changes
+python -m dast ui                                        # prints a one-time link and opens it
+```
+
+- **This machine only.** It listens on 127.0.0.1, answers only to its own address, and needs
+  the one-time link it prints (a fresh one each start). Every change needs a CSRF token.
+- **Secrets by name.** The UI stores and shows only the names of the variables that hold
+  credentials and tokens. Set them in the shell you start it from; their values are masked out
+  of every log it shows.
+- **What you may change depends on the setting's tier** (`webui/tiers.yaml`): required and
+  optional settings are editable; settings that change what a scan may do are read-only and
+  show who approved them, from `git blame` — change them by pull request.
+- **ZAP is an installation setting.** Point the UI at it with `DAST_ZAP_API`
+  (default `http://localhost:8080`); scans and authoring refuse to start if it isn't answering.
+- `DAST_APPS_DIR`, `DAST_OUT` and `DAST_ENV_REGISTRY` move the configs, the output and the
+  registry, for the UI and the CLI alike.
+
+Requirements and decisions: `docs/ui-docs/ui_requirements.md`. Acceptance criteria and the API
+contract: `docs/ui-docs/ui_acceptance_criteria.md` — every one is an automated test, frozen
+before the code was written (`tests/ui/`, `webui/frontend/tests/`, `webui/frontend/e2e/`).
+
 ## Prerequisites
 
 - Python 3.11+ (3.12 used; macOS ships 3.9 — `brew install python@3.12`)
@@ -248,7 +278,7 @@ python -m detections.lifecycle_diff out/records.json --app-id juice-shop \
 
 ```bash
 pip install -r requirements-dev.txt
-pytest -q          # 1,090 tests
+pytest -q          # 1,195 tests, including the 103 web UI acceptance tests
 ```
 
 Testing philosophy is **objective / test-first**: expectations are anchored to independent

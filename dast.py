@@ -38,7 +38,9 @@ from authoring import appconfig, llm_backend
 
 ROOT = Path(__file__).resolve().parent
 
-_DEFAULT_ZAP = "http://localhost:8080"
+# Where ZAP answers. $DAST_ZAP_API lets a caller that runs the plain commands (the web UI runs
+# exactly `dast scan <app>`) point every one of them at a ZAP somewhere else.
+_DEFAULT_ZAP = os.environ.get("DAST_ZAP_API") or "http://localhost:8080"
 
 
 # ---- where things live (one predictable layout per app) ---------------------------------
@@ -212,7 +214,7 @@ scope:
 
 auth:
   mode: {mode}
-  login_url: /login           # TODO the login page
+  login_url: {login_url}           # TODO check: the login page
   # Either this three-field shorthand...
   selectors:
     email: "input[name=username]"     # TODO the identifier field (email, username, employee id)
@@ -306,12 +308,12 @@ def _write_skeleton(args, path) -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(SKELETON.format(
         app_id=args.app, base_url=args.base_url, host=host, mode=args.auth,
-        environment_class=args.environment_class,
+        environment_class=args.environment_class, login_url=getattr(args, "login_url", "/login"),
         app_env=args.app.replace("-", "_").upper(),
     ), encoding="utf-8")
     print(f"wrote {display(path)}")
     try:
-        appconfig.load_app_config(args.app)
+        appconfig.load_app_config(str(path))
         print("config is already schema-valid; fill in the TODOs, then: "
               f"dast author {args.app}")
     except Exception as exc:
@@ -320,7 +322,9 @@ def _write_skeleton(args, path) -> int:
 
 
 def cmd_onboard(args) -> int:
-    path = appconfig.app_config_path(args.app)
+    # --config-out stages the config somewhere else (the web UI keeps it there until a person has
+    # confirmed the login proof); without it the config goes where every other command reads it.
+    path = Path(args.config_out) if args.config_out else appconfig.app_config_path(args.app)
     if path.exists() and not args.force:
         print(f"{path} already exists (use --force to overwrite)", file=sys.stderr)
         return 2
@@ -738,6 +742,12 @@ def cmd_explain(args) -> int:
 
 # ---- argument surface ----------------------------------------------------------------------
 
+def cmd_ui(args) -> int:
+    """The local web UI (docs/ui-docs/ui_requirements.md). Loopback only; see webui/server.py."""
+    from webui import server
+    return server.main(args.port, open_browser=not args.no_open)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="dast", description=__doc__.split("\n")[0])
     sub = p.add_subparsers(dest="command", required=True)
@@ -762,6 +772,9 @@ def build_parser() -> argparse.ArgumentParser:
     o.add_argument("--model", default=None,
                    help="model id (default depends on LLM_PROVIDER: anthropic or copilot)")
     o.add_argument("--headed", action="store_true", help="Watch the verification log in")
+    o.add_argument("--config-out", default=None,
+                   help="Write the config here instead of security/dast/<app>/app.yaml "
+                        "(to review before it goes live)")
     o.set_defaults(func=cmd_onboard)
 
     a = common(sub.add_parser("author", help="record (or seed+explore) -> generate -> validate"))
@@ -784,6 +797,11 @@ def build_parser() -> argparse.ArgumentParser:
                         "deliberately vulnerable targets, where finding nothing means the "
                         "scanner is broken. Default is a health gate only")
     s.set_defaults(func=cmd_scan)
+
+    u = sub.add_parser("ui", help="open the local web UI (this machine only)")
+    u.add_argument("--port", type=int, default=8765)
+    u.add_argument("--no-open", action="store_true", help="print the link instead of opening a browser")
+    u.set_defaults(func=cmd_ui)
 
     st = common(sub.add_parser("stop", help="stop ZAP's spider and active scan now"))
     st.add_argument("--zap-api", default=_DEFAULT_ZAP)

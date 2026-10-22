@@ -28,12 +28,22 @@ _ROOT = Path(__file__).resolve().parent.parent
 _APP_SCHEMA = _ROOT / "contracts" / "app.schema.json"
 _APPS_DIR = _ROOT / "security" / "dast"
 
+
+def apps_dir() -> Path:
+    """Where app configs live: $DAST_APPS_DIR, else security/dast in this checkout.
+
+    Read on every call, not at import: one process (a test, or a UI serving a config repository
+    kept elsewhere) may point it somewhere else after this module is loaded.
+    """
+    override = os.environ.get("DAST_APPS_DIR")
+    return Path(override) if override else _APPS_DIR
+
 _CONFIG_FILENAME = "app.yaml"
 
 
 def app_config_path(app_id: str) -> Path:
     """Conventional location of an application's config."""
-    return _APPS_DIR / app_id / _CONFIG_FILENAME
+    return apps_dir() / app_id / _CONFIG_FILENAME
 
 
 def load_app_config(path_or_app_id: str) -> dict:
@@ -55,15 +65,25 @@ def load_app_config(path_or_app_id: str) -> dict:
     if not isinstance(cfg, dict):
         raise ValueError(f"app config {path} must be a mapping, got {type(cfg).__name__}")
 
+    validate_app_config(cfg, source=f"app config {path}")
+    return cfg
+
+
+def validate_app_config(cfg: dict, source: str = "app config") -> None:
+    """Raise unless `cfg` meets contracts/app.schema.json and the checks the schema can't express.
+
+    Raises jsonschema.ValidationError when off-contract (an unknown key included) and ValueError
+    for an `explore.inferred_fields` pattern that is not a valid regular expression. Shared by
+    load_app_config and anything that edits a config before writing it (the web UI).
+    """
     import json  # local: only needed to read the committed schema
     jsonschema.validate(cfg, json.loads(_APP_SCHEMA.read_text(encoding="utf-8")))
     for name, field in cfg.get("explore", {}).get("inferred_fields", {}).items():
         try:
             re.compile(field.get("pattern", ""))
         except re.error as exc:
-            raise ValueError(f"app config {path}: explore.inferred_fields.{name}.pattern is "
+            raise ValueError(f"{source}: explore.inferred_fields.{name}.pattern is "
                              f"not a valid regular expression: {exc}") from exc
-    return cfg
 
 
 # ---- derived artifacts: the config is the single source, nothing else is authored --------
@@ -357,7 +377,7 @@ def gate_fail_on(cfg: dict) -> str | None:
 
 def suppressions_path(app_id: str) -> Path:
     """security/dast/<app>/suppressions.yaml — reviewed triage decisions (W1-5)."""
-    return _APPS_DIR / app_id / "suppressions.yaml"
+    return apps_dir() / app_id / "suppressions.yaml"
 
 
 def scan_reset(cfg: dict) -> dict | None:

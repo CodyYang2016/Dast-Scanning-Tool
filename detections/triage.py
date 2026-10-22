@@ -51,7 +51,8 @@ def _expired(entry: dict, today: dt.date) -> bool:
 
 def apply(records, suppressions, today: dt.date) -> list[dict]:
     """A copy of `records` with active suppressions applied. Pure; inputs are not mutated."""
-    by_fp = {s["fingerprint"]: s for s in suppressions}
+    # A proposal is a suggestion awaiting approval, not a decision: it never changes a record.
+    by_fp = {s["fingerprint"]: s for s in suppressions if s.get("status", "approved") == "approved"}
     out = []
     for rec in records:
         entry = by_fp.get(rec.get("fingerprint"))
@@ -123,6 +124,9 @@ def from_github(alerts, records, existing, today: dt.date) -> dict:
             "endpoint": rec.get("endpoint"),
             "parameter": rec.get("parameter"),
             "github_alert": alert.get("number"),
+            # Triage happens in the UI (ui_requirements.md §8 Q4): a GitHub dismissal is only a
+            # suggestion until someone approves it there.
+            "status": "proposed",
         }
         if who:
             entry["owner"] = who

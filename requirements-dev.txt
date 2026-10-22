@@ -1,5 +1,6 @@
 # Dev/test dependencies. Includes runtime deps.
--r requirements.txt
+-r requirements-ui.txt
+httpx==0.28.1        # FastAPI's test client (UI acceptance tests)
 pytest>=8
 ruff==0.16.9
 pre-commit==4.6.2
