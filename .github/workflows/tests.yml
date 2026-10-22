@@ -33,6 +33,23 @@ jobs:
         run: |
           for f in *.sh scripts/*.sh; do bash -n "$f"; done
 
+  windows:
+    # The same suite on Windows, the Nationwide workstation's OS: the UI's job handling, file
+    # paths and encodings. Browser tests stay on Linux (ui-e2e).
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - name: Install dev dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Tests
+        run: python -m pytest -q
+
   ui-frontend:
     # The web UI's front end: types, the frozen component tests, and a production build.
     runs-on: ubuntu-latest
