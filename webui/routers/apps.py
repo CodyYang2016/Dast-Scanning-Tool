@@ -43,6 +43,13 @@ def router(ctx) -> APIRouter:
         return {"zap": {"url": ctx.config.zap_api, "reachable": zap_reachable(ctx.config.zap_api)},
                 "ai": {"provider": llm_backend.provider(), "available": llm_backend.available()}}
 
+    @r.get("/secrets/{name}")
+    def secret_status(name: str):
+        """Whether a variable is set, for the onboarding wizard. Never its value (UI-4)."""
+        if not ctx.secrets.valid_name(name):
+            error(422, f"{name!r} isn't a valid environment variable name.")
+        return ctx.secrets.status(name)
+
     @r.get("/apps")
     def apps():
         out = []

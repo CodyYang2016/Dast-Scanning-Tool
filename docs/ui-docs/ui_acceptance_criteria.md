@@ -168,6 +168,7 @@ list of `{id, title, decided, paths}`. A field the mapping doesn't list is tier 
 | `GET /auth?token=` | launch token | 303 to `/` with `Set-Cookie: dast_session=…`; 401 if reused or wrong |
 | `GET /api/session` | — | `{actor, csrf_token}` |
 | `GET /api/system` | — | `{zap: {url, reachable}, ai: {provider, available}}` |
+| `GET /api/secrets/{name}` | — | `{name, set}` — whether a variable is set, never its value (added in Stage 3 for the onboarding wizard) |
 
 Every state-changing call sends `X-CSRF-Token: <csrf_token>`.
 
