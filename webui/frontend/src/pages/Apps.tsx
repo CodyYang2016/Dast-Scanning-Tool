@@ -30,14 +30,14 @@ export default function Apps({ purpose }: { purpose: "apps" | "runs" | "findings
                   <td><b>{a.app_id}</b> <span className="faint">{a.environment_class}</span></td>
                   <td className="mono">{a.base_url}</td>
                   <td>{run ? <Tag kind={STATUS_TAG[run.status] ?? "d"}>{run.status}</Tag> : "never scanned"}</td>
-                  <td className="row gap-sm">
+                  <td><div className="row gap-sm">
                     {purpose === "apps" && <Link to={`${base}/settings`}>Settings</Link>}
                     {purpose === "automate" && <Link to={`${base}/automate`}>Get workflow</Link>}
                     {(purpose === "runs" || purpose === "apps") && run &&
                       <Link to={`${base}/runs/${enc(run.scan_id)}/progress`}>Run {run.scan_id}</Link>}
                     {(purpose === "findings" || purpose === "apps") && run &&
                       <Link to={`${base}/runs/${enc(run.scan_id)}/results`}>Results</Link>}
-                  </td>
+                  </div></td>
                 </tr>);
             })}</tbody>
           </table></div>)}

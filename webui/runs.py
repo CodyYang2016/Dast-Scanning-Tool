@@ -101,6 +101,9 @@ class Runs:
                 "routes_tested": len(cov.get("routes") or []),
                 "rules": len(cov.get("rules") or []),
                 "truncated_rules": cov.get("truncated_rules") or [],
+                # The same rules with the names ZAP gave them, for people (QA-11).
+                "truncated": [{"id": rid, "name": ((cov.get("rule_outcomes") or {}).get(rid) or {}).get("name")}
+                              for rid in cov.get("truncated_rules") or []],
                 "excluded": cov.get("excluded") or [],
                 "declared": None, "exercised": None,
                 "session": cov.get("session"),

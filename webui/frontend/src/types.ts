@@ -19,6 +19,7 @@ export interface RunDetail {
   scan_id: string; status: string;
   counts: Record<Severity, number>; lifecycle: Record<Lifecycle, number>;
   coverage: { routes_tested: number; rules: number; truncated_rules: string[]; excluded: string[];
+              truncated?: { id: string; name: string | null }[];
               declared: number | null; exercised: number | null };
 }
 export interface SuppressionInfo { reason: string; status: string; expires: string | null; expired: boolean }

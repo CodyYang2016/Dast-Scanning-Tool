@@ -44,14 +44,20 @@ export default function Finding() {
         <div className="stack">
           <Card title="What the scanner saw">
             <div className="fields">
-              <div className="field"><div className="label"><b>Input that's vulnerable</b></div>
-                <div className="value value-display" data-testid="finding-parameter">{d.parameter ?? "—"}</div></div>
-              <div className="field"><div className="label"><b>What was sent</b></div>
-                <div className="value value-display" data-testid="finding-attack">{d.attack ?? "—"}</div></div>
-              <div className="field"><div className="label"><b>What came back</b></div>
-                <div className="value value-display" data-testid="finding-evidence">{d.evidence ?? "—"}</div></div>
-              <div className="field"><div className="label"><b>Request</b></div>
-                <div className="value value-display">{d.request_line ?? "—"}</div></div>
+              {/* Passive checks (headers, cookies) send nothing to an input: say so, rather than three dashes. */}
+              {!d.parameter && !d.attack && !d.evidence
+                ? <p className="body muted" data-testid="finding-passive-note">A passive check: the scanner read the
+                    response; nothing was sent to an input.</p>
+                : <>
+                  {d.parameter && <div className="field"><div className="label"><b>Input that's vulnerable</b></div>
+                    <div className="value value-display" data-testid="finding-parameter">{d.parameter}</div></div>}
+                  {d.attack && <div className="field"><div className="label"><b>What was sent</b></div>
+                    <div className="value value-display" data-testid="finding-attack">{d.attack}</div></div>}
+                  {d.evidence && <div className="field"><div className="label"><b>What came back</b></div>
+                    <div className="value value-display" data-testid="finding-evidence">{d.evidence}</div></div>}
+                </>}
+              {d.request_line && <div className="field"><div className="label"><b>Request</b></div>
+                <div className="value value-display">{d.request_line}</div></div>}
             </div>
           </Card>
           <Card title="How to fix it">

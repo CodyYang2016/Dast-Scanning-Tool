@@ -159,7 +159,7 @@ tr.sel td { background: var(--primary-soft); }
 .tl p { font-size: 13px; color: var(--muted); margin-top: 4px; }
 
 /* ── Help panel ──────────────────────────────────────────── */
-.help-panel { position: sticky; top: 20px; display: grid; gap: 16px; }
+.help-panel { position: sticky; top: 20px; display: grid; gap: 16px; max-height: calc(100vh - 40px); overflow-y: auto; }
 .help-panel .card .body { display: grid; gap: 10px; font-size: 13px; color: var(--muted); }
 .help-panel h3 { color: var(--ink); }
 .legend { display: grid; gap: 8px; }
@@ -189,7 +189,7 @@ details[open] summary::after { content: "Hide"; }
 
 @media (max-width: 900px) {
   .layout, .cols-2, .cols-3, .tiles, .timeline { grid-template-columns: 1fr; }
-  .help-panel { position: static; }
+  .help-panel { position: static; max-height: none; overflow-y: visible; }
   .field { grid-template-columns: 1fr; gap: 6px; }
   .appbar { padding: 0 16px; gap: 12px; height: auto; flex-wrap: wrap; }
   .appbar nav { overflow-x: auto; max-width: 100%; height: 48px; }
@@ -242,3 +242,14 @@ table.findings td:last-child { white-space: nowrap; }
 /* Narrow side panels: long host names wrap rather than hiding the next column. */
 .help-panel td.mono { overflow-wrap: anywhere; }
 .help-panel td { padding-left: 12px; padding-right: 12px; }
+
+/* ── Dialog (QA-7) ───────────────────────────────────────── */
+dialog.dialog {
+  border: 1px solid var(--line); border-radius: var(--radius); padding: 0; background: var(--surface);
+  color: var(--ink); box-shadow: 0 12px 32px rgba(16, 24, 40, .18);
+  width: min(520px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow-y: auto;
+}
+dialog.dialog::backdrop { background: rgba(16, 24, 40, .35); }
+dialog.dialog > .head { display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-bottom: 1px solid var(--line); }
+dialog.dialog > .head .btn { margin-left: auto; }
+dialog.dialog > .body { padding: 18px 20px; display: grid; gap: 10px; }
