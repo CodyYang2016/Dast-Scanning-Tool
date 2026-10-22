@@ -1,0 +1,4 @@
+# Text files are checked out with LF on every OS. On Windows, git's default (core.autocrlf=true)
+# converts to CRLF, which breaks the bash scripts in Git Bash, makes app.yaml saves rewrite every
+# line, and fails the frozen-test checksums. Binary files (images, decks) are detected as such.
+* text=auto eol=lf

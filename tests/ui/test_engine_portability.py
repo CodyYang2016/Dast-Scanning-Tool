@@ -61,6 +61,7 @@ def test_windows_jobs_start_in_their_own_group_and_stop_without_killpg(monkeypat
     assert p.calls == [("send_signal", 1), ("kill",)]                  # CTRL_BREAK_EVENT, then kill
 
 
+@pytest.mark.skipif(not hasattr(signal, "SIGKILL"), reason="POSIX signals; Windows is the test above")
 def test_posix_jobs_keep_their_session_and_process_group_signals(monkeypatch):
     from webui import jobs
     monkeypatch.setattr(jobs, "_windows", lambda: False)
@@ -69,7 +70,7 @@ def test_posix_jobs_keep_their_session_and_process_group_signals(monkeypatch):
     assert jobs._spawn_kwargs() == {"start_new_session": True}
     jobs._interrupt(_Proc())
     jobs._kill(_Proc())
-    assert sent == [(4242, signal.SIGINT), (4242, getattr(signal, "SIGKILL", 9))]
+    assert sent == [(4242, signal.SIGINT), (4242, signal.SIGKILL)]
 
 
 # ── what the UI tells people to run ───────────────────────────────────────────────────────

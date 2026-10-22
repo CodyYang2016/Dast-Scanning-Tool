@@ -27,7 +27,8 @@ def blame(repo: Path, file: Path, line: int) -> tuple[str | None, str | None]:
         return None, None
     try:
         out = subprocess.run(["git", "-C", str(repo), "blame", "--porcelain", "-L", f"{line},{line}",
-                              "--", str(rel)], capture_output=True, text=True, timeout=10)
+                              "--", str(rel)], capture_output=True, text=True, timeout=10,
+                             encoding="utf-8", errors="replace")   # not cp1252 on Windows
     except (OSError, subprocess.TimeoutExpired):
         return None, None
     if out.returncode != 0:
