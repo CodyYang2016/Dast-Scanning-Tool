@@ -59,6 +59,9 @@ points at `prepull_playwright_podman_nationwide.sh`, which also repairs the VM's
 | `DAST_IMAGE_MIRROR` | unset | Every image from this mirror, and only it (NTR only, above) |
 | `ZAP_IMAGE`, `JUICE_IMAGE`, `DVWA_IMAGE`, `WEBGOAT_IMAGE`, `RUNNER_BASE_IMAGE` | the pins in `versions.lock` | One image by hand; under the mirror when it's set |
 
+Every site setting, with Nationwide's values (NTR, Artifactory, the CA, the proxy, Copilot), is in
+[`env.example`](../env.example): `cp env.example .env`, edit it, then `source .env`.
+
 Leave `DAST_ZAP_PORT` and `DAST_JUICE_PORT` unset with the `demo_*.sh` scripts, which expect 8080
 and 3000. Set them only where those ports are taken, e.g. a workstation already running its own ZAP
 on 8080: `DAST_ZAP_PORT=18080 DAST_JUICE_PORT=13000 bash scripts/ui_stack.sh ui juice`.

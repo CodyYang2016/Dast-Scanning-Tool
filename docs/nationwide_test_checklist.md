@@ -70,6 +70,9 @@ export JUICE_IMAGE=ntr.nwie.net/docker.io/bkimminich/juice-shop    #   the mirro
 export ZAP_API_KEY=$(openssl rand -hex 24)                        # ZAP refuses API calls without it
 ```
 
+Every other setting the tool reads, with the Nationwide value where there is one, is listed in
+`env.example` at the repo root.
+
 ## 1. Python environment and offline checks (no Podman yet)
 
 ```bash
