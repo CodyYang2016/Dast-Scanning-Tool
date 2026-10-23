@@ -64,8 +64,9 @@ cd ~/poc-work/ssd-dast-tool-poc
 source .venv/Scripts/activate
 export DAST_CA_BUNDLE="$HOME/certs/nw-ca-all.pem"                 # trusted inside the runner image
 export PIP_INDEX_URL=https://art.nwie.net/artifactory/api/pypi/pypi/simple
-export ZAP_IMAGE=ntr.nwie.net/docker.io/zaproxy/zap-stable
-export JUICE_IMAGE=ntr.nwie.net/docker.io/bkimminich/juice-shop
+export DAST_IMAGE_MIRROR=ntr.nwie.net                             # every image from NTR, and only NTR
+export ZAP_IMAGE=ntr.nwie.net/docker.io/zaproxy/zap-stable         # optional once step 2's check passes:
+export JUICE_IMAGE=ntr.nwie.net/docker.io/bkimminich/juice-shop    #   the mirror line pins exact digests
 export ZAP_API_KEY=$(openssl rand -hex 24)                        # ZAP refuses API calls without it
 ```
 
@@ -95,11 +96,17 @@ Before you start: this script restarts the Podman VM and runs `wsl --shutdown`, 
 ```bash
 podman login ntr.nwie.net -u <your-nwie-userid>
 bash ./prepull_playwright_podman_nationwide.sh
+bash scripts/check_images.sh --pull                  # what NTR has, image by image
 ```
 
 **Pass:**
 - `podman login` prints `Login Succeeded!`
-- The script ends with `SUCCESS: all required demo images are cached in Podman`
+- The script ends with `SUCCESS: all required demo images are cached in Podman`. With
+  `DAST_IMAGE_MIRROR` set, the Playwright image it pulls is NTR's copy
+  (`ntr.nwie.net/mcr.microsoft.com/playwright/python:v1.62.0-jammy`), not Microsoft's registry.
+- `check_images.sh` prints `available` for each image a step needs: ZAP and Juice Shop for steps
+  3, 4 and 9, plus the runner base for steps 3 and 4. For anything `NOT FOUND`, ask the NTR team
+  to mirror the exact name it prints. Nothing is pulled from outside NTR in the meantime.
 
 ## 3. Replay: log in through Playwright and ZAP
 
@@ -348,7 +355,7 @@ Docker are chosen is in `docs/podman_and_docker.md`.
 | `403 ... files.pythonhosted.org` in the image build, or the build shows `STEP x/15` | Old code, or `PIP_INDEX_URL` points at pypi.org | Pull again, and `export PIP_INDEX_URL=https://art.nwie.net/artifactory/api/pypi/pypi/simple` |
 | `CERTIFICATE_VERIFY_FAILED` from `pip` on the host (step 1) | Host pip doesn't trust the proxy | Add `--cert "$DAST_CA_BUNDLE"` to the `pip install` command |
 | NTR pull says `unauthorized` | Not logged in to NTR | `podman login ntr.nwie.net -u <your-nwie-userid>` |
-| Juice Shop pull fails with `manifest unknown` or `not found` on `ntr.nwie.net` | NTR has no Juice Shop mirror | `unset JUICE_IMAGE` and rerun. The script falls back to the pinned Docker Hub digest. |
+| Juice Shop pull fails with `manifest unknown` or `not found` on `ntr.nwie.net` | NTR has no Juice Shop mirror | Images come from NTR only: don't unset `JUICE_IMAGE` to fall back to Docker Hub. Ask the NTR team to mirror the name `bash scripts/check_images.sh --pull` prints, or scan an internal app instead |
 | `stale 127.0.0.1:8888 proxy remains in the Podman VM` | The proxy repair didn't stick | Rerun step 2. If it still fails, send the diagnostics the script prints. |
 | `podman-compose: command not found` | Not installed in this terminal's venv | `source .venv/Scripts/activate && python -m pip install podman-compose` |
 | `address already in use` on 3000 or 8080 | A previous run is still up | `bash ./cleanup_demo_ports.sh` |
@@ -360,6 +367,8 @@ Docker are chosen is in `docs/podman_and_docker.md`.
 | `404` from the Issues API | `OWNER` or `REPO` is wrong, or the token can't see the repo | Check the spelling and the token's repository access |
 | `410: Issues has been disabled` | Issues are turned off in the repo | Settings → General → Features → Issues |
 | `403: Advanced Security must be enabled` | Expected without GitHub Advanced Security | Use step 6 instead |
+| `… isn't from ntr.nwie.net, and DAST_IMAGE_MIRROR allows nothing else` | An `*_IMAGE` variable names an image outside NTR | Use the NTR name the message prints, or unset that variable |
+| `NOT FOUND at this pin, though the image exists` (step 2) | NTR has the image, but not the pinned digest | Ask the NTR team for the exact name printed. Until then, the tag lines in Terminal setup (`ZAP_IMAGE`, `JUICE_IMAGE`) keep working |
 | `The Podman machine isn't running` (step 9) | The VM is stopped | Run step 2 again: it starts the machine and repairs the proxy |
 | `ZAP didn't answer at http://127.0.0.1:8080` (step 9) | A container from an earlier step holds the port, or ZAP is still starting | `bash ./cleanup_demo_ports.sh`, then run `bash scripts/ui_stack.sh ui juice` again |
 | `No module named 'fastapi'` (step 9) | The UI's packages aren't installed in this venv | `python -m pip install -r requirements-ui.txt` |
