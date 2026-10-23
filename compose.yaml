@@ -10,7 +10,8 @@ name: ssd-dast-poc
 
 services:
   # Images are fully qualified (docker.io/...): Docker reads them exactly as before, and Podman
-  # needs the registry unless its registries.conf searches Docker Hub. *_IMAGE points at a mirror.
+  # needs the registry unless its registries.conf searches Docker Hub. The pins are versions.lock's;
+  # *_IMAGE points at a mirror, and scripts/images.sh sets them all from DAST_IMAGE_MIRROR (NTR).
   juice:
     image: ${JUICE_IMAGE:-docker.io/bkimminich/juice-shop@sha256:73c53fbf442e8337b3ea3d98c7e8550308854701ebdfce4cc39768f36b75430e}
     networks: [dast]
@@ -89,7 +90,7 @@ services:
 
   webgoat:
     profiles: [webgoat]
-    image: docker.io/webgoat/webgoat@sha256:d4ac9fc2b0a41b68d64dedde684f4783aa60cc785838435a6d5bd5a25b387497
+    image: ${WEBGOAT_IMAGE:-docker.io/webgoat/webgoat@sha256:d4ac9fc2b0a41b68d64dedde684f4783aa60cc785838435a6d5bd5a25b387497}
     networks: [dast]
     environment:
       # WebGoat defaults to 8080, which is ZAP's own port: ZAP claims proxied requests arriving
@@ -108,6 +109,8 @@ services:
     build:
       context: .
       dockerfile: Containerfile.lab
+      args:
+        BASE_IMAGE: ${RUNNER_BASE_IMAGE:-mcr.microsoft.com/playwright/python:v1.62.0-jammy}
     command: ["-m", "labs.semgate.server", "--port", "8084"]
     networks: [dast]
     # Loopback only: semgate's app.yaml reaches the lab at localhost:8084 from the workstation.
@@ -124,6 +127,7 @@ services:
       dockerfile: Containerfile
       args:
         PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+        BASE_IMAGE: ${RUNNER_BASE_IMAGE:-mcr.microsoft.com/playwright/python:v1.62.0-jammy}
     # Both only need to have STARTED; the runner's wait_ready() polls until each actually
     # serves (juice-shop is distroless so a compose healthcheck isn't possible — see above).
     depends_on: [juice, zap]

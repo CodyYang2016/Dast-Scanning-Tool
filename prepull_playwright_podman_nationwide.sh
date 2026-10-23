@@ -5,8 +5,11 @@
 
 set -Eeuo pipefail
 
+# Image names from versions.lock; with DAST_IMAGE_MIRROR=ntr.nwie.net, every one from NTR only.
+source "$(dirname "${BASH_SOURCE[0]}")/scripts/images.sh"
+
 MACHINE_NAME="${PODMAN_MACHINE_NAME:-podman-machine-default}"
-IMAGE="${PLAYWRIGHT_IMAGE:-mcr.microsoft.com/playwright/python:v1.62.0-jammy}"
+IMAGE="${PLAYWRIGHT_IMAGE:-${RUNNER_BASE_IMAGE:-mcr.microsoft.com/playwright/python:v1.62.0-jammy}}"
 ZAP_IMAGE="${ZAP_IMAGE:-ntr.nwie.net/docker.io/zaproxy/zap-stable}"
 MAX_ATTEMPTS="${MAX_ATTEMPTS:-3}"
 RETRY_DELAY_SECONDS="${RETRY_DELAY_SECONDS:-10}"

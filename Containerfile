@@ -1,7 +1,9 @@
 # DAST runner image: Playwright + Chromium (pinned) + the runner code (NFR-5).
 # Base image pins Playwright 1.62.0 and ships a matching Chromium, so scans are reproducible.
-# Inside Nationwide the same tag is pulled through Podman; see prepull_playwright_podman_nationwide.sh.
-FROM mcr.microsoft.com/playwright/python:v1.62.0-jammy
+# Inside Nationwide the base comes from NTR: BASE_IMAGE=ntr.nwie.net/mcr.microsoft.com/playwright/python:v1.62.0-jammy, which
+# scripts/images.sh sets from DAST_IMAGE_MIRROR (versions.lock: runner_base_image).
+ARG BASE_IMAGE=mcr.microsoft.com/playwright/python:v1.62.0-jammy
+FROM ${BASE_IMAGE}
 
 WORKDIR /app
 

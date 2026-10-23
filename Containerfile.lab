@@ -2,7 +2,9 @@
 # the runner's `pip install` needs PyPI, and on an operator machine behind TLS interception that
 # build fails — which has nothing to do with running a lab that imports only the standard library.
 # Same base as the runner (versions.lock: runner_base_image), so no second image is downloaded.
-FROM mcr.microsoft.com/playwright/python:v1.62.0-jammy
+# BASE_IMAGE lets the NTR mirror supply it inside Nationwide.
+ARG BASE_IMAGE=mcr.microsoft.com/playwright/python:v1.62.0-jammy
+FROM ${BASE_IMAGE}
 
 WORKDIR /app
 COPY labs/ labs/

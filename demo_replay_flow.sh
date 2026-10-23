@@ -5,10 +5,14 @@
 #
 # ZAP requires an API key (ZAP_API_KEY, generated when unset) and by default admits only the
 # runner's fixed address. Set ZAP_API_ALLOW='.*' to open the API to the host as well; the key
-# is still required. JUICE_IMAGE / ZAP_IMAGE override the pinned images, e.g. an NTR mirror.
+# is still required. JUICE_IMAGE / ZAP_IMAGE override the pinned images; DAST_IMAGE_MIRROR=ntr.nwie.net
+# takes every image, the runner's base included, from NTR.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
+
+# Image names from versions.lock; with DAST_IMAGE_MIRROR=ntr.nwie.net, every one from NTR only.
+source scripts/images.sh
 
 if [ -z "${ZAP_API_KEY:-}" ]; then
   ZAP_API_KEY="$(openssl rand -hex 24 2>/dev/null || python -c 'import secrets; print(secrets.token_hex(24))')"
@@ -22,9 +26,10 @@ runner_network="ssd-dast-poc_dast"
 runner_subnet="${DAST_SUBNET:-172.28.0.0/24}"
 runner_ip="${DAST_RUNNER_IP:-172.28.0.10}"
 zap_api_allow="${ZAP_API_ALLOW:-^(?:172[.]28[.]0[.]10|zap|127[.]0[.]0[.]1|localhost)\$}"
-juice_image="${JUICE_IMAGE:-bkimminich/juice-shop@sha256:73c53fbf442e8337b3ea3d98c7e8550308854701ebdfce4cc39768f36b75430e}"
+juice_image="$(dast_image JUICE_IMAGE)"
 pip_index_url="${PIP_INDEX_URL:-https://art.nwie.net/artifactory/api/pypi/pypi/simple}"
-zap_image="${ZAP_IMAGE:-zaproxy/zap-stable@sha256:781a2bdaea47324e7bab583e2263f21d257b0aee61ed51521a5be45f5f5081ef}"
+zap_image="$(dast_image ZAP_IMAGE)"
+base_image="$(dast_image RUNNER_BASE_IMAGE)"
 
 run_runner_python() {
   MSYS_NO_PATHCONV=1 podman run --rm \
@@ -52,7 +57,8 @@ podman network rm "$runner_network" >/dev/null 2>&1 || true
 
 echo ">> Build runner image"
 bash scripts/stage_ca_bundle.sh
-podman build --build-arg "PIP_INDEX_URL=$pip_index_url" -t "$runner_image" -f Containerfile .
+podman build --build-arg "PIP_INDEX_URL=$pip_index_url" --build-arg "BASE_IMAGE=$base_image" \
+  -t "$runner_image" -f Containerfile .
 
 rm -rf out/replay-evidence
 mkdir -p out/replay-evidence

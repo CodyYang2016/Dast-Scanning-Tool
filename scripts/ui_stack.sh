@@ -19,6 +19,9 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
+# Image names from versions.lock; with DAST_IMAGE_MIRROR=ntr.nwie.net, every one from NTR only.
+source scripts/images.sh
+
 dry=0
 if [ "${1:-}" = "--dry-run" ]; then dry=1; shift; fi
 cmd="${1:-}"
