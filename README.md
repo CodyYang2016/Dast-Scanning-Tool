@@ -174,6 +174,7 @@ bash ./prepull_playwright_podman_nationwide.sh        # repairs the Podman VM pr
 export DAST_CA_BUNDLE="$HOME/certs/nw-ca-all.pem"     # Nationwide CA (PEM, the default); pip in the image build needs it
 # The scripts install the image's Python packages from Artifactory; override with PIP_INDEX_URL
 export ZAP_API_KEY=$(openssl rand -hex 24)            # ZAP refuses unkeyed API calls
+export DAST_IMAGE_MIRROR=ntr.nwie.net                     # every image from NTR only; see docs/podman_and_docker.md
 export ZAP_IMAGE=ntr.nwie.net/docker.io/zaproxy/zap-stable
 export JUICE_IMAGE=ntr.nwie.net/docker.io/bkimminich/juice-shop
 bash ./demo_replay_flow.sh      # replay only: Playwright login + journey through ZAP, no active scan

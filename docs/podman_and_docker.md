@@ -56,11 +56,41 @@ points at `prepull_playwright_podman_nationwide.sh`, which also repairs the VM's
 | `DAST_CONTAINER_ENGINE` | detected | `podman` or `docker` |
 | `DAST_ZAP_PORT` | `8080` | ZAP's port, the same inside and outside the container: ZAP only answers API calls addressed to the port it listens on |
 | `DAST_JUICE_PORT` | `3000` | Juice Shop's host port |
-| `ZAP_IMAGE`, `JUICE_IMAGE`, `DVWA_IMAGE` | pinned `docker.io/...` digests | A mirror, e.g. `ntr.nwie.net/docker.io/zaproxy/zap-stable` |
+| `DAST_IMAGE_MIRROR` | unset | Every image from this mirror, and only it (NTR only, above) |
+| `ZAP_IMAGE`, `JUICE_IMAGE`, `DVWA_IMAGE`, `WEBGOAT_IMAGE`, `RUNNER_BASE_IMAGE` | the pins in `versions.lock` | One image by hand; under the mirror when it's set |
 
 Leave `DAST_ZAP_PORT` and `DAST_JUICE_PORT` unset with the `demo_*.sh` scripts, which expect 8080
 and 3000. Set them only where those ports are taken, e.g. a workstation already running its own ZAP
 on 8080: `DAST_ZAP_PORT=18080 DAST_JUICE_PORT=13000 bash scripts/ui_stack.sh ui juice`.
+
+## NTR only (Nationwide)
+
+Inside Nationwide every image must come from **NTR** (`ntr.nwie.net`), the internal mirror. One
+setting covers all of them:
+
+```bash
+export DAST_IMAGE_MIRROR=ntr.nwie.net
+bash scripts/check_images.sh --pull       # once: what NTR has, image by image
+```
+
+**How it works:**
+- `scripts/images.sh` reads the pinned images from `versions.lock` and names NTR's copy of each,
+  keeping the pin: `ntr.nwie.net/docker.io/zaproxy/zap-stable@sha256:…`, and
+  `ntr.nwie.net/mcr.microsoft.com/playwright/python:v1.62.0-jammy` for the runner's base image.
+- `scripts/ui_stack.sh`, the `demo_*.sh` scripts and the prepull script all use it. The runner and
+  lab images build `FROM` that base, through the `BASE_IMAGE` build argument.
+- **Nothing is ever pulled from elsewhere while it's set.** An image set by hand outside NTR
+  (`JUICE_IMAGE=docker.io/…`) stops the script, naming the NTR image to use instead. There's no
+  fallback to Docker Hub or Microsoft's registry.
+- An explicit `*_IMAGE` under NTR still wins. That's how the checklist's tag lines keep working if
+  NTR can't serve a pinned digest yet.
+- `check_images.sh --pull` reports each image as **available**, **not found** (with the exact name
+  to ask the NTR team to mirror) or **unauthorized** (`podman login ntr.nwie.net`). It also says
+  which paths need it:
+  - the web UI needs ZAP and a target;
+  - the replay and full scan also need the runner's base.
+
+Without `DAST_IMAGE_MIRROR`, nothing changes: the same pinned images come from their own registries.
 
 ## What differs between the engines, and what doesn't
 

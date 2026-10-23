@@ -12,6 +12,9 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
+# Image names from versions.lock; with DAST_IMAGE_MIRROR=ntr.nwie.net, every one from NTR only.
+source scripts/images.sh
+
 for required_file in compose.yaml compose.demo.yaml Containerfile security/dast/juice-shop/flow.py security/dast/juice-shop/scope.json; do
   if [ ! -f "$required_file" ]; then
     echo "Missing required file: $required_file" >&2
