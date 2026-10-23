@@ -189,6 +189,8 @@ def test_the_lab_image_builds_on_the_locked_base_and_installs_nothing():
     lab = (ROOT / "Containerfile.lab").read_text(encoding="utf-8")
     froms = [line.split(None, 1)[1].strip() for line in lab.splitlines()
              if line.startswith("FROM ")]
-    assert froms == [base]
+    # The base is a build argument so the NTR mirror can supply it; its default is the lock's.
+    assert froms == ["${BASE_IMAGE}"]
+    assert f"ARG BASE_IMAGE={base}" in lab.splitlines()
     assert "pip" not in "\n".join(line for line in lab.splitlines()
                                   if not line.lstrip().startswith("#"))
